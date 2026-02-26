@@ -54,34 +54,33 @@ int main(void) {
             cosf(cameraAngle.y)*cosf(cameraAngle.x) 
         });
 
-        // VECTORS CALCULATED FROM ROTATION
         Vector3 forward = { sinf(cameraAngle.x), 0, cosf(cameraAngle.x) };
         Vector3 right = { cosf(cameraAngle.x), 0, -sinf(cameraAngle.x) }; 
 
         if (!player.inventoryOpen) {
             for (int i = 0; i < 9; i++) if (IsKeyPressed(KEY_ONE+i)) { player.selectedSlot = i; player.selectedBlock = hotbar[i]; }
 
-            bool inWater = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 0.5f), (int)floor(player.position.z)) == BLOCK_WATER;
+            bool inWater = false;
+            for(float ox=-0.3f; ox<=0.3f; ox+=0.6f) for(float oz=-0.3f; oz<=0.3f; oz+=0.6f)
+                if(World_GetBlock(world, (int)floor(player.position.x+ox), (int)floor(player.position.y+0.5f), (int)floor(player.position.z+oz)) == BLOCK_WATER) inWater = true;
 
             Vector3 moveDir = { 0 };
             if (IsKeyDown(KEY_W)) moveDir = Vector3Add(moveDir, forward); 
             if (IsKeyDown(KEY_S)) moveDir = Vector3Subtract(moveDir, forward);
             
-            // THE DEFINITIVE FIX: SWAP A/D INPUTS TO MATCH PLAYER PERCEPTION
-            if (IsKeyDown(KEY_A)) moveDir = Vector3Add(moveDir, right);      // Was Subtract
-            if (IsKeyDown(KEY_D)) moveDir = Vector3Subtract(moveDir, right); // Was Add
+            // ABSOLUTE FINAL SWAP: Match player perception based on PI-offset rotation
+            if (IsKeyDown(KEY_A)) moveDir = Vector3Add(moveDir, right);      // Add Right -> moves Left in this coordinate space
+            if (IsKeyDown(KEY_D)) moveDir = Vector3Subtract(moveDir, right); // Subtract Right -> moves Right in this coordinate space
 
-            float speed = IsKeyDown(KEY_LEFT_CONTROL) ? 8.5f : 4.5f; if (inWater) speed *= 0.7f;
+            float speed = IsKeyDown(KEY_LEFT_CONTROL) ? 8.5f : 4.5f; if (inWater) speed *= 0.75f;
             if (Vector3Length(moveDir) > 0.1f) moveDir = Vector3Scale(Vector3Normalize(moveDir), speed);
             player.velocity.x = moveDir.x; player.velocity.z = moveDir.z;
-            float gravity = inWater ? 12.0f : 28.0f; player.velocity.y -= gravity * dt;
+            float gravity = inWater ? 10.0f : 28.0f; player.velocity.y -= gravity * dt;
 
             if (IsKeyPressed(KEY_SPACE)) {
                 if (player.grounded) { player.velocity.y = 9.0f; player.grounded = false; }
-                else if (inWater) { player.velocity.y = 8.5f; }
-            } else if (inWater && IsKeyDown(KEY_SPACE)) {
-                player.velocity.y += 30.0f * dt; if (player.velocity.y > 4.5f) player.velocity.y = 4.5f;
-            }
+                else if (inWater) { player.velocity.y = 7.0f; player.position = Vector3Add(player.position, Vector3Scale(forward, 0.2f)); }
+            } else if (inWater && IsKeyDown(KEY_SPACE)) { player.velocity.y += 35.0f * dt; if (player.velocity.y > 4.5f) player.velocity.y = 4.5f; }
 
             player.position.y += player.velocity.y * dt;
             if (CheckCollision(world, player.position)) { if (player.velocity.y < 0) player.grounded = true; player.position.y -= player.velocity.y * dt; player.velocity.y = 0; }
@@ -92,7 +91,9 @@ int main(void) {
 
             player.position.z += player.velocity.z * dt;
             if (CheckCollision(world, player.position)) player.position.z -= player.velocity.z * dt;
-            
+
+            if (CheckCollision(world, player.position)) player.position.y += 0.1f;
+
             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
                 Ray ray = { camera.position, Vector3Normalize(Vector3Subtract(camera.target, camera.position)) };
                 RaycastResult res = World_Raycast(world, ray.position, ray.direction, 5.0f);

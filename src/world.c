@@ -140,16 +140,16 @@ void World_Render(World *world) {
 void World_RenderClouds(World *world, Vector3 playerPos, float time) {
     float cloudHeight = 192.0f;
     float cloudSize = 16.0f; 
-    int range = 25; 
+    int range = 48; // Vast render distance for clouds
     int startX = (int)floor(playerPos.x / cloudSize) - range;
     int startZ = (int)floor(playerPos.z / cloudSize) - range;
     
     rlDisableBackfaceCulling();
     for (int x = startX; x < startX + range * 2; x++) {
         for (int z = startZ; z < startZ + range * 2; z++) {
-            // Large clumpy noise
-            float n = Perlin2D((float)x * 0.15f + time * 0.01f, (float)z * 0.15f + 0.5f, 0.5f, 2);
-            if (n > 0.45f) { 
+            // Sample noise at lower frequency for larger blocks of clouds
+            float n = Perlin2D((float)x * 0.07f + time * 0.005f, (float)z * 0.07f, 0.5f, 2);
+            if (n > 0.25f) { // Lower threshold = more clouds
                 Vector3 pos = { x * cloudSize + cloudSize/2.0f, cloudHeight, z * cloudSize + cloudSize/2.0f };
                 DrawCube(pos, cloudSize, 4.0f, cloudSize, Fade(WHITE, 0.9f));
             }
