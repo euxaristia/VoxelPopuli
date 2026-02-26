@@ -138,20 +138,22 @@ void World_Render(World *world) {
 }
 
 void World_RenderClouds(World *world, Vector3 playerPos, float time) {
-    float cloudHeight = 192.0f;
-    float cloudSize = 16.0f; 
-    int range = 48; // Vast render distance for clouds
+    (void)world;
+    float cloudHeight = fmaxf(110.0f, playerPos.y + 24.0f);
+    float cloudSize = 8.0f;
+    int range = 64;
     int startX = (int)floor(playerPos.x / cloudSize) - range;
     int startZ = (int)floor(playerPos.z / cloudSize) - range;
     
     rlDisableBackfaceCulling();
     for (int x = startX; x < startX + range * 2; x++) {
         for (int z = startZ; z < startZ + range * 2; z++) {
-            // Sample noise at lower frequency for larger blocks of clouds
-            float n = Perlin2D((float)x * 0.07f + time * 0.005f, (float)z * 0.07f, 0.5f, 2);
-            if (n > 0.25f) { // Lower threshold = more clouds
+            // Two noise fields keep clouds plentiful while breaking large continuous slabs.
+            float base = Perlin2D((float)x * 0.09f + time * 0.003f, (float)z * 0.09f + 41.0f, 0.5f, 2);
+            float breakup = Perlin2D((float)x * 0.24f - time * 0.005f, (float)z * 0.24f + 7.0f, 0.5f, 1);
+            if (base > 0.10f && breakup > -0.08f) {
                 Vector3 pos = { x * cloudSize + cloudSize/2.0f, cloudHeight, z * cloudSize + cloudSize/2.0f };
-                DrawCube(pos, cloudSize, 4.0f, cloudSize, Fade(WHITE, 0.9f));
+                DrawCube(pos, cloudSize, 1.1f, cloudSize, (Color){225, 233, 240, 150});
             }
         }
     }

@@ -5,9 +5,9 @@
 // For now, let's use a simple sine-based pseudo-noise for testing,
 // but for a real engine we'd want a proper Perlin/Simplex implementation.
 
-float Fade(float t) { return t * t * t * (t * (t * 6 - 15) + 10); }
-float Lerp(float t, float a, float b) { return a + t * (b - a); }
-float Grad(int hash, float x, float y) {
+static float NoiseFade(float t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+static float NoiseLerp(float t, float a, float b) { return a + t * (b - a); }
+static float NoiseGrad(int hash, float x, float y) {
     int h = hash & 15;
     float u = h < 8 ? x : y;
     float v = h < 4 ? y : h == 12 || h == 14 ? x : 0;
@@ -32,14 +32,14 @@ float Noise2D(float x, float y) {
     int Y = (int)floor(y) & 255;
     x -= floor(x);
     y -= floor(y);
-    float u = Fade(x);
-    float v = Fade(y);
+    float u = NoiseFade(x);
+    float v = NoiseFade(y);
     int A = p[X]+Y, AA = p[A], AB = p[A+1], B = p[X+1]+Y, BA = p[B], BB = p[B+1];
 
-    return Lerp(v, Lerp(u, Grad(p[AA], x, y),
-                           Grad(p[BA], x-1, y)),
-                   Lerp(u, Grad(p[AB], x, y-1),
-                           Grad(p[BB], x-1, y-1)));
+    return NoiseLerp(v, NoiseLerp(u, NoiseGrad(p[AA], x, y),
+                                     NoiseGrad(p[BA], x-1, y)),
+                        NoiseLerp(u, NoiseGrad(p[AB], x, y-1),
+                                     NoiseGrad(p[BB], x-1, y-1)));
 }
 
 float Perlin2D(float x, float y, float frequency, int octaves) {
