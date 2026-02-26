@@ -5,6 +5,8 @@
 #include <string.h>
 #include <math.h>
 
+#define WATER_VERTEX_ALPHA 208
+
 void Chunk_Init(Chunk *chunk, int x, int z) {
     chunk->x = x; chunk->z = z;
     memset(chunk->blocks, 0, sizeof(chunk->blocks));
@@ -150,7 +152,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                                   fx, fy+1-wOff, fz,  fx+1, fy+1-wOff, fz+1,  fx+1, fy+1-wOff, fz };
                     float t[] = { tu0, tv0, tu0, tv1, tu1, tv1, tu0, tv0, tu1, tv1, tu1, tv0 };
                     memcpy(&vB[*vc*3], v, 72); memcpy(&tB[*vc*2], t, 48);
-                    for(int i=0; i<6; i++){ int idx=*vc+i; nB[idx*3]=0; nB[idx*3+1]=1; nB[idx*3+2]=0; cB[idx*4]=cB[idx*4+1]=cB[idx*4+2]=255; cB[idx*4+3]=(block==BLOCK_WATER)?140:255; }
+                    for(int i=0; i<6; i++){ int idx=*vc+i; nB[idx*3]=0; nB[idx*3+1]=1; nB[idx*3+2]=0; cB[idx*4]=cB[idx*4+1]=cB[idx*4+2]=255; cB[idx*4+3]=(block==BLOCK_WATER)?WATER_VERTEX_ALPHA:255; }
                     *vc += 6;
                 }
                 // Bottom
@@ -176,7 +178,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                         else { float l[]={fx,fy,fz, fx,fy,fz+1, fx,fy+1-wOff,fz+1, fx,fy,fz, fx,fy+1-wOff,fz+1, fx,fy+1-wOff,fz}; memcpy(sv,l,72); }
                         float st[] = { u0,v1, u1,v1, u1,v0, u0,v1, u1,v0, u0,v0 };
                         memcpy(&vB[*vc*3], sv, 72); memcpy(&tB[*vc*2], st, 48);
-                        for(int i=0; i<6; i++){ int idx=*vc+i; nB[idx*3]=sn[s*3]; nB[idx*3+1]=0; nB[idx*3+2]=sn[s*3+2]; float sh=(s<2)?0.6f:0.8f; cB[idx*4]=cB[idx*4+1]=cB[idx*4+2]=(unsigned char)(255*sh); cB[idx*4+3]=(block==BLOCK_WATER)?140:255; }
+                        for(int i=0; i<6; i++){ int idx=*vc+i; nB[idx*3]=sn[s*3]; nB[idx*3+1]=0; nB[idx*3+2]=sn[s*3+2]; float sh=(s<2)?0.6f:0.8f; cB[idx*4]=cB[idx*4+1]=cB[idx*4+2]=(unsigned char)(255*sh); cB[idx*4+3]=(block==BLOCK_WATER)?WATER_VERTEX_ALPHA:255; }
                         *vc += 6;
                     }
                 }

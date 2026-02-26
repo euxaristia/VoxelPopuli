@@ -49,20 +49,20 @@ static void BuildWaterTile(Color *pixels, float time) {
 
             float mix = Saturate(0.5f + body * 0.42f + detail * 0.20f + jitter);
 
-            int r = (int)(48.0f + mix * 60.0f);
-            int g = (int)(100.0f + mix * 72.0f);
-            int b = (int)(178.0f + mix * 74.0f);
-            int a = 180;
+            int r = (int)(24.0f + mix * 38.0f);
+            int g = (int)(92.0f + mix * 58.0f);
+            int b = (int)(205.0f + mix * 48.0f);
+            int a = 228;
 
             if (detail < -0.35f) {
-                r -= 8;
-                g -= 6;
-                b -= 4;
+                r -= 10;
+                g -= 8;
+                b -= 5;
             }
             if (foam > 0.48f) {
-                r += 16;
-                g += 18;
-                b += 20;
+                r += 8;
+                g += 12;
+                b += 16;
             }
 
             Color c = {
