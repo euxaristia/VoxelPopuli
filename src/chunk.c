@@ -14,6 +14,7 @@ void Chunk_Init(Chunk *chunk, int x, int z) {
 }
 
 void Chunk_Generate(Chunk *chunk) {
+    // PASS 1: Terrain
     for (int x = 0; x < CHUNK_WIDTH; x++) {
         for (int z = 0; z < CHUNK_DEPTH; z++) {
             float worldX = (float)(chunk->x * CHUNK_WIDTH + x);
@@ -33,20 +34,43 @@ void Chunk_Generate(Chunk *chunk) {
                 else if (y < 60) b = BLOCK_WATER;
                 chunk->blocks[x][y][z] = b;
             }
+        }
+    }
+
+    // PASS 2: Trees
+    for (int x = 0; x < CHUNK_WIDTH; x++) {
+        for (int z = 0; z < CHUNK_DEPTH; z++) {
+            float worldX = (float)(chunk->x * CHUNK_WIDTH + x);
+            float worldZ = (float)(chunk->z * CHUNK_DEPTH + z);
+            
+            // Re-calculate height for tree placement
+            float continental = Perlin2D(worldX, worldZ, 0.005f, 3);
+            float baseH = continental * 40.0f + 64.0f;
+            float detail = Perlin2D(worldX, worldZ, 0.03f, 4);
+            float hillF = (continental > 0.2f) ? (continental - 0.2f) * 2.0f : 0.0f;
+            int height = (int)(baseH + detail * 15.0f * (1.0f + hillF));
 
             if (height >= 62 && x > 2 && x < CHUNK_WIDTH - 3 && z > 2 && z < CHUNK_DEPTH - 3) {
                 int seed = (int)(worldX * 73.1f + worldZ * 91.7f);
                 if (seed % 85 == 0) {
                     int treeH = 4 + (seed % 3);
-                    for (int h = 1; h <= treeH; h++) chunk->blocks[x][height + h][z] = BLOCK_OAK_LOG;
-                    for (int ly = -2; ly <= 1; ly++) {
-                        int rad = (ly < 0) ? 2 : 1;
-                        for (int lx = -rad; lx <= rad; lx++) {
-                            for (int lz = -rad; lz <= rad; lz++) {
-                                if (ly < 0 && abs(lx) == rad && abs(lz) == rad && (seed + lx + lz) % 3 == 0) continue; 
-                                if (ly == 1 && (abs(lx) + abs(lz) > 1)) continue;
-                                if (chunk->blocks[x + lx][height + treeH + ly + 1][z + lz] == BLOCK_AIR)
-                                    chunk->blocks[x + lx][height + treeH + ly + 1][z + lz] = BLOCK_OAK_LEAVES;
+                    
+                    // Only place tree if there's grass
+                    if (chunk->blocks[x][height][z] == BLOCK_GRASS) {
+                        for (int h = 1; h <= treeH; h++) chunk->blocks[x][height + h][z] = BLOCK_OAK_LOG;
+                        for (int ly = -2; ly <= 1; ly++) {
+                            int rad = (ly < 0) ? 2 : 1;
+                            for (int lx = -rad; lx <= rad; lx++) {
+                                for (int lz = -rad; lz <= rad; lz++) {
+                                    if (ly < 0 && abs(lx) == rad && abs(lz) == rad && (seed + lx + lz) % 3 == 0) continue; 
+                                    if (ly == 1 && (abs(lx) + abs(lz) > 1)) continue;
+                                    
+                                    int ly_idx = height + treeH + ly + 1;
+                                    if (ly_idx >= 0 && ly_idx < CHUNK_HEIGHT) {
+                                        if (chunk->blocks[x + lx][ly_idx][z + lz] == BLOCK_AIR)
+                                            chunk->blocks[x + lx][ly_idx][z + lz] = BLOCK_OAK_LEAVES;
+                                    }
+                                }
                             }
                         }
                     }
