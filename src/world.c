@@ -91,7 +91,21 @@ void World_Init(World *world) {
     DrawPixelatedBlock(&img, 5, 0, (Color){40, 100, 40, 255}, 0.4f);
     DrawPixelatedBlock(&img, 1, 1, (Color){60, 60, 60, 255}, 0.2f);
     DrawPixelatedBlock(&img, 5, 1, (Color){110, 90, 60, 255}, 0.1f);
-    for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) ImageDrawPixel(&img, 13 * 16 + x, 12 * 16 + y, (Color){40, 100, 200, 140});
+    // Authenticity: Minecraft Water Texture
+    Color waterBase = (Color){63, 118, 228, 180};
+    Color waterHighlight = (Color){120, 167, 255, 180};
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
+            Color c = waterBase;
+            if (((y == 2 || y == 3) && (x >= 4 && x <= 7)) ||
+                ((y == 6 || y == 7) && (x >= 10 && x <= 13)) ||
+                ((y == 10 || y == 11) && (x >= 1 && x <= 4)) ||
+                ((y == 14 || y == 15) && (x >= 8 && x <= 11))) {
+                c = waterHighlight;
+            }
+            ImageDrawPixel(&img, 13 * 16 + x, 12 * 16 + y, c);
+        }
+    }
     DrawPixelatedBlock(&img, 6, 0, (Color){220, 210, 160, 255}, 0.15f);
     DrawPixelatedBlock(&img, 7, 0, (Color){120, 120, 130, 255}, 0.2f);
     world->atlas = LoadTextureFromImage(img);
