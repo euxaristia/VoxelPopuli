@@ -1,5 +1,6 @@
 #include "world.h"
 #include "rlgl.h"
+#include "noise.h"
 #include <math.h>
 #include <stdlib.h>
 
