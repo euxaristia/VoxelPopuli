@@ -15,7 +15,7 @@ bool IsPointInBlock(World *world, Vector3 p) {
 }
 
 bool CheckCollision(World *world, Vector3 pos) {
-    float w = 0.25f, h = 1.75f;
+    float w = 0.22f, h = 1.75f; // Slightly slimmer for smoother transitions
     for (float x = -w; x <= w; x += w * 2)
         for (float z = -w; z <= w; z += w * 2)
             for (float y = 0.1f; y <= h; y += h / 2.0f)
@@ -48,43 +48,42 @@ int main(void) {
         }
 
         camera.position = (Vector3){ player.position.x, player.position.y + 1.6f, player.position.z };
-        camera.target = Vector3Add(camera.position, (Vector3){ 
-            cosf(cameraAngle.y)*sinf(cameraAngle.x), 
-            sinf(cameraAngle.y), 
-            cosf(cameraAngle.y)*cosf(cameraAngle.x) 
-        });
+        Vector3 forwardDir = { cosf(cameraAngle.y)*sinf(cameraAngle.x), sinf(cameraAngle.y), cosf(cameraAngle.y)*cosf(cameraAngle.x) };
+        camera.target = Vector3Add(camera.position, forwardDir);
 
+        // MATHEMATICALLY DERIVED VECTORS
         Vector3 forward = { sinf(cameraAngle.x), 0, cosf(cameraAngle.x) };
-        Vector3 right = { cosf(cameraAngle.x), 0, -sinf(cameraAngle.x) }; 
+        Vector3 right = Vector3CrossProduct(forward, (Vector3){0, 1, 0}); // True Right vector
 
         if (!player.inventoryOpen) {
             for (int i = 0; i < 9; i++) if (IsKeyPressed(KEY_ONE+i)) { player.selectedSlot = i; player.selectedBlock = hotbar[i]; }
 
-            bool inWater = false;
-            for(float ox=-0.3f; ox<=0.3f; ox+=0.6f) for(float oz=-0.3f; oz<=0.3f; oz+=0.6f)
-                if(World_GetBlock(world, (int)floor(player.position.x+ox), (int)floor(player.position.y+0.5f), (int)floor(player.position.z+oz)) == BLOCK_WATER) inWater = true;
+            bool inWater = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 0.5f), (int)floor(player.position.z)) == BLOCK_WATER;
 
             Vector3 moveDir = { 0 };
             if (IsKeyDown(KEY_W)) moveDir = Vector3Add(moveDir, forward); 
             if (IsKeyDown(KEY_S)) moveDir = Vector3Subtract(moveDir, forward);
-            
-            // ABSOLUTE FINAL SWAP: Match player perception based on PI-offset rotation
-            if (IsKeyDown(KEY_A)) moveDir = Vector3Add(moveDir, right);      // Add Right -> moves Left in this coordinate space
-            if (IsKeyDown(KEY_D)) moveDir = Vector3Subtract(moveDir, right); // Subtract Right -> moves Right in this coordinate space
+            if (IsKeyDown(KEY_A)) moveDir = Vector3Subtract(moveDir, right); // Standard Left
+            if (IsKeyDown(KEY_D)) moveDir = Vector3Add(moveDir, right);      // Standard Right
 
             float speed = IsKeyDown(KEY_LEFT_CONTROL) ? 8.5f : 4.5f; if (inWater) speed *= 0.75f;
             if (Vector3Length(moveDir) > 0.1f) moveDir = Vector3Scale(Vector3Normalize(moveDir), speed);
             player.velocity.x = moveDir.x; player.velocity.z = moveDir.z;
-            float gravity = inWater ? 10.0f : 28.0f; player.velocity.y -= gravity * dt;
+            float gravity = inWater ? 14.0f : 28.0f; player.velocity.y -= gravity * dt;
 
             if (IsKeyPressed(KEY_SPACE)) {
                 if (player.grounded) { player.velocity.y = 9.0f; player.grounded = false; }
-                else if (inWater) { player.velocity.y = 7.0f; player.position = Vector3Add(player.position, Vector3Scale(forward, 0.2f)); }
-            } else if (inWater && IsKeyDown(KEY_SPACE)) { player.velocity.y += 35.0f * dt; if (player.velocity.y > 4.5f) player.velocity.y = 4.5f; }
+                else if (inWater) { player.velocity.y = 8.5f; } // Purely velocity based leap
+            } else if (inWater && IsKeyDown(KEY_SPACE)) {
+                player.velocity.y += 35.0f * dt; if (player.velocity.y > 4.5f) player.velocity.y = 4.5f;
+            }
 
+            // Continuous Physics Resolution
             player.position.y += player.velocity.y * dt;
-            if (CheckCollision(world, player.position)) { if (player.velocity.y < 0) player.grounded = true; player.position.y -= player.velocity.y * dt; player.velocity.y = 0; }
-            else if (player.velocity.y != 0) player.grounded = false;
+            if (CheckCollision(world, player.position)) {
+                if (player.velocity.y < 0) player.grounded = true;
+                player.position.y -= player.velocity.y * dt; player.velocity.y = 0;
+            } else if (player.velocity.y != 0) player.grounded = false;
 
             player.position.x += player.velocity.x * dt;
             if (CheckCollision(world, player.position)) player.position.x -= player.velocity.x * dt;
@@ -92,7 +91,7 @@ int main(void) {
             player.position.z += player.velocity.z * dt;
             if (CheckCollision(world, player.position)) player.position.z -= player.velocity.z * dt;
 
-            if (CheckCollision(world, player.position)) player.position.y += 0.1f;
+            if (CheckCollision(world, player.position)) player.position.y += 0.1f; // Gentle anti-stuck
 
             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
                 Ray ray = { camera.position, Vector3Normalize(Vector3Subtract(camera.target, camera.position)) };
@@ -124,7 +123,6 @@ int main(void) {
 
             if (World_GetBlock(world, (int)floor(camera.position.x), (int)floor(camera.position.y), (int)floor(camera.position.z)) == BLOCK_WATER) 
                 DrawRectangle(0, 0, 1280, 720, (Color){ 0, 121, 241, 150 });
-            
             DrawRectangleGradientV(0, 0, 1280, 100, Fade(BLACK, 0.3f), BLANK);
             DrawRectangleGradientV(0, 620, 1280, 100, BLANK, Fade(BLACK, 0.3f));
 
