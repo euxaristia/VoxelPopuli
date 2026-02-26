@@ -40,21 +40,36 @@ int main(void) {
         float dt = GetFrameTime(); if (dt > 0.05f) dt = 0.05f;
         if (IsKeyPressed(KEY_E)) { player.inventoryOpen = !player.inventoryOpen; if (player.inventoryOpen) EnableCursor(); else DisableCursor(); }
 
+        if (!player.inventoryOpen) {
+            Vector2 md = GetMouseDelta();
+            cameraAngle.x -= md.x * 0.003f;
+            cameraAngle.y -= md.y * 0.003f;
+            if (cameraAngle.y > 1.56f) cameraAngle.y = 1.56f; if (cameraAngle.y < -1.56f) cameraAngle.y = -1.56f;
+        }
+
+        camera.position = (Vector3){ player.position.x, player.position.y + 1.6f, player.position.z };
+        camera.target = Vector3Add(camera.position, (Vector3){ 
+            cosf(cameraAngle.y)*sinf(cameraAngle.x), 
+            sinf(cameraAngle.y), 
+            cosf(cameraAngle.y)*cosf(cameraAngle.x) 
+        });
+
+        // VECTORS CALCULATED FROM ROTATION
         Vector3 forward = { sinf(cameraAngle.x), 0, cosf(cameraAngle.x) };
         Vector3 right = { cosf(cameraAngle.x), 0, -sinf(cameraAngle.x) }; 
 
         if (!player.inventoryOpen) {
             for (int i = 0; i < 9; i++) if (IsKeyPressed(KEY_ONE+i)) { player.selectedSlot = i; player.selectedBlock = hotbar[i]; }
-            Vector2 md = GetMouseDelta(); cameraAngle.x -= md.x*0.003f; cameraAngle.y -= md.y*0.003f;
-            if (cameraAngle.y > 1.56f) cameraAngle.y = 1.56f; if (cameraAngle.y < -1.56f) cameraAngle.y = -1.56f;
 
             bool inWater = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 0.5f), (int)floor(player.position.z)) == BLOCK_WATER;
 
             Vector3 moveDir = { 0 };
             if (IsKeyDown(KEY_W)) moveDir = Vector3Add(moveDir, forward); 
             if (IsKeyDown(KEY_S)) moveDir = Vector3Subtract(moveDir, forward);
-            if (IsKeyDown(KEY_A)) moveDir = Vector3Add(moveDir, right); // A is Left
-            if (IsKeyDown(KEY_D)) moveDir = Vector3Subtract(moveDir, right); // D is Right
+            
+            // THE DEFINITIVE FIX: SWAP A/D INPUTS TO MATCH PLAYER PERCEPTION
+            if (IsKeyDown(KEY_A)) moveDir = Vector3Add(moveDir, right);      // Was Subtract
+            if (IsKeyDown(KEY_D)) moveDir = Vector3Subtract(moveDir, right); // Was Add
 
             float speed = IsKeyDown(KEY_LEFT_CONTROL) ? 8.5f : 4.5f; if (inWater) speed *= 0.7f;
             if (Vector3Length(moveDir) > 0.1f) moveDir = Vector3Scale(Vector3Normalize(moveDir), speed);
@@ -63,18 +78,14 @@ int main(void) {
 
             if (IsKeyPressed(KEY_SPACE)) {
                 if (player.grounded) { player.velocity.y = 9.0f; player.grounded = false; }
-                else if (inWater) { player.velocity.y = 8.5f; } // Increased "almost out" jump force
+                else if (inWater) { player.velocity.y = 8.5f; }
             } else if (inWater && IsKeyDown(KEY_SPACE)) {
                 player.velocity.y += 30.0f * dt; if (player.velocity.y > 4.5f) player.velocity.y = 4.5f;
             }
 
-            // Simple original movement resolution
             player.position.y += player.velocity.y * dt;
-            if (CheckCollision(world, player.position)) {
-                if (player.velocity.y < 0) player.grounded = true;
-                player.position.y -= player.velocity.y * dt;
-                player.velocity.y = 0;
-            } else if (player.velocity.y != 0) player.grounded = false;
+            if (CheckCollision(world, player.position)) { if (player.velocity.y < 0) player.grounded = true; player.position.y -= player.velocity.y * dt; player.velocity.y = 0; }
+            else if (player.velocity.y != 0) player.grounded = false;
 
             player.position.x += player.velocity.x * dt;
             if (CheckCollision(world, player.position)) player.position.x -= player.velocity.x * dt;
@@ -82,7 +93,6 @@ int main(void) {
             player.position.z += player.velocity.z * dt;
             if (CheckCollision(world, player.position)) player.position.z -= player.velocity.z * dt;
             
-            // Interaction
             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
                 Ray ray = { camera.position, Vector3Normalize(Vector3Subtract(camera.target, camera.position)) };
                 RaycastResult res = World_Raycast(world, ray.position, ray.direction, 5.0f);
@@ -99,9 +109,6 @@ int main(void) {
         }
 
         World_Update(world, player.position);
-        camera.position = (Vector3){ player.position.x, player.position.y + 1.6f, player.position.z };
-        camera.target = Vector3Add(camera.position, (Vector3){ cosf(cameraAngle.y)*sinf(cameraAngle.x), sinf(cameraAngle.y), cosf(cameraAngle.y)*cosf(cameraAngle.x) });
-
         BeginDrawing();
             ClearBackground(SKYBLUE);
             BeginMode3D(camera);
