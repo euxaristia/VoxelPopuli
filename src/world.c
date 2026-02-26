@@ -14,27 +14,55 @@ static unsigned char ClampToByte(int value) {
     return (unsigned char)value;
 }
 
+static float Saturate(float value) {
+    if (value < 0.0f) return 0.0f;
+    if (value > 1.0f) return 1.0f;
+    return value;
+}
+
+static float Hash01(int x, int y, unsigned int seed) {
+    unsigned int h = (unsigned int)x * 374761393u + (unsigned int)y * 668265263u + seed * 2246822519u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h ^= h >> 16u;
+    return (float)(h & 0x00FFFFFFu) / 16777215.0f;
+}
+
 static void BuildWaterTile(Color *pixels, float time) {
+    float invSize = 1.0f / (float)TILE_SIZE;
+    float driftX = time * 0.16f;
+    float driftY = -time * 0.11f;
+
     for (int y = 0; y < TILE_SIZE; y++) {
         for (int x = 0; x < TILE_SIZE; x++) {
-            float fx = (float)x;
-            float fy = (float)y;
-            float waveA = sinf((fx + time * 5.5f) * 0.8f + fy * 0.35f);
-            float waveB = sinf((fy - time * 4.0f) * 1.05f + fx * 0.25f);
-            float mix = 0.5f + 0.5f * (0.65f * waveA + 0.35f * waveB);
-            if (mix < 0.0f) mix = 0.0f;
-            if (mix > 1.0f) mix = 1.0f;
+            float u = ((float)x + 0.5f) * invSize;
+            float v = ((float)y + 0.5f) * invSize;
 
-            int r = (int)(54.0f + mix * 44.0f);
-            int g = (int)(105.0f + mix * 55.0f);
-            int b = (int)(190.0f + mix * 55.0f);
+            float warpX = Perlin2D((u + driftX) * 3.4f + 7.2f, (v + driftY) * 3.4f - 2.9f, 1.0f, 2);
+            float warpY = Perlin2D((u - driftY) * 3.1f - 4.8f, (v + driftX) * 3.1f + 11.3f, 1.0f, 2);
+            float du = u + warpX * 0.09f;
+            float dv = v + warpY * 0.09f;
+
+            float body = Perlin2D((du + driftX) * 6.0f + 19.1f, (dv + driftY) * 6.0f + 3.7f, 1.0f, 3);
+            float detail = Perlin2D((du - driftY * 0.7f) * 11.0f - 8.4f, (dv + driftX * 0.7f) * 11.0f + 14.2f, 1.0f, 2);
+            float foam = Perlin2D((u + driftX * 1.4f) * 14.0f + 27.1f, (v + driftY * 1.2f) * 14.0f - 31.4f, 1.0f, 1);
+            float jitter = (Hash01(x, y, 97u) - 0.5f) * 0.08f;
+
+            float mix = Saturate(0.5f + body * 0.42f + detail * 0.20f + jitter);
+
+            int r = (int)(48.0f + mix * 60.0f);
+            int g = (int)(100.0f + mix * 72.0f);
+            int b = (int)(178.0f + mix * 74.0f);
             int a = 180;
 
-            float sparkle = sinf((fx + fy) * 1.3f + time * 12.0f);
-            if (sparkle > 0.9f) {
-                r += 20;
-                g += 20;
-                b += 15;
+            if (detail < -0.35f) {
+                r -= 8;
+                g -= 6;
+                b -= 4;
+            }
+            if (foam > 0.48f) {
+                r += 16;
+                g += 18;
+                b += 20;
             }
 
             Color c = {
