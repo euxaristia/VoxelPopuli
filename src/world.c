@@ -64,19 +64,44 @@ RaycastResult World_Raycast(World *world, Vector3 origin, Vector3 direction, flo
     return result;
 }
 
+void DrawPixelatedBlock(Image *img, int tx, int ty, Color baseColor, float noiseAmount) {
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
+            float n = (float)rand() / (float)RAND_MAX * noiseAmount - noiseAmount/2.0f;
+            Color c = baseColor;
+            c.r = (unsigned char)fmax(0, fmin(255, c.r + n * 255));
+            c.g = (unsigned char)fmax(0, fmin(255, c.g + n * 255));
+            c.b = (unsigned char)fmax(0, fmin(255, c.b + n * 255));
+            // Add a slight border effect
+            if (x == 0 || y == 0 || x == 15 || y == 15) {
+                c.r *= 0.9f; c.g *= 0.9f; c.b *= 0.9f;
+            }
+            ImageDrawPixel(img, tx * 16 + x, ty * 16 + y, c);
+        }
+    }
+}
+
 void World_Init(World *world) {
-    Image img = GenImageChecked(256, 256, 16, 16, GREEN, DARKGREEN);
-    ImageDrawRectangle(&img, 16, 0, 16, 16, GRAY);         // Stone
-    ImageDrawRectangle(&img, 32, 0, 16, 16, BROWN);        // Dirt
-    ImageDrawRectangle(&img, 48, 0, 16, 16, LIME);         // Grass Side
-    ImageDrawRectangle(&img, 0, 0, 16, 16, GREEN);         // Grass Top
-    ImageDrawRectangle(&img, 16, 16, 16, 16, BLACK);       // Bedrock
-    ImageDrawRectangle(&img, 64, 0, 16, 16, (Color){101, 67, 33, 255}); // Log side
-    ImageDrawRectangle(&img, 80, 16, 16, 16, (Color){80, 50, 20, 255}); // Log top
-    ImageDrawRectangle(&img, 80, 0, 16, 16, (Color){0, 100, 0, 255});   // Leaves
-    ImageDrawRectangle(&img, 13 * 16, 12 * 16, 16, 16, (Color){0, 121, 241, 255}); // Water
+    Image img = GenImageColor(256, 256, BLANK);
+    
+    // Generate noisy textures for each block type
+    DrawPixelatedBlock(&img, 0, 0, (Color){110, 180, 80, 255}, 0.2f);  // Grass Top
+    DrawPixelatedBlock(&img, 1, 0, (Color){140, 140, 140, 255}, 0.15f); // Stone
+    DrawPixelatedBlock(&img, 2, 0, (Color){130, 100, 70, 255}, 0.2f);  // Dirt
+    DrawPixelatedBlock(&img, 3, 0, (Color){120, 160, 70, 255}, 0.3f);  // Grass Side
+    DrawPixelatedBlock(&img, 4, 0, (Color){100, 80, 50, 255}, 0.15f);  // Log side
+    DrawPixelatedBlock(&img, 5, 0, (Color){40, 100, 40, 255}, 0.4f);   // Leaves
+    DrawPixelatedBlock(&img, 1, 1, (Color){60, 60, 60, 255}, 0.2f);    // Bedrock
+    DrawPixelatedBlock(&img, 5, 1, (Color){110, 90, 60, 255}, 0.1f);   // Log top
+    DrawPixelatedBlock(&img, 13, 12, (Color){40, 100, 200, 200}, 0.1f); // Water
+    
+    // Sand & Gravel (using some of the empty slots)
+    DrawPixelatedBlock(&img, 6, 0, (Color){220, 210, 160, 255}, 0.15f); // Sand
+    DrawPixelatedBlock(&img, 7, 0, (Color){120, 120, 130, 255}, 0.2f);  // Gravel
+
     world->atlas = LoadTextureFromImage(img);
     UnloadImage(img);
+
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
         Chunk_Init(&world->chunks[i], 999999, 999999);
     }

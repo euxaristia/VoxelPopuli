@@ -20,35 +20,61 @@ void Chunk_Generate(Chunk *chunk) {
             float worldX = (float)(chunk->x * CHUNK_WIDTH + x);
             float worldZ = (float)(chunk->z * CHUNK_DEPTH + z);
             
-            float noise = Perlin2D(worldX, worldZ, 0.05f, 4);
-            int height = (int)(noise * 20.0f) + 64;
+            // 1. Continentalness / Base Height
+            float continental = Perlin2D(worldX, worldZ, 0.005f, 3);
+            float baseHeight = continental * 40.0f + 64.0f;
+            
+            // 2. Detail Noise (Hills/Valleys)
+            float detail = Perlin2D(worldX, worldZ, 0.03f, 4);
+            float hillFactor = (continental > 0.2f) ? (continental - 0.2f) * 2.0f : 0.0f;
+            int height = (int)(baseHeight + detail * 15.0f * (1.0f + hillFactor));
 
+            // 3. Fill Blocks
             for (int y = 0; y < CHUNK_HEIGHT; y++) {
-                if (y == 0) chunk->blocks[x][y][z] = BLOCK_BEDROCK;
-                else if (y < height - 3) chunk->blocks[x][y][z] = BLOCK_STONE;
-                else if (y < height) chunk->blocks[x][y][z] = BLOCK_DIRT;
-                else if (y == height) chunk->blocks[x][y][z] = BLOCK_GRASS;
-                else if (y < 60) chunk->blocks[x][y][z] = BLOCK_WATER;
-                else chunk->blocks[x][y][z] = BLOCK_AIR;
+                BlockType b = BLOCK_AIR;
+                if (y == 0) b = BLOCK_BEDROCK;
+                else if (y < height - 4) b = BLOCK_STONE;
+                else if (y < height) {
+                    if (height < 62) b = BLOCK_SAND; // Beach
+                    else b = BLOCK_DIRT;
+                }
+                else if (y == height) {
+                    if (height < 62) b = BLOCK_SAND;
+                    else b = BLOCK_GRASS;
+                }
+                else if (y < 60) b = BLOCK_WATER;
+                
+                chunk->blocks[x][y][z] = b;
             }
 
-            // Simple tree generation (only on grass above water)
-            if (height >= 60) {
-                // Use a deterministic "random" based on world coordinates
-                int seed = (int)(worldX * 123.45f + worldZ * 678.90f);
-                if (seed % 100 == 0) {
-                    // Check if we have space (within chunk boundaries for simplicity)
-                    if (x > 2 && x < CHUNK_WIDTH - 2 && z > 2 && z < CHUNK_DEPTH - 2) {
-                        // Log
-                        for (int h = 1; h <= 5; h++) {
-                            chunk->blocks[x][height + h][z] = BLOCK_OAK_LOG;
-                        }
-                        // Leaves
-                        for (int lx = -2; lx <= 2; lx++) {
-                            for (int lz = -2; lz <= 2; lz++) {
-                                for (int ly = 0; ly <= 2; ly++) {
-                                    if (chunk->blocks[x + lx][height + 4 + ly][z + lz] == BLOCK_AIR)
-                                        chunk->blocks[x + lx][height + 4 + ly][z + lz] = BLOCK_OAK_LEAVES;
+            // 4. Tree Generation (More authentic pattern)
+            if (height >= 62 && x > 2 && x < CHUNK_WIDTH - 3 && z > 2 && z < CHUNK_DEPTH - 3) {
+                int seed = (int)(worldX * 73.1f + worldZ * 91.7f);
+                if (seed % 80 == 0) {
+                    int treeHeight = 4 + (seed % 3);
+                    
+                    // Trunk
+                    for (int h = 1; h <= treeHeight; h++) {
+                        chunk->blocks[x][height + h][z] = BLOCK_OAK_LOG;
+                    }
+                    
+                    // Leaf Canopy (Minecraft 1.0 Oak Pattern)
+                    for (int ly = -2; ly <= 1; ly++) {
+                        int radius = (ly < 0) ? 2 : (ly == 0 ? 1 : 1);
+                        if (ly == 1) radius = 1;
+                        
+                        for (int lx = -radius; lx <= radius; lx++) {
+                            for (int lz = -radius; lz <= radius; lz++) {
+                                // Cut corners for standard leaves
+                                if (ly < 0 && abs(lx) == radius && abs(lz) == radius) {
+                                    if ((seed + lx + lz) % 3 == 0) continue; 
+                                }
+                                
+                                // Top layer is a small cross
+                                if (ly == 1 && (abs(lx) + abs(lz) > 1)) continue;
+
+                                if (chunk->blocks[x + lx][height + treeHeight + ly + 1][z + lz] == BLOCK_AIR) {
+                                    chunk->blocks[x + lx][height + treeHeight + ly + 1][z + lz] = BLOCK_OAK_LEAVES;
                                 }
                             }
                         }
@@ -102,7 +128,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                 float fy = (float)y;
                 float fz = (float)z;
 
-                // Simple UV mapping based on block type
+                // Mapping
                 int tx = 0, ty = 0;
                 if (block == BLOCK_STONE) { tx = 1; ty = 0; }
                 else if (block == BLOCK_DIRT) { tx = 2; ty = 0; }
@@ -111,6 +137,13 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                 else if (block == BLOCK_WATER) { tx = 13; ty = 12; }
                 else if (block == BLOCK_OAK_LOG) { tx = 4; ty = 0; }
                 else if (block == BLOCK_OAK_LEAVES) { tx = 5; ty = 0; }
+                else if (block == BLOCK_SAND) { tx = 6; ty = 0; }
+                else if (block == BLOCK_GRAVEL) { tx = 7; ty = 0; }
+
+                // Directional Lighting Factors
+                float topShade = 1.0f;
+                float sideShade = 0.8f;
+                float frontShade = 0.6f;
 
                 // Top Face
                 BlockType above = (y == CHUNK_HEIGHT - 1) ? BLOCK_AIR : chunk->blocks[x][y+1][z];
@@ -127,7 +160,10 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = 0; normals[(vCount+i)*3+1] = 1; normals[(vCount+i)*3+2] = 0;
-                        colors[(vCount+i)*4] = 255; colors[(vCount+i)*4+1] = 255; colors[(vCount+i)*4+2] = 255; colors[(vCount+i)*4+3] = 255;
+                        colors[(vCount+i)*4] = (unsigned char)(255 * topShade); 
+                        colors[(vCount+i)*4+1] = (unsigned char)(255 * topShade); 
+                        colors[(vCount+i)*4+2] = (unsigned char)(255 * topShade); 
+                        colors[(vCount+i)*4+3] = 255;
                         if (block == BLOCK_WATER) colors[(vCount+i)*4+3] = 180;
                     }
                     vCount += 6;
@@ -147,12 +183,10 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = 0; normals[(vCount+i)*3+1] = -1; normals[(vCount+i)*3+2] = 0;
-                        colors[(vCount+i)*4] = 255; colors[(vCount+i)*4+1] = 255; colors[(vCount+i)*4+2] = 255; colors[(vCount+i)*4+3] = 255;
-                        if (block == BLOCK_WATER) colors[(vCount+i)*4+3] = 180;
+                        colors[(vCount+i)*4] = 120; colors[(vCount+i)*4+1] = 120; colors[(vCount+i)*4+2] = 120; colors[(vCount+i)*4+3] = 255;
                     }
                     vCount += 6;
                 }
-                // Side faces
                 // Front
                 BlockType front = World_GetBlock(world, wx, y, wz + 1);
                 if (IsTransparent(front)) {
@@ -164,8 +198,10 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = 0; normals[(vCount+i)*3+1] = 0; normals[(vCount+i)*3+2] = 1;
-                        colors[(vCount+i)*4] = 255; colors[(vCount+i)*4+1] = 255; colors[(vCount+i)*4+2] = 255; colors[(vCount+i)*4+3] = 255;
-                        if (block == BLOCK_WATER) colors[(vCount+i)*4+3] = 180;
+                        colors[(vCount+i)*4] = (unsigned char)(255 * frontShade); 
+                        colors[(vCount+i)*4+1] = (unsigned char)(255 * frontShade); 
+                        colors[(vCount+i)*4+2] = (unsigned char)(255 * frontShade); 
+                        colors[(vCount+i)*4+3] = 255;
                     }
                     vCount += 6;
                 }
@@ -180,8 +216,10 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = 0; normals[(vCount+i)*3+1] = 0; normals[(vCount+i)*3+2] = -1;
-                        colors[(vCount+i)*4] = 255; colors[(vCount+i)*4+1] = 255; colors[(vCount+i)*4+2] = 255; colors[(vCount+i)*4+3] = 255;
-                        if (block == BLOCK_WATER) colors[(vCount+i)*4+3] = 180;
+                        colors[(vCount+i)*4] = (unsigned char)(255 * frontShade); 
+                        colors[(vCount+i)*4+1] = (unsigned char)(255 * frontShade); 
+                        colors[(vCount+i)*4+2] = (unsigned char)(255 * frontShade); 
+                        colors[(vCount+i)*4+3] = 255;
                     }
                     vCount += 6;
                 }
@@ -196,8 +234,10 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = 1; normals[(vCount+i)*3+1] = 0; normals[(vCount+i)*3+2] = 0;
-                        colors[(vCount+i)*4] = 255; colors[(vCount+i)*4+1] = 255; colors[(vCount+i)*4+2] = 255; colors[(vCount+i)*4+3] = 255;
-                        if (block == BLOCK_WATER) colors[(vCount+i)*4+3] = 180;
+                        colors[(vCount+i)*4] = (unsigned char)(255 * sideShade); 
+                        colors[(vCount+i)*4+1] = (unsigned char)(255 * sideShade); 
+                        colors[(vCount+i)*4+2] = (unsigned char)(255 * sideShade); 
+                        colors[(vCount+i)*4+3] = 255;
                     }
                     vCount += 6;
                 }
@@ -212,8 +252,10 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = -1; normals[(vCount+i)*3+1] = 0; normals[(vCount+i)*3+2] = 0;
-                        colors[(vCount+i)*4] = 255; colors[(vCount+i)*4+1] = 255; colors[(vCount+i)*4+2] = 255; colors[(vCount+i)*4+3] = 255;
-                        if (block == BLOCK_WATER) colors[(vCount+i)*4+3] = 180;
+                        colors[(vCount+i)*4] = (unsigned char)(255 * sideShade); 
+                        colors[(vCount+i)*4+1] = (unsigned char)(255 * sideShade); 
+                        colors[(vCount+i)*4+2] = (unsigned char)(255 * sideShade); 
+                        colors[(vCount+i)*4+3] = 255;
                     }
                     vCount += 6;
                 }
