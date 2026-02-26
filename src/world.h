@@ -17,6 +17,7 @@ typedef struct {
 typedef struct {
     Chunk chunks[CHUNK_POOL_SIZE];
     Texture2D atlas;
+    int waterAnimFrame;
 } World;
 
 void World_Init(World *world);

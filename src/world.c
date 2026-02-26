@@ -4,6 +4,66 @@
 #include <math.h>
 #include <stdlib.h>
 
+#define WATER_TILE_X 13
+#define WATER_TILE_Y 12
+#define TILE_SIZE 16
+
+static unsigned char ClampToByte(int value) {
+    if (value < 0) return 0;
+    if (value > 255) return 255;
+    return (unsigned char)value;
+}
+
+static void BuildWaterTile(Color *pixels, float time) {
+    for (int y = 0; y < TILE_SIZE; y++) {
+        for (int x = 0; x < TILE_SIZE; x++) {
+            float fx = (float)x;
+            float fy = (float)y;
+            float waveA = sinf((fx + time * 5.5f) * 0.8f + fy * 0.35f);
+            float waveB = sinf((fy - time * 4.0f) * 1.05f + fx * 0.25f);
+            float mix = 0.5f + 0.5f * (0.65f * waveA + 0.35f * waveB);
+            if (mix < 0.0f) mix = 0.0f;
+            if (mix > 1.0f) mix = 1.0f;
+
+            int r = (int)(54.0f + mix * 44.0f);
+            int g = (int)(105.0f + mix * 55.0f);
+            int b = (int)(190.0f + mix * 55.0f);
+            int a = 180;
+
+            float sparkle = sinf((fx + fy) * 1.3f + time * 12.0f);
+            if (sparkle > 0.9f) {
+                r += 20;
+                g += 20;
+                b += 15;
+            }
+
+            Color c = {
+                ClampToByte(r),
+                ClampToByte(g),
+                ClampToByte(b),
+                ClampToByte(a)
+            };
+            pixels[y * TILE_SIZE + x] = c;
+        }
+    }
+}
+
+static void World_UpdateWaterAtlas(World *world, float time) {
+    int frame = (int)floorf(time * 10.0f);
+    if (frame == world->waterAnimFrame) return;
+
+    Color pixels[TILE_SIZE * TILE_SIZE];
+    BuildWaterTile(pixels, time);
+    Rectangle rect = {
+        (float)(WATER_TILE_X * TILE_SIZE),
+        (float)(WATER_TILE_Y * TILE_SIZE),
+        (float)TILE_SIZE,
+        (float)TILE_SIZE
+    };
+    UpdateTextureRec(world->atlas, rect, pixels);
+    world->waterAnimFrame = frame;
+}
+
 Chunk* World_GetChunk(World *world, int cx, int cz) {
     int ix = ((cx % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
     int iz = ((cz % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
@@ -86,24 +146,24 @@ void World_Init(World *world) {
     DrawPixelatedBlock(&img, 5, 0, (Color){40, 100, 40, 255}, 0.4f);
     DrawPixelatedBlock(&img, 1, 1, (Color){60, 60, 60, 255}, 0.2f);
     DrawPixelatedBlock(&img, 5, 1, (Color){110, 90, 60, 255}, 0.1f);
-    Color waterBase = (Color){63, 118, 228, 180};
-    Color waterHighlight = (Color){120, 167, 255, 180};
-    for (int y = 0; y < 16; y++) {
-        for (int x = 0; x < 16; x++) {
-            Color c = waterBase;
-            if (((y == 2 || y == 3) && (x >= 4 && x <= 7)) || ((y == 6 || y == 7) && (x >= 10 && x <= 13)) ||
-                ((y == 10 || y == 11) && (x >= 1 && x <= 4)) || ((y == 14 || y == 15) && (x >= 8 && x <= 11))) c = waterHighlight;
-            ImageDrawPixel(&img, 13 * 16 + x, 12 * 16 + y, c);
+    Color waterPixels[TILE_SIZE * TILE_SIZE];
+    BuildWaterTile(waterPixels, 0.0f);
+    for (int y = 0; y < TILE_SIZE; y++) {
+        for (int x = 0; x < TILE_SIZE; x++) {
+            ImageDrawPixel(&img, WATER_TILE_X * TILE_SIZE + x, WATER_TILE_Y * TILE_SIZE + y, waterPixels[y * TILE_SIZE + x]);
         }
     }
     DrawPixelatedBlock(&img, 6, 0, (Color){220, 210, 160, 255}, 0.15f);
     DrawPixelatedBlock(&img, 7, 0, (Color){120, 120, 130, 255}, 0.2f);
     world->atlas = LoadTextureFromImage(img);
     UnloadImage(img);
+    world->waterAnimFrame = -1;
+    World_UpdateWaterAtlas(world, 0.0f);
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) Chunk_Init(&world->chunks[i], 999999, 999999);
 }
 
 void World_Update(World *world, Vector3 playerPos) {
+    World_UpdateWaterAtlas(world, (float)GetTime());
     int pcx = (int)floor(playerPos.x / CHUNK_WIDTH);
     int pcz = (int)floor(playerPos.z / CHUNK_DEPTH);
     for (int x = pcx - VIEW_DISTANCE; x <= pcx + VIEW_DISTANCE; x++) {
