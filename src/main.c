@@ -106,6 +106,7 @@ int main(void) {
             ClearBackground(SKYBLUE);
             BeginMode3D(camera);
                 World_Render(world);
+                World_RenderClouds(world, player.position, (float)GetTime());
                 if (!player.inventoryOpen) {
                     Ray ray = { camera.position, Vector3Normalize(Vector3Subtract(camera.target, camera.position)) };
                     RaycastResult res = World_Raycast(world, ray.position, ray.direction, 5.0f);

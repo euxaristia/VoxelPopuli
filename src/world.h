@@ -22,6 +22,7 @@ typedef struct {
 void World_Init(World *world);
 void World_Update(World *world, Vector3 playerPos);
 void World_Render(World *world);
+void World_RenderClouds(World *world, Vector3 playerPos, float time);
 void World_Unload(World *world);
 
 BlockType World_GetBlock(World *world, int x, int y, int z);

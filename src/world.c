@@ -1,4 +1,5 @@
 #include "world.h"
+#include "rlgl.h"
 #include <math.h>
 #include <stdlib.h>
 
@@ -155,6 +156,29 @@ void World_Update(World *world, Vector3 playerPos) {
 void World_Render(World *world) {
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) if (world->chunks[i].x != 999999) Chunk_RenderOpaque(&world->chunks[i]);
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) if (world->chunks[i].x != 999999) Chunk_RenderTransparent(&world->chunks[i]);
+}
+
+void World_RenderClouds(World *world, Vector3 playerPos, float time) {
+    float cloudHeight = 192.0f;
+    float cloudSize = 16.0f; 
+    int range = 20; 
+    
+    int startX = (int)floor(playerPos.x / cloudSize) - range;
+    int startZ = (int)floor(playerPos.z / cloudSize) - range;
+    
+    rlDisableBackfaceCulling();
+    for (int x = startX; x < startX + range * 2; x++) {
+        for (int z = startZ; z < startZ + range * 2; z++) {
+            // Lower frequency for larger clouds
+            float n = Perlin2D((float)x * 0.05f + time * 0.01f, (float)z * 0.05f, 0.5f, 1);
+            
+            if (n > 0.5f) { 
+                Vector3 pos = { x * cloudSize + cloudSize/2.0f, cloudHeight, z * cloudSize + cloudSize/2.0f };
+                DrawPlane(pos, (Vector2){ cloudSize, cloudSize }, Fade(WHITE, 0.7f));
+            }
+        }
+    }
+    rlEnableBackfaceCulling();
 }
 
 void World_Unload(World *world) {
