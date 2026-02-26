@@ -86,7 +86,14 @@ void Chunk_Generate(Chunk *chunk) {
 }
 
 static bool IsTransparent(BlockType block) {
-    return block == BLOCK_AIR || block == BLOCK_WATER || block == BLOCK_OAK_LEAVES;
+    return block == BLOCK_AIR || block == BLOCK_OAK_LEAVES;
+}
+
+static bool ShouldDrawFace(BlockType current, BlockType neighbor) {
+    if (neighbor == BLOCK_AIR) return true;
+    if (neighbor == BLOCK_WATER && current != BLOCK_WATER) return true;
+    if (neighbor == BLOCK_OAK_LEAVES && current != BLOCK_OAK_LEAVES) return true;
+    return false;
 }
 
 void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
@@ -113,7 +120,8 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
     }
 
     int vCount = 0;
-    float ts = 1.0f / 16.0f; // Texture step (16x16 atlas)
+    float ts = 1.0f / 16.0f; // Texture step
+    float pad = 0.001f;      // UV Padding
 
     for (int x = 0; x < CHUNK_WIDTH; x++) {
         for (int y = 0; y < CHUNK_HEIGHT; y++) {
@@ -128,7 +136,6 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                 float fy = (float)y;
                 float fz = (float)z;
 
-                // Mapping
                 int tx = 0, ty = 0;
                 if (block == BLOCK_STONE) { tx = 1; ty = 0; }
                 else if (block == BLOCK_DIRT) { tx = 2; ty = 0; }
@@ -140,122 +147,113 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                 else if (block == BLOCK_SAND) { tx = 6; ty = 0; }
                 else if (block == BLOCK_GRAVEL) { tx = 7; ty = 0; }
 
-                // Directional Lighting Factors
+                float u0 = tx * ts + pad, v0 = ty * ts + pad;
+                float u1 = (tx + 1) * ts - pad, v1 = (ty + 1) * ts - pad;
+
                 float topShade = 1.0f;
                 float sideShade = 0.8f;
                 float frontShade = 0.6f;
 
                 // Top Face
                 BlockType above = (y == CHUNK_HEIGHT - 1) ? BLOCK_AIR : chunk->blocks[x][y+1][z];
-                if (IsTransparent(above)) {
-                    int ttx = tx, tty = ty;
-                    if (block == BLOCK_GRASS) { ttx = 0; tty = 0; }
-                    else if (block == BLOCK_OAK_LOG) { ttx = 5; tty = 1; }
+                if (ShouldDrawFace(block, above)) {
+                    float tu0 = u0, tv0 = v0, tu1 = u1, tv1 = v1;
+                    if (block == BLOCK_GRASS) { tu0 = 0*ts+pad; tv0 = 0*ts+pad; tu1 = 1*ts-pad; tv1 = 1*ts-pad; }
+                    else if (block == BLOCK_OAK_LOG) { tu0 = 5*ts+pad; tv0 = 1*ts+pad; tu1 = 6*ts-pad; tv1 = 2*ts-pad; }
                     
                     float v[] = { fx, fy+1, fz,  fx, fy+1, fz+1,  fx+1, fy+1, fz+1,
                                   fx, fy+1, fz,  fx+1, fy+1, fz+1,  fx+1, fy+1, fz };
-                    float u[] = { ttx*ts, tty*ts,  ttx*ts, (tty+1)*ts,  (ttx+1)*ts, (tty+1)*ts,
-                                  ttx*ts, tty*ts,  (ttx+1)*ts, (tty+1)*ts,  (ttx+1)*ts, tty*ts };
+                    float u[] = { tu0, tv0,  tu0, tv1,  tu1, tv1,
+                                  tu0, tv0,  tu1, tv1,  tu1, tv0 };
                     memcpy(&vertices[vCount * 3], v, sizeof(v));
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = 0; normals[(vCount+i)*3+1] = 1; normals[(vCount+i)*3+2] = 0;
-                        colors[(vCount+i)*4] = (unsigned char)(255 * topShade); 
-                        colors[(vCount+i)*4+1] = (unsigned char)(255 * topShade); 
-                        colors[(vCount+i)*4+2] = (unsigned char)(255 * topShade); 
-                        colors[(vCount+i)*4+3] = 255;
-                        if (block == BLOCK_WATER) colors[(vCount+i)*4+3] = 180;
+                        colors[(vCount+i)*4] = colors[(vCount+i)*4+1] = colors[(vCount+i)*4+2] = (unsigned char)(255 * topShade); 
+                        colors[(vCount+i)*4+3] = (block == BLOCK_WATER) ? 180 : 255;
                     }
                     vCount += 6;
                 }
                 // Bottom Face
                 BlockType below = (y == 0) ? BLOCK_BEDROCK : chunk->blocks[x][y-1][z];
-                if (IsTransparent(below)) {
-                    int ttx = tx, tty = ty;
-                    if (block == BLOCK_GRASS) { ttx = 2; tty = 0; }
-                    else if (block == BLOCK_OAK_LOG) { ttx = 5; tty = 1; }
+                if (ShouldDrawFace(block, below)) {
+                    float tu0 = u0, tv0 = v0, tu1 = u1, tv1 = v1;
+                    if (block == BLOCK_GRASS) { tu0 = 2*ts+pad; tv0 = 0*ts+pad; tu1 = 3*ts-pad; tv1 = 1*ts-pad; }
+                    else if (block == BLOCK_OAK_LOG) { tu0 = 5*ts+pad; tv0 = 1*ts+pad; tu1 = 6*ts-pad; tv1 = 2*ts-pad; }
                     
                     float v[] = { fx, fy, fz,  fx+1, fy, fz+1,  fx, fy, fz+1,
                                   fx, fy, fz,  fx+1, fy, fz,    fx+1, fy, fz+1 };
-                    float u[] = { ttx*ts, tty*ts,  (ttx+1)*ts, (tty+1)*ts,  ttx*ts, (tty+1)*ts,
-                                  ttx*ts, tty*ts,  (ttx+1)*ts, tty*ts,  (ttx+1)*ts, (tty+1)*ts };
+                    float u[] = { tu0, tv0,  tu1, tv1,  tu0, tv1,
+                                  tu0, tv0,  tu1, tv0,  tu1, tv1 };
                     memcpy(&vertices[vCount * 3], v, sizeof(v));
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = 0; normals[(vCount+i)*3+1] = -1; normals[(vCount+i)*3+2] = 0;
-                        colors[(vCount+i)*4] = 120; colors[(vCount+i)*4+1] = 120; colors[(vCount+i)*4+2] = 120; colors[(vCount+i)*4+3] = 255;
+                        colors[(vCount+i)*4] = colors[(vCount+i)*4+1] = colors[(vCount+i)*4+2] = 120; colors[(vCount+i)*4+3] = 255;
                     }
                     vCount += 6;
                 }
                 // Front
                 BlockType front = World_GetBlock(world, wx, y, wz + 1);
-                if (IsTransparent(front)) {
+                if (ShouldDrawFace(block, front)) {
                     float v[] = { fx, fy, fz+1,  fx+1, fy, fz+1,  fx+1, fy+1, fz+1,
                                   fx, fy, fz+1,  fx+1, fy+1, fz+1,  fx, fy+1, fz+1 };
-                    float u[] = { tx*ts, ty*ts,  (tx+1)*ts, ty*ts,  (tx+1)*ts, (ty+1)*ts,
-                                  tx*ts, ty*ts,  (tx+1)*ts, (ty+1)*ts,  tx*ts, (ty+1)*ts };
+                    float u[] = { u0, v0,  u1, v0,  u1, v1,
+                                  u0, v0,  u1, v1,  u0, v1 };
                     memcpy(&vertices[vCount * 3], v, sizeof(v));
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = 0; normals[(vCount+i)*3+1] = 0; normals[(vCount+i)*3+2] = 1;
-                        colors[(vCount+i)*4] = (unsigned char)(255 * frontShade); 
-                        colors[(vCount+i)*4+1] = (unsigned char)(255 * frontShade); 
-                        colors[(vCount+i)*4+2] = (unsigned char)(255 * frontShade); 
-                        colors[(vCount+i)*4+3] = 255;
+                        colors[(vCount+i)*4] = colors[(vCount+i)*4+1] = colors[(vCount+i)*4+2] = (unsigned char)(255 * frontShade); 
+                        colors[(vCount+i)*4+3] = (block == BLOCK_WATER) ? 180 : 255;
                     }
                     vCount += 6;
                 }
                 // Back
                 BlockType back = World_GetBlock(world, wx, y, wz - 1);
-                if (IsTransparent(back)) {
+                if (ShouldDrawFace(block, back)) {
                     float v[] = { fx, fy, fz,  fx+1, fy+1, fz,  fx+1, fy, fz,
                                   fx, fy, fz,  fx, fy+1, fz,    fx+1, fy+1, fz };
-                    float u[] = { (tx+1)*ts, ty*ts,  tx*ts, (ty+1)*ts,  tx*ts, ty*ts,
-                                  (tx+1)*ts, ty*ts,  (tx+1)*ts, (ty+1)*ts,  tx*ts, (ty+1)*ts };
+                    float u[] = { u1, v0,  u0, v1,  u0, v0,
+                                  u1, v0,  u1, v1,  u0, v1 };
                     memcpy(&vertices[vCount * 3], v, sizeof(v));
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = 0; normals[(vCount+i)*3+1] = 0; normals[(vCount+i)*3+2] = -1;
-                        colors[(vCount+i)*4] = (unsigned char)(255 * frontShade); 
-                        colors[(vCount+i)*4+1] = (unsigned char)(255 * frontShade); 
-                        colors[(vCount+i)*4+2] = (unsigned char)(255 * frontShade); 
-                        colors[(vCount+i)*4+3] = 255;
+                        colors[(vCount+i)*4] = colors[(vCount+i)*4+1] = colors[(vCount+i)*4+2] = (unsigned char)(255 * frontShade); 
+                        colors[(vCount+i)*4+3] = (block == BLOCK_WATER) ? 180 : 255;
                     }
                     vCount += 6;
                 }
                 // Right
                 BlockType right = World_GetBlock(world, wx + 1, y, wz);
-                if (IsTransparent(right)) {
+                if (ShouldDrawFace(block, right)) {
                     float v[] = { fx+1, fy, fz,  fx+1, fy+1, fz+1,  fx+1, fy, fz+1,
                                   fx+1, fy, fz,  fx+1, fy+1, fz,    fx+1, fy+1, fz+1 };
-                    float u[] = { tx*ts, ty*ts,  (tx+1)*ts, (ty+1)*ts,  (tx+1)*ts, ty*ts,
-                                  tx*ts, ty*ts,  tx*ts, (ty+1)*ts,  (tx+1)*ts, (ty+1)*ts };
+                    float u[] = { u0, v0,  u1, v1,  u1, v0,
+                                  u0, v0,  u0, v1,  u1, v1 };
                     memcpy(&vertices[vCount * 3], v, sizeof(v));
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = 1; normals[(vCount+i)*3+1] = 0; normals[(vCount+i)*3+2] = 0;
-                        colors[(vCount+i)*4] = (unsigned char)(255 * sideShade); 
-                        colors[(vCount+i)*4+1] = (unsigned char)(255 * sideShade); 
-                        colors[(vCount+i)*4+2] = (unsigned char)(255 * sideShade); 
-                        colors[(vCount+i)*4+3] = 255;
+                        colors[(vCount+i)*4] = colors[(vCount+i)*4+1] = colors[(vCount+i)*4+2] = (unsigned char)(255 * sideShade); 
+                        colors[(vCount+i)*4+3] = (block == BLOCK_WATER) ? 180 : 255;
                     }
                     vCount += 6;
                 }
                 // Left
                 BlockType left = World_GetBlock(world, wx - 1, y, wz);
-                if (IsTransparent(left)) {
+                if (ShouldDrawFace(block, left)) {
                     float v[] = { fx, fy, fz,  fx, fy, fz+1,  fx, fy+1, fz+1,
                                   fx, fy, fz,  fx, fy+1, fz+1,  fx, fy+1, fz };
-                    float u[] = { (tx+1)*ts, ty*ts,  tx*ts, ty*ts,  tx*ts, (ty+1)*ts,
-                                  (tx+1)*ts, ty*ts,  tx*ts, (ty+1)*ts,  (tx+1)*ts, (ty+1)*ts };
+                    float u[] = { u1, v0,  u0, v0,  u0, v1,
+                                  u1, v0,  u0, v1,  u1, v1 };
                     memcpy(&vertices[vCount * 3], v, sizeof(v));
                     memcpy(&texcoords[vCount * 2], u, sizeof(u));
                     for(int i=0; i<6; i++) {
                         normals[(vCount+i)*3] = -1; normals[(vCount+i)*3+1] = 0; normals[(vCount+i)*3+2] = 0;
-                        colors[(vCount+i)*4] = (unsigned char)(255 * sideShade); 
-                        colors[(vCount+i)*4+1] = (unsigned char)(255 * sideShade); 
-                        colors[(vCount+i)*4+2] = (unsigned char)(255 * sideShade); 
-                        colors[(vCount+i)*4+3] = 255;
+                        colors[(vCount+i)*4] = colors[(vCount+i)*4+1] = colors[(vCount+i)*4+2] = (unsigned char)(255 * sideShade); 
+                        colors[(vCount+i)*4+3] = (block == BLOCK_WATER) ? 180 : 255;
                     }
                     vCount += 6;
                 }

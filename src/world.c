@@ -93,7 +93,13 @@ void World_Init(World *world) {
     DrawPixelatedBlock(&img, 5, 0, (Color){40, 100, 40, 255}, 0.4f);   // Leaves
     DrawPixelatedBlock(&img, 1, 1, (Color){60, 60, 60, 255}, 0.2f);    // Bedrock
     DrawPixelatedBlock(&img, 5, 1, (Color){110, 90, 60, 255}, 0.1f);   // Log top
-    DrawPixelatedBlock(&img, 13, 12, (Color){40, 100, 200, 200}, 0.1f); // Water
+    
+    // Smoother water to reduce grid artifacts
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
+            ImageDrawPixel(&img, 13 * 16 + x, 12 * 16 + y, (Color){40, 100, 200, 180});
+        }
+    }
     
     // Sand & Gravel (using some of the empty slots)
     DrawPixelatedBlock(&img, 6, 0, (Color){220, 210, 160, 255}, 0.15f); // Sand
