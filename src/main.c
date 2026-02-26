@@ -61,15 +61,19 @@ int main(void) {
     Camera3D camera = { 0 };
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
     camera.fovy = 75.0f;
-    camera.projection = CAMERA_PERSPECTIVE;
-    Vector2 cameraAngle = { PI, 0 };
+        camera.projection = CAMERA_PERSPECTIVE;
+        camera.fovy = 75.0f;
+        // Set custom near/far planes via rlgl if needed, but standard should be enough.
+        // However, let's ensure the view distance is matched.
+    
+        Vector2 cameraAngle = { PI, 0 };
 
     BlockType hotbar[9];
     for(int i=0; i<9; i++) hotbar[i] = (i < 5) ? inventoryBlocks[i] : BLOCK_AIR;
     player.selectedBlock = hotbar[0];
 
     DisableCursor();
-    SetTargetFPS(60);
+    SetTargetFPS(180);
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
