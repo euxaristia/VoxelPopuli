@@ -10,7 +10,8 @@
             "request": "launch",
             "program": "${workspaceFolder}/voxelpopuli",
             "args": [],
-            "cwd": "${workspaceFolder}"
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "build"
         }
     ]
 }
