@@ -320,6 +320,16 @@ void World_Update(World *world, Vector3 playerPos) {
     }
 }
 
+static inline bool IsBoxInFrustum(Frustum f, float minX, float minY, float minZ, float maxX, float maxY, float maxZ) {
+    for (int i = 0; i < 6; i++) {
+        float px = f.planes[i][0] > 0 ? maxX : minX;
+        float py = f.planes[i][1] > 0 ? maxY : minY;
+        float pz = f.planes[i][2] > 0 ? maxZ : minZ;
+        if (f.planes[i][0]*px + f.planes[i][1]*py + f.planes[i][2]*pz + f.planes[i][3] <= 0) return false;
+    }
+    return true;
+}
+
 void World_Render(World *world, Frustum frustum) {
     world->visibleCount = 0;
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
@@ -329,19 +339,7 @@ void World_Render(World *world, Frustum frustum) {
         float x1 = (float)c->x * CHUNK_WIDTH, y1 = 0, z1 = (float)c->z * CHUNK_DEPTH;
         float x2 = x1 + CHUNK_WIDTH, y2 = CHUNK_HEIGHT, z2 = z1 + CHUNK_DEPTH;
 
-        bool inFrustum = true;
-        for (int p = 0; p < 6; p++) {
-            if (frustum.planes[p][0]*x1 + frustum.planes[p][1]*y1 + frustum.planes[p][2]*z1 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0]*x2 + frustum.planes[p][1]*y1 + frustum.planes[p][2]*z1 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0]*x1 + frustum.planes[p][1]*y2 + frustum.planes[p][2]*z1 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0]*x2 + frustum.planes[p][1]*y2 + frustum.planes[p][2]*z1 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0]*x1 + frustum.planes[p][1]*y1 + frustum.planes[p][2]*z2 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0]*x2 + frustum.planes[p][1]*y1 + frustum.planes[p][2] *z2 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0]*x1 + frustum.planes[p][1]*y2 + frustum.planes[p][2]*z2 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0]*x2 + frustum.planes[p][1]*y2 + frustum.planes[p][2]*z2 + frustum.planes[p][3] > 0) continue;
-            inFrustum = false; break;
-        }
-        if (inFrustum) {
+        if (IsBoxInFrustum(frustum, x1, y1, z1, x2, y2, z2)) {
             world->visibleIndices[world->visibleCount++] = i;
             Chunk_RenderOpaque(c);
         }
@@ -352,8 +350,8 @@ void World_Render(World *world, Frustum frustum) {
 void World_RenderClouds(World *world, Vector3 playerPos, float time, Frustum frustum) {
     (void)world;
     float cloudHeight = fmaxf(110.0f, playerPos.y + 24.0f);
-    float cloudSize = 8.0f;
-    int range = 128;
+    float cloudSize = 16.0f;
+    int range = 64;
     int startX = (int)floor(playerPos.x / cloudSize) - range;
     int startZ = (int)floor(playerPos.z / cloudSize) - range;
     
@@ -367,24 +365,11 @@ void World_RenderClouds(World *world, Vector3 playerPos, float time, Frustum fru
             float y1 = cloudHeight;
             float y2 = cloudHeight + 1.1f;
 
-            bool inFrustum = true;
-            for (int p = 0; p < 6; p++) {
-                if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
-                if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
-                if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
-                if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
-                if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
-                if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
-                if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
-                if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
-                inFrustum = false;
-                break;
-            }
-            if (!inFrustum) continue;
+            if (!IsBoxInFrustum(frustum, x1, y1, z1, x2, y2, z2)) continue;
 
             // Two noise fields keep clouds plentiful while breaking large continuous slabs.
-            float base = Perlin2D((float)x * 0.09f + time * 0.003f, (float)z * 0.09f + 41.0f, 0.5f, 2);
-            float breakup = Perlin2D((float)x * 0.24f - time * 0.005f, (float)z * 0.24f + 7.0f, 0.5f, 1);
+            float base = Perlin2D((float)x * 0.09f * (8.0f/cloudSize) + time * 0.003f, (float)z * 0.09f * (8.0f/cloudSize) + 41.0f, 0.5f, 2);
+            float breakup = Perlin2D((float)x * 0.24f * (8.0f/cloudSize) - time * 0.005f, (float)z * 0.24f * (8.0f/cloudSize) + 7.0f, 0.5f, 1);
             if (base > 0.10f && breakup > -0.08f) {
                 Vector3 pos = { x * cloudSize + cloudSize/2.0f, cloudHeight, z * cloudSize + cloudSize/2.0f };
                 DrawCube(pos, cloudSize, 1.1f, cloudSize, (Color){225, 233, 240, 150});

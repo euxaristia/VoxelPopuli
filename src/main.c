@@ -456,7 +456,7 @@ int main(void) {
     player.selectedBlock = hotbar[player.selectedSlot];
     int ignoreMouseDeltaFrames = 0;
 
-    DisableCursor(); SetTargetFPS(180);
+    DisableCursor(); SetTargetFPS(0);
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime(); if (dt > 0.05f) dt = 0.05f;
