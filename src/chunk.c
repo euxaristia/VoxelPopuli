@@ -461,10 +461,16 @@ void Chunk_RenderTransparent(Chunk *chunk) {
               1.0f, WHITE);
 }
 void Chunk_Unload(Chunk *chunk) {
-  if (chunk->modelOpaque.meshCount > 0)
+  if (chunk->modelOpaque.meshCount > 0) {
+    chunk->modelOpaque.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture =
+        (Texture2D){0};
     UnloadModel(chunk->modelOpaque);
-  if (chunk->modelTransparent.meshCount > 0)
+  }
+  if (chunk->modelTransparent.meshCount > 0) {
+    chunk->modelTransparent.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture =
+        (Texture2D){0};
     UnloadModel(chunk->modelTransparent);
+  }
   chunk->meshOpaque = chunk->meshTransparent = (Mesh){0};
   chunk->modelOpaque = chunk->modelTransparent = (Model){0};
 }
