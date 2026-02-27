@@ -551,26 +551,35 @@ void World_Render(World *world, Frustum frustum) {
     if (!c || c->x == 999999)
       continue;
 
-    float x1 = (float)c->x * CHUNK_WIDTH, y1 = 0,
+    float x1 = (float)c->x * CHUNK_WIDTH, y1 = (float)c->minY,
           z1 = (float)c->z * CHUNK_DEPTH;
-    float x2 = x1 + CHUNK_WIDTH, y2 = CHUNK_HEIGHT, z2 = z1 + CHUNK_DEPTH;
+    float x2 = x1 + CHUNK_WIDTH, y2 = (float)c->maxY + 1.0f,
+          z2 = z1 + CHUNK_DEPTH;
 
     if (IsBoxInFrustum(frustum, x1, y1, z1, x2, y2, z2)) {
       world->visibleIndices[world->visibleCount++] = i;
       Chunk_RenderOpaque(c);
     }
   }
-  for (int i = 0; i < world->visibleCount; i++)
-    Chunk_RenderTransparent(world->chunks[world->visibleIndices[i]]);
+  for (int i = 0; i < world->visibleCount; i++) {
+    Chunk *c = world->chunks[world->visibleIndices[i]];
+    if (c->meshTransparent.vertexCount > 0)
+      Chunk_RenderTransparent(c);
+  }
 }
 
 static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
+  static float lastCloudRebuildTime = -999.0f;
+  bool timePassed = (time - lastCloudRebuildTime) > 0.5f;
+
   if (Vector3Distance(playerPos, world->lastCloudUpdatePos) < 32.0f &&
-      world->cloudModel.meshCount > 0)
+      !timePassed && world->cloudModel.meshCount > 0)
     return;
 
   if (world->cloudModel.meshCount > 0)
     UnloadModel(world->cloudModel);
+
+  lastCloudRebuildTime = time;
 
   float cloudHeight = fmaxf(110.0f, playerPos.y + 24.0f);
   float cloudSize = 16.0f;
@@ -647,6 +656,7 @@ static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
 
   free(vertices);
   free(colors);
+
   world->lastCloudUpdatePos = playerPos;
 }
 
