@@ -3,7 +3,7 @@
 
 #include "chunk.h"
 
-#define VIEW_DISTANCE 24
+#define VIEW_DISTANCE 48
 #define POOL_WIDTH (VIEW_DISTANCE * 2 + 1)
 #define CHUNK_POOL_SIZE (POOL_WIDTH * POOL_WIDTH)
 
@@ -24,7 +24,7 @@ typedef struct {
 } WorldEdit;
 
 typedef struct {
-    Chunk chunks[CHUNK_POOL_SIZE];
+    Chunk *chunks[CHUNK_POOL_SIZE];
     Texture2D atlas;
     int waterAnimFrame;
     WorldEdit *edits;

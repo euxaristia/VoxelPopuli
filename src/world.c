@@ -165,8 +165,8 @@ Chunk* World_GetChunk(World *world, int cx, int cz) {
     int ix = ((cx % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
     int iz = ((cz % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
     int index = ix + iz * POOL_WIDTH;
-    Chunk *c = &world->chunks[index];
-    if (c->x == cx && c->z == cz) return c;
+    Chunk *c = world->chunks[index];
+    if (c && c->x == cx && c->z == cz) return c;
     return NULL;
 }
 
@@ -187,8 +187,8 @@ void World_SetBlock(World *world, int x, int y, int z, BlockType block) {
     int cz = (int)floor((float)z / CHUNK_DEPTH);
     int ix = ((cx % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
     int iz = ((cz % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
-    Chunk *chunk = &world->chunks[ix + iz * POOL_WIDTH];
-    if (chunk->x != cx || chunk->z != cz) return;
+    Chunk *chunk = world->chunks[ix + iz * POOL_WIDTH];
+    if (!chunk || chunk->x != cx || chunk->z != cz) return;
     int bx = x - (cx * CHUNK_WIDTH);
     int bz = z - (cz * CHUNK_DEPTH);
     chunk->blocks[bx][y][bz] = block;
@@ -261,7 +261,7 @@ void World_Init(World *world) {
     world->editCapacity = 0;
     world->suppressEditRecording = false;
     World_UpdateWaterAtlas(world, 0.0f);
-    for (int i = 0; i < CHUNK_POOL_SIZE; i++) Chunk_Init(&world->chunks[i], 999999, 999999);
+    for (int i = 0; i < CHUNK_POOL_SIZE; i++) world->chunks[i] = NULL;
 }
 
 void World_Update(World *world, Vector3 playerPos) {
@@ -273,9 +273,15 @@ void World_Update(World *world, Vector3 playerPos) {
             int ix = ((x % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
             int iz = ((z % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
             int index = ix + iz * POOL_WIDTH;
-            Chunk *c = &world->chunks[index];
-            if (c->x != x || c->z != z) {
-                Chunk_Unload(c); Chunk_Init(c, x, z); Chunk_Generate(c);
+            Chunk *c = world->chunks[index];
+            if (!c || c->x != x || c->z != z) {
+                if (!c) {
+                    c = (Chunk *)malloc(sizeof(Chunk));
+                    world->chunks[index] = c;
+                } else {
+                    Chunk_Unload(c);
+                }
+                Chunk_Init(c, x, z); Chunk_Generate(c);
                 World_ApplyEditsToChunk(world, c);
                 Chunk *n;
                 if ((n = World_GetChunk(world, x-1, z))) n->dirty = true;
@@ -286,12 +292,22 @@ void World_Update(World *world, Vector3 playerPos) {
         }
     }
     int buildsThisFrame = 0;
-    for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
-        if (world->chunks[i].dirty) {
-            Chunk_BuildMesh(&world->chunks[i], world);
-            if (world->chunks[i].modelOpaque.meshCount > 0) world->chunks[i].modelOpaque.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
-            if (world->chunks[i].modelTransparent.meshCount > 0) world->chunks[i].modelTransparent.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
-            if (++buildsThisFrame >= 4) break; 
+    for (int d = 0; d <= VIEW_DISTANCE; d++) {
+        for (int x = -d; x <= d; x++) {
+            for (int z = -d; z <= d; z++) {
+                if (abs(x) != d && abs(z) != d) continue;
+                int cx = pcx + x;
+                int cz = pcz + z;
+                int ix = ((cx % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
+                int iz = ((cz % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
+                Chunk *c = world->chunks[ix + iz * POOL_WIDTH];
+                if (c && c->dirty && c->x == cx && c->z == cz) {
+                    Chunk_BuildMesh(c, world);
+                    if (c->modelOpaque.meshCount > 0) c->modelOpaque.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
+                    if (c->modelTransparent.meshCount > 0) c->modelTransparent.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
+                    if (++buildsThisFrame >= 8) return;
+                }
+            }
         }
     }
 }
@@ -301,9 +317,9 @@ void World_Render(World *world, Frustum frustum) {
     if (visibleChunks == NULL) visibleChunks = (bool *)malloc(CHUNK_POOL_SIZE * sizeof(bool));
 
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
-        Chunk *c = &world->chunks[i];
+        Chunk *c = world->chunks[i];
         visibleChunks[i] = false;
-        if (c->x == 999999) continue;
+        if (!c || c->x == 999999) continue;
         
         float x1 = (float)c->x * CHUNK_WIDTH;
         float y1 = 0;
@@ -330,7 +346,7 @@ void World_Render(World *world, Frustum frustum) {
     }
     
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
-        if (visibleChunks[i]) Chunk_RenderTransparent(&world->chunks[i]);
+        if (visibleChunks[i]) Chunk_RenderTransparent(world->chunks[i]);
     }
 }
 
@@ -338,7 +354,7 @@ void World_RenderClouds(World *world, Vector3 playerPos, float time, Frustum fru
     (void)world;
     float cloudHeight = fmaxf(110.0f, playerPos.y + 24.0f);
     float cloudSize = 8.0f;
-    int range = 64;
+    int range = 128;
     int startX = (int)floor(playerPos.x / cloudSize) - range;
     int startZ = (int)floor(playerPos.z / cloudSize) - range;
     
@@ -381,7 +397,13 @@ void World_RenderClouds(World *world, Vector3 playerPos, float time, Frustum fru
 
 void World_Unload(World *world) {
     UnloadTexture(world->atlas);
-    for (int i = 0; i < CHUNK_POOL_SIZE; i++) Chunk_Unload(&world->chunks[i]);
+    for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
+        if (world->chunks[i]) {
+            Chunk_Unload(world->chunks[i]);
+            free(world->chunks[i]);
+            world->chunks[i] = NULL;
+        }
+    }
     free(world->edits);
     world->edits = NULL;
     world->editCount = 0;
@@ -459,8 +481,8 @@ bool World_LoadEdits(World *world, const char *path) {
     fclose(file);
 
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
-        if (world->chunks[i].x == 999999) continue;
-        World_ApplyEditsToChunk(world, &world->chunks[i]);
+        if (!world->chunks[i] || world->chunks[i]->x == 999999) continue;
+        World_ApplyEditsToChunk(world, world->chunks[i]);
     }
     return true;
 }
