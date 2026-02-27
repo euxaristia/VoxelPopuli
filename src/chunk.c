@@ -160,10 +160,16 @@ static void EnsureBuffers() {
 void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
   World *world = (World *)pWorld;
   EnsureBuffers();
-  if (chunk->modelOpaque.meshCount > 0)
+  if (chunk->modelOpaque.meshCount > 0) {
+    chunk->modelOpaque.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture =
+        (Texture2D){0};
     UnloadModel(chunk->modelOpaque);
-  if (chunk->modelTransparent.meshCount > 0)
+  }
+  if (chunk->modelTransparent.meshCount > 0) {
+    chunk->modelTransparent.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture =
+        (Texture2D){0};
     UnloadModel(chunk->modelTransparent);
+  }
   chunk->modelOpaque = chunk->modelTransparent = (Model){0};
   chunk->meshOpaque = chunk->meshTransparent = (Mesh){0};
 
