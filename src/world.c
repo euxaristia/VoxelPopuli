@@ -1,6 +1,8 @@
 #include "world.h"
 #include "rlgl.h"
 #include "noise.h"
+#include "raymath.h"
+#include <string.h>
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -192,11 +194,11 @@ void World_SetBlock(World *world, int x, int y, int z, BlockType block) {
     int bx = x - (cx * CHUNK_WIDTH);
     int bz = z - (cz * CHUNK_DEPTH);
     chunk->blocks[bx][y][bz] = block;
-    chunk->dirty = true;
-    if (bx == 0) { Chunk *n = World_GetChunk(world, cx-1, cz); if(n) n->dirty = true; }
-    if (bx == CHUNK_WIDTH-1) { Chunk *n = World_GetChunk(world, cx+1, cz); if(n) n->dirty = true; }
-    if (bz == 0) { Chunk *n = World_GetChunk(world, cx, cz-1); if(n) n->dirty = true; }
-    if (bz == CHUNK_DEPTH-1) { Chunk *n = World_GetChunk(world, cx, cz+1); if(n) n->dirty = true; }
+    if (!chunk->dirty) { chunk->dirty = true; world->dirtyCount++; }
+    if (bx == 0) { Chunk *n = World_GetChunk(world, cx-1, cz); if(n && !n->dirty) { n->dirty = true; world->dirtyCount++; } }
+    if (bx == CHUNK_WIDTH-1) { Chunk *n = World_GetChunk(world, cx+1, cz); if(n && !n->dirty) { n->dirty = true; world->dirtyCount++; } }
+    if (bz == 0) { Chunk *n = World_GetChunk(world, cx, cz-1); if(n && !n->dirty) { n->dirty = true; world->dirtyCount++; } }
+    if (bz == CHUNK_DEPTH-1) { Chunk *n = World_GetChunk(world, cx, cz+1); if(n && !n->dirty) { n->dirty = true; world->dirtyCount++; } }
     if (!world->suppressEditRecording) World_AddOrUpdateEdit(world, x, y, z, block);
 }
 
@@ -257,6 +259,9 @@ void World_Init(World *world) {
     UnloadImage(img);
     world->waterAnimFrame = -1;
     world->last_pcx = world->last_pcz = -999999;
+    world->dirtyCount = 0;
+    world->cloudModel = (Model){ 0 };
+    world->lastCloudUpdatePos = (Vector3){ -999999, -999999, -999999 };
     world->edits = NULL;
     world->editCount = 0;
     world->editCapacity = 0;
@@ -272,53 +277,58 @@ void World_Update(World *world, Vector3 playerPos) {
 
     if (pcx != world->last_pcx || pcz != world->last_pcz) {
         for (int x = pcx - VIEW_DISTANCE; x <= pcx + VIEW_DISTANCE; x++) {
-            for (int z = pcz - VIEW_DISTANCE; z <= pcz + VIEW_DISTANCE; z++) {
-                int ix = ((x % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
-                int iz = ((z % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
-                int index = ix + iz * POOL_WIDTH;
-                Chunk *c = world->chunks[index];
-                if (!c || c->x != x || c->z != z) {
-                    if (!c) {
-                        c = (Chunk *)malloc(sizeof(Chunk));
-                        world->chunks[index] = c;
-                    } else {
-                        Chunk_Unload(c);
+                        for (int z = pcz - VIEW_DISTANCE; z <= pcz + VIEW_DISTANCE; z++) {
+                            int ix = ((x % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
+                            int iz = ((z % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
+                            int index = ix + iz * POOL_WIDTH;
+                            Chunk *c = world->chunks[index];
+                            if (!c || c->x != x || c->z != z) {
+                                if (!c) {
+                                    c = (Chunk *)malloc(sizeof(Chunk));
+                                    world->chunks[index] = c;
+                                } else {
+                                    Chunk_Unload(c);
+                                }
+                                Chunk_Init(c, x, z); Chunk_Generate(c);
+                                World_ApplyEditsToChunk(world, c);
+                                if (!c->dirty) { c->dirty = true; world->dirtyCount++; }
+                                Chunk *n;
+                                if ((n = World_GetChunk(world, x-1, z)) && !n->dirty) { n->dirty = true; world->dirtyCount++; }
+                                if ((n = World_GetChunk(world, x+1, z)) && !n->dirty) { n->dirty = true; world->dirtyCount++; }
+                                if ((n = World_GetChunk(world, x, z-1)) && !n->dirty) { n->dirty = true; world->dirtyCount++; }
+                                if ((n = World_GetChunk(world, x, z+1)) && !n->dirty) { n->dirty = true; world->dirtyCount++; }
+                            }
+                        }
                     }
-                    Chunk_Init(c, x, z); Chunk_Generate(c);
-                    World_ApplyEditsToChunk(world, c);
-                    Chunk *n;
-                    if ((n = World_GetChunk(world, x-1, z))) n->dirty = true;
-                    if ((n = World_GetChunk(world, x+1, z))) n->dirty = true;
-                    if ((n = World_GetChunk(world, x, z-1))) n->dirty = true;
-                    if ((n = World_GetChunk(world, x, z+1))) n->dirty = true;
+                    world->last_pcx = pcx;
+                    world->last_pcz = pcz;
+                }
+            
+                if (world->dirtyCount <= 0) return;
+            
+                int buildsThisFrame = 0;
+                for (int d = 0; d <= VIEW_DISTANCE; d++) {
+                    for (int x = -d; x <= d; x++) {
+                        for (int z = -d; z <= d; z++) {
+                            if (abs(x) != d && abs(z) != d) continue;
+                            int cx = pcx + x;
+                            int cz = pcz + z;
+                            int ix = ((cx % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
+                            int iz = ((cz % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
+                            Chunk *c = world->chunks[ix + iz * POOL_WIDTH];
+                            if (c && c->dirty && c->x == cx && c->z == cz) {
+                                Chunk_BuildMesh(c, world);
+                                if (c->modelOpaque.meshCount > 0) c->modelOpaque.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
+                                if (c->modelTransparent.meshCount > 0) c->modelTransparent.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
+                                c->dirty = false;
+                                world->dirtyCount--;
+                                if (++buildsThisFrame >= 8) return;
+                            }
+                        }
+                    }
                 }
             }
-        }
-        world->last_pcx = pcx;
-        world->last_pcz = pcz;
-    }
-
-    int buildsThisFrame = 0;
-
-    for (int d = 0; d <= VIEW_DISTANCE; d++) {
-        for (int x = -d; x <= d; x++) {
-            for (int z = -d; z <= d; z++) {
-                if (abs(x) != d && abs(z) != d) continue;
-                int cx = pcx + x;
-                int cz = pcz + z;
-                int ix = ((cx % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
-                int iz = ((cz % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
-                Chunk *c = world->chunks[ix + iz * POOL_WIDTH];
-                if (c && c->dirty && c->x == cx && c->z == cz) {
-                    Chunk_BuildMesh(c, world);
-                    if (c->modelOpaque.meshCount > 0) c->modelOpaque.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
-                    if (c->modelTransparent.meshCount > 0) c->modelTransparent.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
-                    if (++buildsThisFrame >= 8) return;
-                }
-            }
-        }
-    }
-}
+            
 
 static inline bool IsBoxInFrustum(Frustum f, float minX, float minY, float minZ, float maxX, float maxY, float maxZ) {
     for (int i = 0; i < 6; i++) {
@@ -347,40 +357,95 @@ void World_Render(World *world, Frustum frustum) {
     for (int i = 0; i < world->visibleCount; i++) Chunk_RenderTransparent(world->chunks[world->visibleIndices[i]]);
 }
 
-void World_RenderClouds(World *world, Vector3 playerPos, float time, Frustum frustum) {
-    (void)world;
+static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
+    if (Vector3Distance(playerPos, world->lastCloudUpdatePos) < 32.0f && world->cloudModel.meshCount > 0) return;
+    
+    if (world->cloudModel.meshCount > 0) UnloadModel(world->cloudModel);
+    
     float cloudHeight = fmaxf(110.0f, playerPos.y + 24.0f);
     float cloudSize = 16.0f;
-    int range = 64;
+    int range = 64; // Smaller range but larger blocks for better coverage/performance balance
     int startX = (int)floor(playerPos.x / cloudSize) - range;
     int startZ = (int)floor(playerPos.z / cloudSize) - range;
     
-    rlDisableBackfaceCulling();
+    int maxCubes = (range * 2) * (range * 2);
+    float *vertices = (float *)malloc(maxCubes * 36 * 3 * sizeof(float));
+    unsigned char *colors = (unsigned char *)malloc(maxCubes * 36 * 4 * sizeof(unsigned char));
+    int vCount = 0;
+
+    Color cloudColor = { 225, 233, 240, 150 };
+
     for (int x = startX; x < startX + range * 2; x++) {
         for (int z = startZ; z < startZ + range * 2; z++) {
-            float x1 = (float)x * cloudSize;
-            float z1 = (float)z * cloudSize;
-            float x2 = x1 + cloudSize;
-            float z2 = z1 + cloudSize;
-            float y1 = cloudHeight;
-            float y2 = cloudHeight + 1.1f;
-
-            if (!IsBoxInFrustum(frustum, x1, y1, z1, x2, y2, z2)) continue;
-
-            // Two noise fields keep clouds plentiful while breaking large continuous slabs.
-            float base = Perlin2D((float)x * 0.09f * (8.0f/cloudSize) + time * 0.003f, (float)z * 0.09f * (8.0f/cloudSize) + 41.0f, 0.5f, 2);
-            float breakup = Perlin2D((float)x * 0.24f * (8.0f/cloudSize) - time * 0.005f, (float)z * 0.24f * (8.0f/cloudSize) + 7.0f, 0.5f, 1);
+            float base = Perlin2D((float)x * 0.18f + time * 0.003f, (float)z * 0.18f + 41.0f, 0.5f, 2);
+            float breakup = Perlin2D((float)x * 0.48f - time * 0.005f, (float)z * 0.48f + 7.0f, 0.5f, 1);
+            
             if (base > 0.10f && breakup > -0.08f) {
-                Vector3 pos = { x * cloudSize + cloudSize/2.0f, cloudHeight, z * cloudSize + cloudSize/2.0f };
-                DrawCube(pos, cloudSize, 1.1f, cloudSize, (Color){225, 233, 240, 150});
+                float px = (float)x * cloudSize, py = cloudHeight, pz = (float)z * cloudSize;
+                float sx = cloudSize, sy = 1.1f, sz = cloudSize;
+                
+                // Add 6 faces of a cube
+                float cubeVerts[] = {
+                    // Top
+                    px, py+sy, pz,  px, py+sy, pz+sz,  px+sx, py+sy, pz+sz,
+                    px, py+sy, pz,  px+sx, py+sy, pz+sz,  px+sx, py+sy, pz,
+                    // Bottom
+                    px, py, pz,  px+sx, py, pz+sz,  px, py, pz+sz,
+                    px, py, pz,  px+sx, py, pz,  px+sx, py, pz+sz,
+                    // Front
+                    px, py, pz+sz,  px+sx, py, pz+sz,  px+sx, py+sy, pz+sz,
+                    px, py, pz+sz,  px+sx, py+sy, pz+sz,  px, py+sy, pz+sz,
+                    // Back
+                    px+sx, py, pz,  px, py, pz,  px, py+sy, pz,
+                    px+sx, py, pz,  px, py+sy, pz,  px+sx, py+sy, pz,
+                    // Right
+                    px+sx, py, pz+sz,  px+sx, py, pz,  px+sx, py+sy, pz,
+                    px+sx, py, pz+sz,  px+sx, py+sy, pz,  px+sx, py+sy, pz+sz,
+                    // Left
+                    px, py, pz,  px, py, pz+sz,  px, py+sy, pz+sz,
+                    px, py, pz,  px, py+sy, pz+sz,  px, py+sy, pz
+                };
+                memcpy(&vertices[vCount * 3], cubeVerts, sizeof(cubeVerts));
+                for(int i=0; i<36; i++) {
+                    int idx = (vCount + i) * 4;
+                    colors[idx] = cloudColor.r; colors[idx+1] = cloudColor.g;
+                    colors[idx+2] = cloudColor.b; colors[idx+3] = cloudColor.a;
+                }
+                vCount += 36;
             }
         }
     }
-    rlEnableBackfaceCulling();
+
+    if (vCount > 0) {
+        Mesh mesh = { 0 };
+        mesh.vertexCount = vCount;
+        mesh.triangleCount = vCount / 3;
+        mesh.vertices = (float *)malloc(vCount * 3 * sizeof(float));
+        mesh.colors = (unsigned char *)malloc(vCount * 4 * sizeof(unsigned char));
+        memcpy(mesh.vertices, vertices, vCount * 3 * sizeof(float));
+        memcpy(mesh.colors, colors, vCount * 4 * sizeof(unsigned char));
+        UploadMesh(&mesh, false);
+        world->cloudModel = LoadModelFromMesh(mesh);
+    }
+    
+    free(vertices);
+    free(colors);
+    world->lastCloudUpdatePos = playerPos;
+}
+
+void World_RenderClouds(World *world, Vector3 playerPos, float time, Frustum frustum) {
+    (void)frustum;
+    World_UpdateCloudMesh(world, playerPos, time);
+    if (world->cloudModel.meshCount > 0) {
+        rlDisableBackfaceCulling();
+        DrawModel(world->cloudModel, (Vector3){0, 0, 0}, 1.0f, WHITE);
+        rlEnableBackfaceCulling();
+    }
 }
 
 void World_Unload(World *world) {
     UnloadTexture(world->atlas);
+    if (world->cloudModel.meshCount > 0) UnloadModel(world->cloudModel);
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
         if (world->chunks[i]) {
             Chunk_Unload(world->chunks[i]);

@@ -191,15 +191,33 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                     }
 
                     if (ShouldDrawFace(block, neighbor)) {
-                        float sv[18];
-                        if(s==0){ float f[]={fx,fy,fz+1, fx+1,fy,fz+1, fx+1,fy+1-wOff,fz+1, fx,fy,fz+1, fx+1,fy+1-wOff,fz+1, fx,fy+1-wOff,fz+1}; memcpy(sv,f,72); }
-                        else if(s==1){ float b[]={fx+1,fy,fz, fx,fy,fz, fx,fy+1-wOff,fz, fx+1,fy,fz, fx,fy+1-wOff,fz, fx+1,fy+1-wOff,fz}; memcpy(sv,b,72); }
-                        else if(s==2){ float r[]={fx+1,fy,fz+1, fx+1,fy,fz, fx+1,fy+1-wOff,fz, fx+1,fy,fz+1, fx+1,fy+1-wOff,fz, fx+1,fy+1-wOff,fz+1}; memcpy(sv,r,72); }
-                        else { float l[]={fx,fy,fz, fx,fy,fz+1, fx,fy+1-wOff,fz+1, fx,fy,fz, fx,fy+1-wOff,fz+1, fx,fy+1-wOff,fz}; memcpy(sv,l,72); }
-                        float st[] = { u0,v1, u1,v1, u1,v0, u0,v1, u1,v0, u0,v0 };
-                        memcpy(&vB[*vc*3], sv, 72); memcpy(&tB[*vc*2], st, 48);
-                        for(int i=0; i<6; i++){ int idx=*vc+i; nB[idx*3]=snx[s]; nB[idx*3+1]=0; nB[idx*3+2]=snz[s]; float sh=(s<2)?0.6f:0.8f; cB[idx*4]=cB[idx*4+1]=cB[idx*4+2]=(unsigned char)(255*sh); cB[idx*4+3]=(block==BLOCK_WATER)?WATER_VERTEX_ALPHA:255; }
-                        *vc += 6;
+                        bool merged = false;
+                        if (y > 0 && chunk->blocks[x][y-1][z] == block) {
+                            BlockType nBelow = BLOCK_AIR;
+                            if (nx >= 0 && nx < CHUNK_WIDTH && nz >= 0 && nz < CHUNK_DEPTH) nBelow = chunk->blocks[nx][y-1][nz];
+                            else if (neighbors[s]) nBelow = neighbors[s]->blocks[(nx + CHUNK_WIDTH) % CHUNK_WIDTH][y-1][(nz + CHUNK_DEPTH) % CHUNK_DEPTH];
+                            if (ShouldDrawFace(block, nBelow)) merged = true;
+                        }
+
+                        if (!merged) {
+                            int h = 1;
+                            while (y + h < CHUNK_HEIGHT && chunk->blocks[x][y+h][z] == block) {
+                                BlockType nAbove = BLOCK_AIR;
+                                if (nx >= 0 && nx < CHUNK_WIDTH && nz >= 0 && nz < CHUNK_DEPTH) nAbove = chunk->blocks[nx][y+h][nz];
+                                else if (neighbors[s]) nAbove = neighbors[s]->blocks[(nx + CHUNK_WIDTH) % CHUNK_WIDTH][y+h][(nz + CHUNK_DEPTH) % CHUNK_DEPTH];
+                                if (ShouldDrawFace(block, nAbove)) h++; else break;
+                            }
+                            float fh = (float)h;
+                            float sv[18];
+                            if(s==0){ float f[]={fx,fy,fz+1, fx+1,fy,fz+1, fx+1,fy+fh-wOff,fz+1, fx,fy,fz+1, fx+1,fy+fh-wOff,fz+1, fx,fy+fh-wOff,fz+1}; memcpy(sv,f,72); }
+                            else if(s==1){ float b[]={fx+1,fy,fz, fx,fy,fz, fx,fy+fh-wOff,fz, fx+1,fy,fz, fx,fy+fh-wOff,fz, fx+1,fy+fh-wOff,fz}; memcpy(sv,b,72); }
+                            else if(s==2){ float r[]={fx+1,fy,fz+1, fx+1,fy,fz, fx+1,fy+fh-wOff,fz, fx+1,fy,fz+1, fx+1,fy+fh-wOff,fz, fx+1,fy+fh-wOff,fz+1}; memcpy(sv,r,72); }
+                            else { float l[]={fx,fy,fz, fx,fy,fz+1, fx,fy+fh-wOff,fz+1, fx,fy,fz, fx,fy+fh-wOff,fz+1, fx,fy+fh-wOff,fz}; memcpy(sv,l,72); }
+                            float st[] = { u0,v1*fh, u1,v1*fh, u1,v0, u0,v1*fh, u1,v0, u0,v0 };
+                            memcpy(&vB[*vc*3], sv, 72); memcpy(&tB[*vc*2], st, 48);
+                            for(int i=0; i<6; i++){ int idx=*vc+i; nB[idx*3]=snx[s]; nB[idx*3+1]=0; nB[idx*3+2]=snz[s]; float sh=(s<2)?0.6f:0.8f; cB[idx*4]=cB[idx*4+1]=cB[idx*4+2]=(unsigned char)(255*sh); cB[idx*4+3]=(block==BLOCK_WATER)?WATER_VERTEX_ALPHA:255; }
+                            *vc += 6;
+                        }
                     }
                 }
             }

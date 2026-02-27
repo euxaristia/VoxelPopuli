@@ -27,6 +27,9 @@ typedef struct {
     Chunk *chunks[CHUNK_POOL_SIZE];
     int visibleIndices[CHUNK_POOL_SIZE];
     int visibleCount;
+    int dirtyCount;
+    Model cloudModel;
+    Vector3 lastCloudUpdatePos;
     Texture2D atlas;
     int waterAnimFrame;
     int last_pcx, last_pcz;
