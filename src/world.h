@@ -15,9 +15,18 @@ typedef struct {
 } RaycastResult;
 
 typedef struct {
+    int x, y, z;
+    unsigned char block;
+} WorldEdit;
+
+typedef struct {
     Chunk chunks[CHUNK_POOL_SIZE];
     Texture2D atlas;
     int waterAnimFrame;
+    WorldEdit *edits;
+    int editCount;
+    int editCapacity;
+    bool suppressEditRecording;
 } World;
 
 void World_Init(World *world);
@@ -25,6 +34,8 @@ void World_Update(World *world, Vector3 playerPos);
 void World_Render(World *world);
 void World_RenderClouds(World *world, Vector3 playerPos, float time);
 void World_Unload(World *world);
+bool World_SaveEdits(World *world, const char *path);
+bool World_LoadEdits(World *world, const char *path);
 
 BlockType World_GetBlock(World *world, int x, int y, int z);
 void World_SetBlock(World *world, int x, int y, int z, BlockType block);

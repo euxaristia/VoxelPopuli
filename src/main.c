@@ -4,8 +4,19 @@
 #include "noise.h"
 #include <stdlib.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #define INVENTORY_BLOCK_COUNT 9
+#define SAVE_DIR "save"
+#define WORLD_SAVE_PATH SAVE_DIR "/world_edits.bin"
+#define PLAYER_SAVE_PATH SAVE_DIR "/player_state.bin"
+#define PLAYER_SAVE_MAGIC 0x31505356u
+#define PLAYER_SAVE_VERSION 1u
 
 typedef struct {
     Vector3 position, velocity;
@@ -20,6 +31,16 @@ BlockType inventoryBlocks[INVENTORY_BLOCK_COUNT] = {
     BLOCK_GRASS, BLOCK_DIRT, BLOCK_STONE, BLOCK_OAK_LOG, BLOCK_OAK_LEAVES,
     BLOCK_SAND, BLOCK_WATER, BLOCK_GRAVEL, BLOCK_BEDROCK
 };
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    float playerPos[3];
+    float playerVelocity[3];
+    int32_t selectedSlot;
+    int32_t blockCounts[INVENTORY_BLOCK_COUNT];
+    int32_t hotbarBlocks[INVENTORY_BLOCK_COUNT];
+} PlayerSaveData;
 
 int GetInventoryIndex(BlockType block) {
     for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) if (inventoryBlocks[i] == block) return i;
@@ -59,6 +80,80 @@ void CleanupHotbarSlots(Player *player, BlockType *hotbar) {
     player->selectedBlock = hotbar[player->selectedSlot];
 }
 
+bool EnsureSaveDir(void) {
+    if (mkdir(SAVE_DIR, 0755) == 0) return true;
+    return errno == EEXIST;
+}
+
+void InitDefaultPlayer(Player *player, BlockType *hotbar) {
+    memset(player, 0, sizeof(*player));
+    player->position = (Vector3){ 32.5f, 100.0f, 32.5f };
+    player->selectedSlot = 0;
+    player->inventoryOpen = false;
+    for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
+        player->blockCounts[i] = 0;
+        hotbar[i] = BLOCK_AIR;
+    }
+    player->selectedBlock = hotbar[player->selectedSlot];
+}
+
+bool SavePlayerState(Player *player, BlockType *hotbar, const char *path) {
+    FILE *file = fopen(path, "wb");
+    if (!file) return false;
+
+    PlayerSaveData data = { 0 };
+    data.magic = PLAYER_SAVE_MAGIC;
+    data.version = PLAYER_SAVE_VERSION;
+    data.playerPos[0] = player->position.x;
+    data.playerPos[1] = player->position.y;
+    data.playerPos[2] = player->position.z;
+    data.playerVelocity[0] = player->velocity.x;
+    data.playerVelocity[1] = player->velocity.y;
+    data.playerVelocity[2] = player->velocity.z;
+    data.selectedSlot = player->selectedSlot;
+    for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
+        data.blockCounts[i] = player->blockCounts[i];
+        data.hotbarBlocks[i] = (int32_t)hotbar[i];
+    }
+
+    bool ok = fwrite(&data, sizeof(data), 1, file) == 1;
+    fclose(file);
+    return ok;
+}
+
+bool LoadPlayerState(Player *player, BlockType *hotbar, const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+
+    PlayerSaveData data = { 0 };
+    bool ok = fread(&data, sizeof(data), 1, file) == 1;
+    fclose(file);
+    if (!ok) return false;
+    if (data.magic != PLAYER_SAVE_MAGIC || data.version != PLAYER_SAVE_VERSION) return false;
+
+    player->position = (Vector3){ data.playerPos[0], data.playerPos[1], data.playerPos[2] };
+    player->velocity = (Vector3){ data.playerVelocity[0], data.playerVelocity[1], data.playerVelocity[2] };
+    player->selectedSlot = data.selectedSlot;
+    if (player->selectedSlot < 0 || player->selectedSlot >= INVENTORY_BLOCK_COUNT) player->selectedSlot = 0;
+    player->grounded = false;
+    player->inventoryOpen = false;
+
+    for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
+        int count = data.blockCounts[i];
+        if (count < 0) count = 0;
+        player->blockCounts[i] = count;
+
+        int hb = data.hotbarBlocks[i];
+        BlockType candidate = (hb >= BLOCK_AIR && hb <= BLOCK_BEDROCK) ? (BlockType)hb : BLOCK_AIR;
+        int idx = GetInventoryIndex(candidate);
+        if (candidate != BLOCK_AIR && (idx < 0 || player->blockCounts[idx] <= 0)) candidate = BLOCK_AIR;
+        hotbar[i] = candidate;
+    }
+
+    player->selectedBlock = hotbar[player->selectedSlot];
+    return true;
+}
+
 bool IsPointInBlock(World *world, Vector3 p) {
     BlockType b = World_GetBlock(world, (int)floor(p.x), (int)floor(p.y), (int)floor(p.z));
     return b != BLOCK_AIR && b != BLOCK_WATER;
@@ -76,19 +171,27 @@ bool CheckCollision(World *world, Vector3 pos) {
 int main(void) {
     InitWindow(1280, 720, "VoxelPopuli - Minecraft 1.0 Clone"); InitNoise();
     World *world = (World *)malloc(sizeof(World)); World_Init(world);
-    Player player = { 0 };
-    player.position = (Vector3){ 32.5f, 100.0f, 32.5f };
-    player.selectedSlot = 0;
-    player.selectedBlock = BLOCK_GRASS;
-    player.inventoryOpen = false;
-    for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) player.blockCounts[i] = 0;
+    Player player;
+    BlockType hotbar[INVENTORY_BLOCK_COUNT];
+    InitDefaultPlayer(&player, hotbar);
+
+    if (!EnsureSaveDir()) TraceLog(LOG_WARNING, "Could not ensure save directory '%s'", SAVE_DIR);
+    if (!World_LoadEdits(world, WORLD_SAVE_PATH)) TraceLog(LOG_WARNING, "Could not load world edits from '%s'", WORLD_SAVE_PATH);
+    bool loadedPlayer = LoadPlayerState(&player, hotbar, PLAYER_SAVE_PATH);
+
     for (int i=0; i<100; i++) World_Update(world, player.position);
-    for (int y = CHUNK_HEIGHT-1; y>=0; y--) if(World_GetBlock(world, 32, y, 32) != BLOCK_AIR) { player.position.y = (float)y+1.1f; break; }
+    if (!loadedPlayer) {
+        int sx = (int)floor(player.position.x);
+        int sz = (int)floor(player.position.z);
+        for (int y = CHUNK_HEIGHT-1; y>=0; y--) if(World_GetBlock(world, sx, y, sz) != BLOCK_AIR) { player.position.y = (float)y+1.1f; break; }
+    }
+    if (CheckCollision(world, player.position)) {
+        for (int i = 0; i < 32 && CheckCollision(world, player.position); i++) player.position.y += 1.0f;
+    }
+    CleanupHotbarSlots(&player, hotbar);
 
     Camera3D camera = { (Vector3){0}, (Vector3){0}, (Vector3){0,1,0}, 75.0f, 0 };
     Vector2 cameraAngle = { PI, 0 };
-    BlockType hotbar[INVENTORY_BLOCK_COUNT];
-    for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) hotbar[i] = BLOCK_AIR;
     player.selectedBlock = hotbar[player.selectedSlot];
 
     DisableCursor(); SetTargetFPS(180);
@@ -238,5 +341,8 @@ int main(void) {
             DrawText(TextFormat("FPS: %d", GetFPS()), 20, 20, 20, GREEN);
         EndDrawing();
     }
+    if (!EnsureSaveDir()) TraceLog(LOG_WARNING, "Could not ensure save directory '%s'", SAVE_DIR);
+    if (!World_SaveEdits(world, WORLD_SAVE_PATH)) TraceLog(LOG_WARNING, "Could not save world edits to '%s'", WORLD_SAVE_PATH);
+    if (!SavePlayerState(&player, hotbar, PLAYER_SAVE_PATH)) TraceLog(LOG_WARNING, "Could not save player state to '%s'", PLAYER_SAVE_PATH);
     World_Unload(world); free(world); CloseWindow(); return 0;
 }
