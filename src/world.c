@@ -84,8 +84,12 @@ static bool World_ApplyEditsToChunk(World *world, Chunk *chunk) {
     }
   }
 
-  if (changed)
-    chunk->dirty = true;
+  if (changed) {
+    if (!chunk->dirty) {
+      chunk->dirty = true;
+      world->dirtyCount++;
+    }
+  }
   return changed;
 }
 
