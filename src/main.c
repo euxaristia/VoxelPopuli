@@ -15,8 +15,11 @@
 #define SAVE_DIR "save"
 #define WORLD_SAVE_PATH SAVE_DIR "/world_edits.bin"
 #define PLAYER_SAVE_PATH SAVE_DIR "/player_state.bin"
+#define WINDOW_SAVE_PATH SAVE_DIR "/window_state.bin"
 #define PLAYER_SAVE_MAGIC 0x31505356u
 #define PLAYER_SAVE_VERSION 2u
+#define WINDOW_SAVE_MAGIC 0x31575356u
+#define WINDOW_SAVE_VERSION 1u
 #define PLAYER_MAX_HEALTH 20
 #define PLAYER_MAX_AIR_SECONDS 15.0f
 #define PLAYER_DROWN_DAMAGE_INTERVAL 1.0f
@@ -68,6 +71,15 @@ typedef struct {
     float airSeconds;
     float respawnPos[3];
 } PlayerSaveDataV2;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    int32_t width;
+    int32_t height;
+    uint8_t maximized;
+    uint8_t reserved[3];
+} WindowSaveData;
 
 int GetInventoryIndex(BlockType block) {
     for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) if (inventoryBlocks[i] == block) return i;
@@ -129,6 +141,39 @@ int ClampInt(int value, int minValue, int maxValue) {
     if (value < minValue) return minValue;
     if (value > maxValue) return maxValue;
     return value;
+}
+
+bool SaveWindowState(const char *path) {
+    FILE *file = fopen(path, "wb");
+    if (!file) return false;
+
+    WindowSaveData data = { 0 };
+    data.magic = WINDOW_SAVE_MAGIC;
+    data.version = WINDOW_SAVE_VERSION;
+    data.width = GetScreenWidth();
+    data.height = GetScreenHeight();
+    data.maximized = IsWindowState(FLAG_WINDOW_MAXIMIZED) ? 1u : 0u;
+
+    bool ok = fwrite(&data, sizeof(data), 1, file) == 1;
+    fclose(file);
+    return ok;
+}
+
+bool LoadWindowState(const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+
+    WindowSaveData data = { 0 };
+    bool ok = fread(&data, sizeof(data), 1, file) == 1;
+    fclose(file);
+    if (!ok) return false;
+    if (data.magic != WINDOW_SAVE_MAGIC || data.version != WINDOW_SAVE_VERSION) return false;
+
+    int width = ClampInt(data.width, 960, 8192);
+    int height = ClampInt(data.height, 540, 8192);
+    SetWindowSize(width, height);
+    if (data.maximized) MaximizeWindow();
+    return true;
 }
 
 void LoadInventoryFromSave(Player *player, BlockType *hotbar, const int32_t *counts, const int32_t *hotbarBlocks) {
@@ -332,10 +377,58 @@ void RespawnPlayer(Player *player, World *world) {
     for (int i = 0; i < 32 && CheckCollision(world, player->position); i++) player->position.y += 1.0f;
 }
 
+Frustum ExtractFrustum(Camera3D camera) {
+    Matrix modelview = GetCameraMatrix(camera);
+    Matrix projection = MatrixPerspective(camera.fovy * DEG2RAD, (float)GetScreenWidth() / (float)GetScreenHeight(), 0.1f, 1000.0f);
+    Matrix viewProj = MatrixMultiply(modelview, projection);
+
+    Frustum f;
+    // Left
+    f.planes[0][0] = viewProj.m3 + viewProj.m0;
+    f.planes[0][1] = viewProj.m7 + viewProj.m4;
+    f.planes[0][2] = viewProj.m11 + viewProj.m8;
+    f.planes[0][3] = viewProj.m15 + viewProj.m12;
+    // Right
+    f.planes[1][0] = viewProj.m3 - viewProj.m0;
+    f.planes[1][1] = viewProj.m7 - viewProj.m4;
+    f.planes[1][2] = viewProj.m11 - viewProj.m8;
+    f.planes[1][3] = viewProj.m15 - viewProj.m12;
+    // Bottom
+    f.planes[2][0] = viewProj.m3 + viewProj.m1;
+    f.planes[2][1] = viewProj.m7 + viewProj.m5;
+    f.planes[2][2] = viewProj.m11 + viewProj.m9;
+    f.planes[2][3] = viewProj.m15 + viewProj.m13;
+    // Top
+    f.planes[3][0] = viewProj.m3 - viewProj.m1;
+    f.planes[3][1] = viewProj.m7 - viewProj.m5;
+    f.planes[3][2] = viewProj.m11 - viewProj.m9;
+    f.planes[3][3] = viewProj.m15 - viewProj.m13;
+    // Near
+    f.planes[4][0] = viewProj.m3 + viewProj.m2;
+    f.planes[4][1] = viewProj.m7 + viewProj.m6;
+    f.planes[4][2] = viewProj.m11 + viewProj.m10;
+    f.planes[4][3] = viewProj.m15 + viewProj.m14;
+    // Far
+    f.planes[5][0] = viewProj.m3 - viewProj.m2;
+    f.planes[5][1] = viewProj.m7 - viewProj.m6;
+    f.planes[5][2] = viewProj.m11 - viewProj.m10;
+    f.planes[5][3] = viewProj.m15 - viewProj.m14;
+
+    for (int i = 0; i < 6; i++) {
+        float t = sqrtf(f.planes[i][0] * f.planes[i][0] + f.planes[i][1] * f.planes[i][1] + f.planes[i][2] * f.planes[i][2]);
+        f.planes[i][0] /= t;
+        f.planes[i][1] /= t;
+        f.planes[i][2] /= t;
+        f.planes[i][3] /= t;
+    }
+    return f;
+}
+
 int main(void) {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT, "VoxelPopuli - Minecraft 1.0 Clone"); InitNoise();
     SetWindowMinSize(960, 540);
+    LoadWindowState(WINDOW_SAVE_PATH);
     World *world = (World *)malloc(sizeof(World)); World_Init(world);
     Player player;
     BlockType hotbar[INVENTORY_BLOCK_COUNT];
@@ -446,11 +539,11 @@ int main(void) {
                     player.velocity.y = 9.0f;
                     player.grounded = false;
                 } else if (bodyInWater) {
-                    player.velocity.y = 8.5f;
+                    player.velocity.y = 9.8f;
                 }
             } else if (bodyInWater && IsKeyDown(KEY_SPACE)) {
                 player.velocity.y += 35.0f * dt;
-                if (player.velocity.y > 4.5f) player.velocity.y = 4.5f;
+                if (player.velocity.y > 5.6f) player.velocity.y = 5.6f;
             }
 
             float prevY = player.position.y;
@@ -555,8 +648,9 @@ int main(void) {
         BeginDrawing();
             ClearBackground(SKYBLUE);
             BeginMode3D(camera);
-                World_Render(world);
-                World_RenderClouds(world, player.position, (float)GetTime());
+                Frustum frustum = ExtractFrustum(camera);
+                World_Render(world, frustum);
+                World_RenderClouds(world, player.position, (float)GetTime(), frustum);
                 if (!player.inventoryOpen) {
                     Ray ray = { camera.position, Vector3Normalize(Vector3Subtract(camera.target, camera.position)) };
                     RaycastResult res = World_Raycast(world, ray.position, ray.direction, 5.0f);
@@ -620,6 +714,7 @@ int main(void) {
         EndDrawing();
     }
     if (!EnsureSaveDir()) TraceLog(LOG_WARNING, "Could not ensure save directory '%s'", SAVE_DIR);
+    if (!SaveWindowState(WINDOW_SAVE_PATH)) TraceLog(LOG_WARNING, "Could not save window state to '%s'", WINDOW_SAVE_PATH);
     if (!World_SaveEdits(world, WORLD_SAVE_PATH)) TraceLog(LOG_WARNING, "Could not save world edits to '%s'", WORLD_SAVE_PATH);
     if (!SavePlayerState(&player, hotbar, PLAYER_SAVE_PATH)) TraceLog(LOG_WARNING, "Could not save player state to '%s'", PLAYER_SAVE_PATH);
     World_Unload(world); free(world); CloseWindow(); return 0;

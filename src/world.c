@@ -285,22 +285,56 @@ void World_Update(World *world, Vector3 playerPos) {
             }
         }
     }
+    int buildsThisFrame = 0;
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
         if (world->chunks[i].dirty) {
             Chunk_BuildMesh(&world->chunks[i], world);
             if (world->chunks[i].modelOpaque.meshCount > 0) world->chunks[i].modelOpaque.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
             if (world->chunks[i].modelTransparent.meshCount > 0) world->chunks[i].modelTransparent.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
-            break; 
+            if (++buildsThisFrame >= 4) break; 
         }
     }
 }
 
-void World_Render(World *world) {
-    for (int i = 0; i < CHUNK_POOL_SIZE; i++) if (world->chunks[i].x != 999999) Chunk_RenderOpaque(&world->chunks[i]);
-    for (int i = 0; i < CHUNK_POOL_SIZE; i++) if (world->chunks[i].x != 999999) Chunk_RenderTransparent(&world->chunks[i]);
+void World_Render(World *world, Frustum frustum) {
+    static bool *visibleChunks = NULL;
+    if (visibleChunks == NULL) visibleChunks = (bool *)malloc(CHUNK_POOL_SIZE * sizeof(bool));
+
+    for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
+        Chunk *c = &world->chunks[i];
+        visibleChunks[i] = false;
+        if (c->x == 999999) continue;
+        
+        float x1 = (float)c->x * CHUNK_WIDTH;
+        float y1 = 0;
+        float z1 = (float)c->z * CHUNK_DEPTH;
+        float x2 = x1 + CHUNK_WIDTH;
+        float y2 = CHUNK_HEIGHT;
+        float z2 = z1 + CHUNK_DEPTH;
+
+        bool inFrustum = true;
+        for (int p = 0; p < 6; p++) {
+            if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
+            inFrustum = false;
+            break;
+        }
+        visibleChunks[i] = inFrustum;
+        if (inFrustum) Chunk_RenderOpaque(c);
+    }
+    
+    for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
+        if (visibleChunks[i]) Chunk_RenderTransparent(&world->chunks[i]);
+    }
 }
 
-void World_RenderClouds(World *world, Vector3 playerPos, float time) {
+void World_RenderClouds(World *world, Vector3 playerPos, float time, Frustum frustum) {
     (void)world;
     float cloudHeight = fmaxf(110.0f, playerPos.y + 24.0f);
     float cloudSize = 8.0f;
@@ -311,6 +345,28 @@ void World_RenderClouds(World *world, Vector3 playerPos, float time) {
     rlDisableBackfaceCulling();
     for (int x = startX; x < startX + range * 2; x++) {
         for (int z = startZ; z < startZ + range * 2; z++) {
+            float x1 = (float)x * cloudSize;
+            float z1 = (float)z * cloudSize;
+            float x2 = x1 + cloudSize;
+            float z2 = z1 + cloudSize;
+            float y1 = cloudHeight;
+            float y2 = cloudHeight + 1.1f;
+
+            bool inFrustum = true;
+            for (int p = 0; p < 6; p++) {
+                if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
+                if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
+                if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
+                if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
+                if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
+                if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
+                if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
+                if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
+                inFrustum = false;
+                break;
+            }
+            if (!inFrustum) continue;
+
             // Two noise fields keep clouds plentiful while breaking large continuous slabs.
             float base = Perlin2D((float)x * 0.09f + time * 0.003f, (float)z * 0.09f + 41.0f, 0.5f, 2);
             float breakup = Perlin2D((float)x * 0.24f - time * 0.005f, (float)z * 0.24f + 7.0f, 0.5f, 1);

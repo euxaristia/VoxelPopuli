@@ -3,9 +3,13 @@
 
 #include "chunk.h"
 
-#define VIEW_DISTANCE 12
+#define VIEW_DISTANCE 24
 #define POOL_WIDTH (VIEW_DISTANCE * 2 + 1)
 #define CHUNK_POOL_SIZE (POOL_WIDTH * POOL_WIDTH)
+
+typedef struct {
+    float planes[6][4];
+} Frustum;
 
 typedef struct {
     bool hit;
@@ -31,8 +35,8 @@ typedef struct {
 
 void World_Init(World *world);
 void World_Update(World *world, Vector3 playerPos);
-void World_Render(World *world);
-void World_RenderClouds(World *world, Vector3 playerPos, float time);
+void World_Render(World *world, Frustum frustum);
+void World_RenderClouds(World *world, Vector3 playerPos, float time, Frustum frustum);
 void World_Unload(World *world);
 bool World_SaveEdits(World *world, const char *path);
 bool World_LoadEdits(World *world, const char *path);
