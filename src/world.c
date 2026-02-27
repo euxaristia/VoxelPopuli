@@ -581,7 +581,7 @@ static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
 
   lastCloudRebuildTime = time;
 
-  float cloudHeight = fmaxf(110.0f, playerPos.y + 24.0f);
+  float cloudHeight = 200.0f; // Static height fixes jumping jitter
   float cloudSize = 16.0f;
   int range = 64; // Smaller range but larger blocks for better
                   // coverage/performance balance
