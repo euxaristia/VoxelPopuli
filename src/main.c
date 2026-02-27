@@ -16,14 +16,26 @@
 #define WORLD_SAVE_PATH SAVE_DIR "/world_edits.bin"
 #define PLAYER_SAVE_PATH SAVE_DIR "/player_state.bin"
 #define PLAYER_SAVE_MAGIC 0x31505356u
-#define PLAYER_SAVE_VERSION 1u
+#define PLAYER_SAVE_VERSION 2u
+#define PLAYER_MAX_HEALTH 20
+#define PLAYER_MAX_AIR_SECONDS 15.0f
+#define PLAYER_DROWN_DAMAGE_INTERVAL 1.0f
+#define PLAYER_FALL_DAMAGE_THRESHOLD 3.0f
+#define PLAYER_RESPAWN_INVULN_SECONDS 1.0f
+#define PLAYER_VOID_Y -20.0f
 
 typedef struct {
     Vector3 position, velocity;
+    Vector3 respawnPosition;
     bool grounded;
     BlockType selectedBlock;
     int selectedSlot;
     bool inventoryOpen;
+    int health;
+    float airSeconds;
+    float fallDistance;
+    float damageCooldown;
+    float drownTickTimer;
     int blockCounts[INVENTORY_BLOCK_COUNT];
 } Player;
 
@@ -40,7 +52,20 @@ typedef struct {
     int32_t selectedSlot;
     int32_t blockCounts[INVENTORY_BLOCK_COUNT];
     int32_t hotbarBlocks[INVENTORY_BLOCK_COUNT];
-} PlayerSaveData;
+} PlayerSaveDataV1;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    float playerPos[3];
+    float playerVelocity[3];
+    int32_t selectedSlot;
+    int32_t blockCounts[INVENTORY_BLOCK_COUNT];
+    int32_t hotbarBlocks[INVENTORY_BLOCK_COUNT];
+    int32_t health;
+    float airSeconds;
+    float respawnPos[3];
+} PlayerSaveDataV2;
 
 int GetInventoryIndex(BlockType block) {
     for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) if (inventoryBlocks[i] == block) return i;
@@ -58,6 +83,72 @@ Color GetBlockUIColour(BlockType block) {
     if (block == BLOCK_GRAVEL) return LIGHTGRAY;
     if (block == BLOCK_BEDROCK) return DARKGRAY;
     return WHITE;
+}
+
+void DrawHeartIcon(int x, int y, int fillState) {
+    // 0 = transparent, 1 = outline, 2 = fill.
+    static const unsigned char sprite[8][9] = {
+        { 0, 1, 1, 0, 0, 0, 1, 1, 0 },
+        { 1, 2, 2, 1, 0, 1, 2, 2, 1 },
+        { 1, 2, 2, 2, 1, 2, 2, 2, 1 },
+        { 1, 2, 2, 2, 2, 2, 2, 2, 1 },
+        { 0, 1, 2, 2, 2, 2, 2, 1, 0 },
+        { 0, 0, 1, 2, 2, 2, 1, 0, 0 },
+        { 0, 0, 0, 1, 2, 1, 0, 0, 0 },
+        { 0, 0, 0, 0, 1, 0, 0, 0, 0 }
+    };
+    const int scale = 2;
+    const int width = 9, height = 8;
+    Color border = (Color){ 28, 10, 10, 255 };
+    Color full = (Color){ 224, 42, 42, 255 };
+    Color empty = (Color){ 72, 32, 32, 255 };
+
+    for (int py = 0; py < height; py++) {
+        for (int px = 0; px < width; px++) {
+            unsigned char cell = sprite[py][px];
+            if (cell == 0) continue;
+            bool filledSide = (fillState >= 2) || (fillState == 1 && px <= 4);
+            Color pixel = (cell == 1) ? border : (filledSide ? full : empty);
+            DrawRectangle(x + px * scale, y + py * scale, scale, scale, pixel);
+        }
+    }
+}
+
+void DrawBubbleIcon(int x, int y, bool filled) {
+    Color fill = filled ? (Color){ 169, 216, 255, 230 } : (Color){ 76, 101, 130, 210 };
+    Color highlight = filled ? (Color){ 235, 248, 255, 220 } : (Color){ 120, 144, 170, 190 };
+    Color border = (Color){ 26, 45, 66, 230 };
+    DrawCircle(x, y, 6.0f, fill);
+    DrawCircle(x - 2, y - 2, 2.0f, highlight);
+    DrawCircleLines(x, y, 6.0f, border);
+}
+
+int ClampInt(int value, int minValue, int maxValue) {
+    if (value < minValue) return minValue;
+    if (value > maxValue) return maxValue;
+    return value;
+}
+
+void LoadInventoryFromSave(Player *player, BlockType *hotbar, const int32_t *counts, const int32_t *hotbarBlocks) {
+    for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
+        int count = counts[i];
+        if (count < 0) count = 0;
+        player->blockCounts[i] = count;
+
+        int hb = hotbarBlocks[i];
+        BlockType candidate = (hb >= BLOCK_AIR && hb <= BLOCK_BEDROCK) ? (BlockType)hb : BLOCK_AIR;
+        int idx = GetInventoryIndex(candidate);
+        if (candidate != BLOCK_AIR && (idx < 0 || player->blockCounts[idx] <= 0)) candidate = BLOCK_AIR;
+        hotbar[i] = candidate;
+    }
+}
+
+void DamagePlayer(Player *player, int amount) {
+    if (amount <= 0 || player->health <= 0) return;
+    if (player->damageCooldown > 0.0f) return;
+    player->health -= amount;
+    if (player->health < 0) player->health = 0;
+    player->damageCooldown = 0.45f;
 }
 
 void TryAutoAssignHotbar(BlockType *hotbar, BlockType block) {
@@ -88,8 +179,14 @@ bool EnsureSaveDir(void) {
 void InitDefaultPlayer(Player *player, BlockType *hotbar) {
     memset(player, 0, sizeof(*player));
     player->position = (Vector3){ 32.5f, 100.0f, 32.5f };
+    player->respawnPosition = player->position;
     player->selectedSlot = 0;
     player->inventoryOpen = false;
+    player->health = PLAYER_MAX_HEALTH;
+    player->airSeconds = PLAYER_MAX_AIR_SECONDS;
+    player->fallDistance = 0.0f;
+    player->damageCooldown = 0.0f;
+    player->drownTickTimer = PLAYER_DROWN_DAMAGE_INTERVAL;
     for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
         player->blockCounts[i] = 0;
         hotbar[i] = BLOCK_AIR;
@@ -101,7 +198,7 @@ bool SavePlayerState(Player *player, BlockType *hotbar, const char *path) {
     FILE *file = fopen(path, "wb");
     if (!file) return false;
 
-    PlayerSaveData data = { 0 };
+    PlayerSaveDataV2 data = { 0 };
     data.magic = PLAYER_SAVE_MAGIC;
     data.version = PLAYER_SAVE_VERSION;
     data.playerPos[0] = player->position.x;
@@ -115,6 +212,11 @@ bool SavePlayerState(Player *player, BlockType *hotbar, const char *path) {
         data.blockCounts[i] = player->blockCounts[i];
         data.hotbarBlocks[i] = (int32_t)hotbar[i];
     }
+    data.health = player->health;
+    data.airSeconds = player->airSeconds;
+    data.respawnPos[0] = player->respawnPosition.x;
+    data.respawnPos[1] = player->respawnPosition.y;
+    data.respawnPos[2] = player->respawnPosition.z;
 
     bool ok = fwrite(&data, sizeof(data), 1, file) == 1;
     fclose(file);
@@ -125,33 +227,68 @@ bool LoadPlayerState(Player *player, BlockType *hotbar, const char *path) {
     FILE *file = fopen(path, "rb");
     if (!file) return false;
 
-    PlayerSaveData data = { 0 };
-    bool ok = fread(&data, sizeof(data), 1, file) == 1;
-    fclose(file);
-    if (!ok) return false;
-    if (data.magic != PLAYER_SAVE_MAGIC || data.version != PLAYER_SAVE_VERSION) return false;
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    if (fread(&magic, sizeof(magic), 1, file) != 1 || fread(&version, sizeof(version), 1, file) != 1) {
+        fclose(file);
+        return false;
+    }
+    if (magic != PLAYER_SAVE_MAGIC) {
+        fclose(file);
+        return false;
+    }
+    rewind(file);
 
-    player->position = (Vector3){ data.playerPos[0], data.playerPos[1], data.playerPos[2] };
-    player->velocity = (Vector3){ data.playerVelocity[0], data.playerVelocity[1], data.playerVelocity[2] };
-    player->selectedSlot = data.selectedSlot;
-    if (player->selectedSlot < 0 || player->selectedSlot >= INVENTORY_BLOCK_COUNT) player->selectedSlot = 0;
-    player->grounded = false;
-    player->inventoryOpen = false;
+    if (version == 1u) {
+        PlayerSaveDataV1 data = { 0 };
+        bool ok = fread(&data, sizeof(data), 1, file) == 1;
+        fclose(file);
+        if (!ok || data.magic != PLAYER_SAVE_MAGIC || data.version != 1u) return false;
 
-    for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
-        int count = data.blockCounts[i];
-        if (count < 0) count = 0;
-        player->blockCounts[i] = count;
-
-        int hb = data.hotbarBlocks[i];
-        BlockType candidate = (hb >= BLOCK_AIR && hb <= BLOCK_BEDROCK) ? (BlockType)hb : BLOCK_AIR;
-        int idx = GetInventoryIndex(candidate);
-        if (candidate != BLOCK_AIR && (idx < 0 || player->blockCounts[idx] <= 0)) candidate = BLOCK_AIR;
-        hotbar[i] = candidate;
+        player->position = (Vector3){ data.playerPos[0], data.playerPos[1], data.playerPos[2] };
+        player->velocity = (Vector3){ data.playerVelocity[0], data.playerVelocity[1], data.playerVelocity[2] };
+        player->respawnPosition = player->position;
+        player->selectedSlot = data.selectedSlot;
+        if (player->selectedSlot < 0 || player->selectedSlot >= INVENTORY_BLOCK_COUNT) player->selectedSlot = 0;
+        player->grounded = false;
+        player->inventoryOpen = false;
+        player->health = PLAYER_MAX_HEALTH;
+        player->airSeconds = PLAYER_MAX_AIR_SECONDS;
+        player->fallDistance = 0.0f;
+        player->damageCooldown = 0.0f;
+        player->drownTickTimer = PLAYER_DROWN_DAMAGE_INTERVAL;
+        LoadInventoryFromSave(player, hotbar, data.blockCounts, data.hotbarBlocks);
+        player->selectedBlock = hotbar[player->selectedSlot];
+        return true;
     }
 
-    player->selectedBlock = hotbar[player->selectedSlot];
-    return true;
+    if (version == PLAYER_SAVE_VERSION) {
+        PlayerSaveDataV2 data = { 0 };
+        bool ok = fread(&data, sizeof(data), 1, file) == 1;
+        fclose(file);
+        if (!ok || data.magic != PLAYER_SAVE_MAGIC || data.version != PLAYER_SAVE_VERSION) return false;
+
+        player->position = (Vector3){ data.playerPos[0], data.playerPos[1], data.playerPos[2] };
+        player->velocity = (Vector3){ data.playerVelocity[0], data.playerVelocity[1], data.playerVelocity[2] };
+        player->respawnPosition = (Vector3){ data.respawnPos[0], data.respawnPos[1], data.respawnPos[2] };
+        player->selectedSlot = data.selectedSlot;
+        if (player->selectedSlot < 0 || player->selectedSlot >= INVENTORY_BLOCK_COUNT) player->selectedSlot = 0;
+        player->grounded = false;
+        player->inventoryOpen = false;
+        player->health = ClampInt(data.health, 1, PLAYER_MAX_HEALTH);
+        player->airSeconds = data.airSeconds;
+        if (player->airSeconds < 0.0f) player->airSeconds = 0.0f;
+        if (player->airSeconds > PLAYER_MAX_AIR_SECONDS) player->airSeconds = PLAYER_MAX_AIR_SECONDS;
+        player->fallDistance = 0.0f;
+        player->damageCooldown = 0.0f;
+        player->drownTickTimer = PLAYER_DROWN_DAMAGE_INTERVAL;
+        LoadInventoryFromSave(player, hotbar, data.blockCounts, data.hotbarBlocks);
+        player->selectedBlock = hotbar[player->selectedSlot];
+        return true;
+    }
+
+    fclose(file);
+    return false;
 }
 
 bool IsPointInBlock(World *world, Vector3 p) {
@@ -166,6 +303,31 @@ bool CheckCollision(World *world, Vector3 pos) {
             for (float y = 0.1f; y <= h; y += h / 2.0f)
                 if (IsPointInBlock(world, (Vector3){ pos.x + x, pos.y + y, pos.z + z })) return true;
     return false;
+}
+
+void RespawnPlayer(Player *player, World *world) {
+    int sx = (int)floor(player->respawnPosition.x);
+    int sz = (int)floor(player->respawnPosition.z);
+    float safeY = player->respawnPosition.y;
+    for (int y = CHUNK_HEIGHT - 1; y >= 0; y--) {
+        BlockType b = World_GetBlock(world, sx, y, sz);
+        if (b != BLOCK_AIR && b != BLOCK_WATER) {
+            safeY = (float)y + 1.1f;
+            break;
+        }
+    }
+
+    player->position = (Vector3){ player->respawnPosition.x, safeY, player->respawnPosition.z };
+    player->velocity = (Vector3){ 0 };
+    player->grounded = false;
+    player->inventoryOpen = false;
+    player->health = PLAYER_MAX_HEALTH;
+    player->airSeconds = PLAYER_MAX_AIR_SECONDS;
+    player->fallDistance = 0.0f;
+    player->damageCooldown = PLAYER_RESPAWN_INVULN_SECONDS;
+    player->drownTickTimer = PLAYER_DROWN_DAMAGE_INTERVAL;
+
+    for (int i = 0; i < 32 && CheckCollision(world, player->position); i++) player->position.y += 1.0f;
 }
 
 int main(void) {
@@ -184,10 +346,12 @@ int main(void) {
         int sx = (int)floor(player.position.x);
         int sz = (int)floor(player.position.z);
         for (int y = CHUNK_HEIGHT-1; y>=0; y--) if(World_GetBlock(world, sx, y, sz) != BLOCK_AIR) { player.position.y = (float)y+1.1f; break; }
+        player.respawnPosition = player.position;
     }
     if (CheckCollision(world, player.position)) {
         for (int i = 0; i < 32 && CheckCollision(world, player.position); i++) player.position.y += 1.0f;
     }
+    if (!loadedPlayer) player.respawnPosition = player.position;
     CleanupHotbarSlots(&player, hotbar);
 
     Camera3D camera = { (Vector3){0}, (Vector3){0}, (Vector3){0,1,0}, 75.0f, 0 };
@@ -198,6 +362,10 @@ int main(void) {
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime(); if (dt > 0.05f) dt = 0.05f;
+        if (player.damageCooldown > 0.0f) {
+            player.damageCooldown -= dt;
+            if (player.damageCooldown < 0.0f) player.damageCooldown = 0.0f;
+        }
         if (IsKeyPressed(KEY_E)) { player.inventoryOpen = !player.inventoryOpen; if (player.inventoryOpen) EnableCursor(); else DisableCursor(); }
 
         if (!player.inventoryOpen) {
@@ -213,6 +381,16 @@ int main(void) {
                 player.selectedBlock = hotbar[i];
             }
         }
+        if (!player.inventoryOpen) {
+            int wheelSteps = (int)GetMouseWheelMove();
+            if (wheelSteps != 0) {
+                int slot = player.selectedSlot - wheelSteps;
+                while (slot < 0) slot += INVENTORY_BLOCK_COUNT;
+                while (slot >= INVENTORY_BLOCK_COUNT) slot -= INVENTORY_BLOCK_COUNT;
+                player.selectedSlot = slot;
+                player.selectedBlock = hotbar[player.selectedSlot];
+            }
+        }
 
         camera.position = (Vector3){ player.position.x, player.position.y + 1.6f, player.position.z };
         Vector3 forwardDir = { cosf(cameraAngle.y)*sinf(cameraAngle.x), sinf(cameraAngle.y), cosf(cameraAngle.y)*cosf(cameraAngle.x) };
@@ -223,32 +401,47 @@ int main(void) {
         Vector3 right = Vector3CrossProduct(forward, (Vector3){0, 1, 0}); // True Right vector
 
         if (!player.inventoryOpen) {
-            bool inWater = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 0.5f), (int)floor(player.position.z)) == BLOCK_WATER;
+            bool bodyInWater = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 0.9f), (int)floor(player.position.z)) == BLOCK_WATER;
 
             Vector3 moveDir = { 0 };
-            if (IsKeyDown(KEY_W)) moveDir = Vector3Add(moveDir, forward); 
+            if (IsKeyDown(KEY_W)) moveDir = Vector3Add(moveDir, forward);
             if (IsKeyDown(KEY_S)) moveDir = Vector3Subtract(moveDir, forward);
-            if (IsKeyDown(KEY_A)) moveDir = Vector3Subtract(moveDir, right); // Standard Left
-            if (IsKeyDown(KEY_D)) moveDir = Vector3Add(moveDir, right);      // Standard Right
+            if (IsKeyDown(KEY_A)) moveDir = Vector3Subtract(moveDir, right);
+            if (IsKeyDown(KEY_D)) moveDir = Vector3Add(moveDir, right);
 
-            float speed = IsKeyDown(KEY_LEFT_CONTROL) ? 8.5f : 4.5f; if (inWater) speed *= 0.75f;
+            float speed = IsKeyDown(KEY_LEFT_CONTROL) ? 8.5f : 4.5f;
+            if (bodyInWater) speed *= 0.75f;
             if (Vector3Length(moveDir) > 0.1f) moveDir = Vector3Scale(Vector3Normalize(moveDir), speed);
-            player.velocity.x = moveDir.x; player.velocity.z = moveDir.z;
-            float gravity = inWater ? 14.0f : 28.0f; player.velocity.y -= gravity * dt;
+            player.velocity.x = moveDir.x;
+            player.velocity.z = moveDir.z;
+            float gravity = bodyInWater ? 14.0f : 28.0f;
+            player.velocity.y -= gravity * dt;
 
             if (IsKeyPressed(KEY_SPACE)) {
-                if (player.grounded) { player.velocity.y = 9.0f; player.grounded = false; }
-                else if (inWater) { player.velocity.y = 8.5f; } // Purely velocity based leap
-            } else if (inWater && IsKeyDown(KEY_SPACE)) {
-                player.velocity.y += 35.0f * dt; if (player.velocity.y > 4.5f) player.velocity.y = 4.5f;
+                if (player.grounded) {
+                    player.velocity.y = 9.0f;
+                    player.grounded = false;
+                } else if (bodyInWater) {
+                    player.velocity.y = 8.5f;
+                }
+            } else if (bodyInWater && IsKeyDown(KEY_SPACE)) {
+                player.velocity.y += 35.0f * dt;
+                if (player.velocity.y > 4.5f) player.velocity.y = 4.5f;
             }
 
-            // Continuous Physics Resolution
+            float prevY = player.position.y;
+            bool landed = false;
             player.position.y += player.velocity.y * dt;
             if (CheckCollision(world, player.position)) {
-                if (player.velocity.y < 0) player.grounded = true;
-                player.position.y -= player.velocity.y * dt; player.velocity.y = 0;
-            } else if (player.velocity.y != 0) player.grounded = false;
+                if (player.velocity.y < 0.0f) {
+                    player.grounded = true;
+                    landed = true;
+                }
+                player.position.y -= player.velocity.y * dt;
+                player.velocity.y = 0.0f;
+            } else if (player.velocity.y != 0.0f) {
+                player.grounded = false;
+            }
 
             player.position.x += player.velocity.x * dt;
             if (CheckCollision(world, player.position)) player.position.x -= player.velocity.x * dt;
@@ -256,7 +449,42 @@ int main(void) {
             player.position.z += player.velocity.z * dt;
             if (CheckCollision(world, player.position)) player.position.z -= player.velocity.z * dt;
 
-            if (CheckCollision(world, player.position)) player.position.y += 0.1f; // Gentle anti-stuck
+            if (CheckCollision(world, player.position)) player.position.y += 0.1f;
+
+            bool bodyInWaterNow = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 0.9f), (int)floor(player.position.z)) == BLOCK_WATER;
+            bool headInWaterNow = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 1.62f), (int)floor(player.position.z)) == BLOCK_WATER;
+
+            if (!bodyInWaterNow && !player.grounded && player.position.y < prevY) player.fallDistance += (prevY - player.position.y);
+            if (landed) {
+                int fallDamage = (int)floorf(player.fallDistance - PLAYER_FALL_DAMAGE_THRESHOLD);
+                if (fallDamage > 0) DamagePlayer(&player, fallDamage);
+                player.fallDistance = 0.0f;
+            }
+            if (bodyInWaterNow || player.grounded) player.fallDistance = 0.0f;
+
+            if (headInWaterNow) {
+                player.airSeconds -= dt;
+                if (player.airSeconds <= 0.0f) {
+                    player.airSeconds = 0.0f;
+                    player.drownTickTimer -= dt;
+                    if (player.drownTickTimer <= 0.0f) {
+                        DamagePlayer(&player, 1);
+                        player.drownTickTimer = PLAYER_DROWN_DAMAGE_INTERVAL;
+                    }
+                } else {
+                    player.drownTickTimer = PLAYER_DROWN_DAMAGE_INTERVAL;
+                }
+            } else {
+                player.airSeconds += dt * 3.0f;
+                if (player.airSeconds > PLAYER_MAX_AIR_SECONDS) player.airSeconds = PLAYER_MAX_AIR_SECONDS;
+                player.drownTickTimer = PLAYER_DROWN_DAMAGE_INTERVAL;
+            }
+
+            if (player.position.y < PLAYER_VOID_Y) DamagePlayer(&player, PLAYER_MAX_HEALTH);
+            if (player.health <= 0) {
+                RespawnPlayer(&player, world);
+                DisableCursor();
+            }
 
             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
                 Ray ray = { camera.position, Vector3Normalize(Vector3Subtract(camera.target, camera.position)) };
@@ -275,8 +503,8 @@ int main(void) {
                 Ray ray = { camera.position, Vector3Normalize(Vector3Subtract(camera.target, camera.position)) };
                 RaycastResult res = World_Raycast(world, ray.position, ray.direction, 5.0f);
                 if (res.hit) {
-                    int px = res.x+res.nx, py = res.y+res.ny, pz = res.z+res.nz;
-                    if (!CheckCollision(world, (Vector3){(float)px+0.5f, (float)py, (float)pz+0.5f})) {
+                    int px = res.x + res.nx, py = res.y + res.ny, pz = res.z + res.nz;
+                    if (!CheckCollision(world, (Vector3){ (float)px + 0.5f, (float)py, (float)pz + 0.5f })) {
                         BlockType existing = World_GetBlock(world, px, py, pz);
                         if (existing == BLOCK_AIR || existing == BLOCK_WATER) {
                             World_SetBlock(world, px, py, pz, player.selectedBlock);
@@ -301,12 +529,26 @@ int main(void) {
                 }
             EndMode3D();
 
-            if (World_GetBlock(world, (int)floor(camera.position.x), (int)floor(camera.position.y), (int)floor(camera.position.z)) == BLOCK_WATER) 
+            bool cameraInWater = World_GetBlock(world, (int)floor(camera.position.x), (int)floor(camera.position.y), (int)floor(camera.position.z)) == BLOCK_WATER;
+            if (cameraInWater)
                 DrawRectangle(0, 0, 1280, 720, (Color){ 0, 121, 241, 150 });
             DrawRectangleGradientV(0, 0, 1280, 100, Fade(BLACK, 0.3f), BLANK);
             DrawRectangleGradientV(0, 620, 1280, 100, BLANK, Fade(BLACK, 0.3f));
 
             int hbX = (1280 - 620) / 2;
+            int heartsX = hbX;
+            int heartsY = 612;
+            for (int i = 0; i < PLAYER_MAX_HEALTH / 2; i++) {
+                int units = player.health - i * 2;
+                int fill = (units >= 2) ? 2 : (units == 1 ? 1 : 0);
+                DrawHeartIcon(heartsX + i * 20, heartsY, fill);
+            }
+            if (cameraInWater || player.airSeconds < PLAYER_MAX_AIR_SECONDS) {
+                int bubbles = (int)ceilf((player.airSeconds / PLAYER_MAX_AIR_SECONDS) * 10.0f);
+                if (bubbles < 0) bubbles = 0;
+                if (bubbles > 10) bubbles = 10;
+                for (int i = 0; i < 10; i++) DrawBubbleIcon(heartsX + i * 18 + 6, heartsY - 12, i < bubbles);
+            }
             for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
                 Rectangle rect = { (float)hbX + i * 70, 640, 60, 60 };
                 DrawRectangleRec(rect, player.selectedSlot == i ? Fade(WHITE, 0.6f) : Fade(BLACK, 0.4f));

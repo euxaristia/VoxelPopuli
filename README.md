@@ -9,6 +9,8 @@ A lightweight Minecraft-inspired voxel sandbox written in C with raylib.
 - Animated water texture with runtime atlas updates
 - Block placing and mining with a 9-slot hotbar
 - Inventory panel for quick block selection
+- Survival vitals: hearts, drowning/air meter, fall damage, respawn
+- Persistent world edits and player state across runs
 
 ## Stack 🛠️
 - C99
@@ -38,6 +40,7 @@ make clang  # explicit clang build
 - `Left Click`: Break block
 - `Right Click`: Place selected block
 - `1..9`: Select hotbar slot
+- `Mouse Wheel`: Cycle hotbar slot
 - `E`: Toggle inventory
 - `Esc`: Quit
 
