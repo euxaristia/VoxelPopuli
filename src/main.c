@@ -393,11 +393,15 @@ bool IsPointInBlock(World *world, Vector3 p) {
 
 bool CheckCollision(World *world, Vector3 pos) {
   float w = 0.22f, h = 1.75f; // Slightly slimmer for smoother transitions
-  for (float x = -w; x <= w; x += w * 2)
-    for (float z = -w; z <= w; z += w * 2)
-      for (float y = 0.1f; y <= h; y += h / 2.0f)
+  for (float x = -w; x <= w; x += w * 2) {
+    for (float z = -w; z <= w; z += w * 2) {
+      for (int yi = 0; yi <= 2; yi++) {
+        float y = 0.1f + yi * ((h - 0.1f) / 2.0f);
         if (IsPointInBlock(world, (Vector3){pos.x + x, pos.y + y, pos.z + z}))
           return true;
+      }
+    }
+  }
   return false;
 }
 
