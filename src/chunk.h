@@ -1,21 +1,23 @@
 #ifndef CHUNK_H
 #define CHUNK_H
 
-#include "raylib.h"
 #include "block.h"
+#include "raylib.h"
 
 #define CHUNK_WIDTH 16
 #define CHUNK_HEIGHT 256
 #define CHUNK_DEPTH 16
 
 typedef struct {
-    BlockType blocks[CHUNK_WIDTH][CHUNK_HEIGHT][CHUNK_DEPTH];
-    Mesh meshOpaque;
-    Model modelOpaque;
-    Mesh meshTransparent;
-    Model modelTransparent;
-    bool dirty;
-    int x, z;
+  BlockType blocks[CHUNK_WIDTH][CHUNK_HEIGHT][CHUNK_DEPTH];
+  Mesh meshOpaque;
+  Model modelOpaque;
+  Mesh meshTransparent;
+  Model modelTransparent;
+  bool dirty;
+  int x, z;
+  int minY;
+  int maxY;
 } Chunk;
 
 void Chunk_Init(Chunk *chunk, int x, int z);

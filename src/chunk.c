@@ -10,8 +10,9 @@
 void Chunk_Init(Chunk *chunk, int x, int z) {
   chunk->x = x;
   chunk->z = z;
-  memset(chunk->blocks, 0, sizeof(chunk->blocks));
   chunk->dirty = false;
+  chunk->minY = CHUNK_HEIGHT;
+  chunk->maxY = 0;
   chunk->meshOpaque = (Mesh){0};
   chunk->modelOpaque = (Model){0};
   chunk->meshTransparent = (Mesh){0};
@@ -181,12 +182,20 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
   int vCOp = 0, vCTr = 0;
   float ts = 1.0f / 16.0f, pad = 0.001f;
 
+  int currentMinY = CHUNK_HEIGHT;
+  int currentMaxY = 0;
+
   for (int x = 0; x < CHUNK_WIDTH; x++) {
     for (int y = 0; y < CHUNK_HEIGHT; y++) {
       for (int z = 0; z < CHUNK_DEPTH; z++) {
         BlockType block = chunk->blocks[x][y][z];
         if (block == BLOCK_AIR)
           continue;
+
+        if (y < currentMinY)
+          currentMinY = y;
+        if (y > currentMaxY)
+          currentMaxY = y;
 
         bool isT = (block == BLOCK_WATER || block == BLOCK_OAK_LEAVES);
         float *vB = isT ? vTrans : vOpaque;
@@ -443,6 +452,12 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
     UploadMesh(&chunk->meshTransparent, false);
     chunk->modelTransparent = LoadModelFromMesh(chunk->meshTransparent);
   }
+
+  if (currentMinY <= currentMaxY) {
+    chunk->minY = currentMinY;
+    chunk->maxY = currentMaxY;
+  }
+
   chunk->dirty = false;
 }
 
