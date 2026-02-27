@@ -23,6 +23,8 @@
 #define PLAYER_FALL_DAMAGE_THRESHOLD 3.0f
 #define PLAYER_RESPAWN_INVULN_SECONDS 1.0f
 #define PLAYER_VOID_Y -20.0f
+#define DEFAULT_SCREEN_WIDTH 1280
+#define DEFAULT_SCREEN_HEIGHT 720
 
 typedef struct {
     Vector3 position, velocity;
@@ -331,7 +333,9 @@ void RespawnPlayer(Player *player, World *world) {
 }
 
 int main(void) {
-    InitWindow(1280, 720, "VoxelPopuli - Minecraft 1.0 Clone"); InitNoise();
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    InitWindow(DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT, "VoxelPopuli - Minecraft 1.0 Clone"); InitNoise();
+    SetWindowMinSize(960, 540);
     World *world = (World *)malloc(sizeof(World)); World_Init(world);
     Player player;
     BlockType hotbar[INVENTORY_BLOCK_COUNT];
@@ -357,6 +361,7 @@ int main(void) {
     Camera3D camera = { (Vector3){0}, (Vector3){0}, (Vector3){0,1,0}, 75.0f, 0 };
     Vector2 cameraAngle = { PI, 0 };
     player.selectedBlock = hotbar[player.selectedSlot];
+    int ignoreMouseDeltaFrames = 0;
 
     DisableCursor(); SetTargetFPS(180);
 
@@ -366,10 +371,29 @@ int main(void) {
             player.damageCooldown -= dt;
             if (player.damageCooldown < 0.0f) player.damageCooldown = 0.0f;
         }
-        if (IsKeyPressed(KEY_E)) { player.inventoryOpen = !player.inventoryOpen; if (player.inventoryOpen) EnableCursor(); else DisableCursor(); }
+        if (IsKeyPressed(KEY_E)) {
+            player.inventoryOpen = !player.inventoryOpen;
+            if (player.inventoryOpen) {
+                EnableCursor();
+            } else {
+                DisableCursor();
+                SetMousePosition(GetScreenWidth() / 2, GetScreenHeight() / 2);
+                ignoreMouseDeltaFrames = 2;
+            }
+        }
 
         if (!player.inventoryOpen) {
-            Vector2 md = GetMouseDelta();
+            if (IsWindowResized()) {
+                SetMousePosition(GetScreenWidth() / 2, GetScreenHeight() / 2);
+                ignoreMouseDeltaFrames = 2;
+            }
+            Vector2 md = { 0 };
+            if (!IsWindowFocused() || ignoreMouseDeltaFrames > 0) {
+                if (ignoreMouseDeltaFrames > 0) ignoreMouseDeltaFrames--;
+                (void)GetMouseDelta();
+            } else {
+                md = GetMouseDelta();
+            }
             cameraAngle.x -= md.x * 0.003f;
             cameraAngle.y -= md.y * 0.003f;
             if (cameraAngle.y > 1.56f) cameraAngle.y = 1.56f; if (cameraAngle.y < -1.56f) cameraAngle.y = -1.56f;
@@ -517,6 +541,17 @@ int main(void) {
         CleanupHotbarSlots(&player, hotbar);
 
         World_Update(world, player.position);
+        int screenWidth = GetScreenWidth();
+        int screenHeight = GetScreenHeight();
+        int vignetteHeight = 100;
+        if (vignetteHeight > screenHeight / 2) vignetteHeight = screenHeight / 2;
+        int hotbarWidth = 620;
+        int hotbarY = screenHeight - 80;
+        int hbX = (screenWidth - hotbarWidth) / 2;
+        int heartsX = hbX;
+        int heartsY = hotbarY - 28;
+        int inventoryStartX = screenWidth / 2 - 200;
+        int inventoryStartY = screenHeight / 2 - 160;
         BeginDrawing();
             ClearBackground(SKYBLUE);
             BeginMode3D(camera);
@@ -531,13 +566,10 @@ int main(void) {
 
             bool cameraInWater = World_GetBlock(world, (int)floor(camera.position.x), (int)floor(camera.position.y), (int)floor(camera.position.z)) == BLOCK_WATER;
             if (cameraInWater)
-                DrawRectangle(0, 0, 1280, 720, (Color){ 0, 121, 241, 150 });
-            DrawRectangleGradientV(0, 0, 1280, 100, Fade(BLACK, 0.3f), BLANK);
-            DrawRectangleGradientV(0, 620, 1280, 100, BLANK, Fade(BLACK, 0.3f));
+                DrawRectangle(0, 0, screenWidth, screenHeight, (Color){ 0, 121, 241, 150 });
+            DrawRectangleGradientV(0, 0, screenWidth, vignetteHeight, Fade(BLACK, 0.3f), BLANK);
+            DrawRectangleGradientV(0, screenHeight - vignetteHeight, screenWidth, vignetteHeight, BLANK, Fade(BLACK, 0.3f));
 
-            int hbX = (1280 - 620) / 2;
-            int heartsX = hbX;
-            int heartsY = 612;
             for (int i = 0; i < PLAYER_MAX_HEALTH / 2; i++) {
                 int units = player.health - i * 2;
                 int fill = (units >= 2) ? 2 : (units == 1 ? 1 : 0);
@@ -550,7 +582,7 @@ int main(void) {
                 for (int i = 0; i < 10; i++) DrawBubbleIcon(heartsX + i * 18 + 6, heartsY - 12, i < bubbles);
             }
             for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
-                Rectangle rect = { (float)hbX + i * 70, 640, 60, 60 };
+                Rectangle rect = { (float)hbX + i * 70, (float)hotbarY, 60, 60 };
                 DrawRectangleRec(rect, player.selectedSlot == i ? Fade(WHITE, 0.6f) : Fade(BLACK, 0.4f));
                 DrawRectangleLinesEx(rect, 2, player.selectedSlot == i ? YELLOW : WHITE);
                 if (hotbar[i] != BLOCK_AIR) {
@@ -562,11 +594,15 @@ int main(void) {
             }
 
             if (player.inventoryOpen) {
-                DrawRectangle(0, 0, 1280, 720, Fade(BLACK, 0.6f));
-                DrawText("Inventory", 540, 140, 30, WHITE);
-                DrawText("Collect blocks by mining. Click item to assign selected hotbar slot.", 360, 176, 20, LIGHTGRAY);
+                DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.6f));
+                const char *inventoryTitle = "Inventory";
+                int titleSize = 30;
+                DrawText(inventoryTitle, (screenWidth - MeasureText(inventoryTitle, titleSize)) / 2, inventoryStartY - 60, titleSize, WHITE);
+                const char *inventoryHint = "Collect blocks by mining. Click item to assign selected hotbar slot.";
+                int hintSize = 20;
+                DrawText(inventoryHint, (screenWidth - MeasureText(inventoryHint, hintSize)) / 2, inventoryStartY - 24, hintSize, LIGHTGRAY);
                 for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
-                    Rectangle r = { (float)1280/2 - 200 + (i%5)*80, 200 + (i/5)*80, 70, 70 };
+                    Rectangle r = { (float)inventoryStartX + (i%5)*80, (float)inventoryStartY + (i/5)*80, 70, 70 };
                     DrawRectangleRec(r, Fade(WHITE, 0.2f));
                     DrawRectangle(r.x + 15, r.y + 12, 40, 40, GetBlockUIColour(inventoryBlocks[i]));
                     DrawText(TextFormat("%d", player.blockCounts[i]), (int)r.x + 6, (int)r.y + 48, 18, WHITE);
@@ -579,7 +615,7 @@ int main(void) {
                     } else DrawRectangleLinesEx(r, 2, Fade(WHITE, 0.6f));
                 }
             }
-            if (!player.inventoryOpen) DrawCircle(640, 360, 2, WHITE);
+            if (!player.inventoryOpen) DrawCircle(screenWidth / 2, screenHeight / 2, 2, WHITE);
             DrawText(TextFormat("FPS: %d", GetFPS()), 20, 20, 20, GREEN);
         EndDrawing();
     }
