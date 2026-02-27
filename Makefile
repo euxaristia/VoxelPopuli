@@ -1,6 +1,6 @@
 CC = clang
-CFLAGS = -Wall -std=c99 -I/usr/local/include
-LDFLAGS = -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+CFLAGS = -Wall -std=c99 -I/usr/local/include -O3 -march=native -flto -DNDEBUG
+LDFLAGS = -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 -flto
 
 SRC = src/main.c src/chunk.c src/world.c src/noise.c
 OBJ = $(SRC:.c=.o)

@@ -256,6 +256,7 @@ void World_Init(World *world) {
     world->atlas = LoadTextureFromImage(img);
     UnloadImage(img);
     world->waterAnimFrame = -1;
+    world->last_pcx = world->last_pcz = -999999;
     world->edits = NULL;
     world->editCount = 0;
     world->editCapacity = 0;
@@ -268,30 +269,37 @@ void World_Update(World *world, Vector3 playerPos) {
     World_UpdateWaterAtlas(world, (float)GetTime());
     int pcx = (int)floor(playerPos.x / CHUNK_WIDTH);
     int pcz = (int)floor(playerPos.z / CHUNK_DEPTH);
-    for (int x = pcx - VIEW_DISTANCE; x <= pcx + VIEW_DISTANCE; x++) {
-        for (int z = pcz - VIEW_DISTANCE; z <= pcz + VIEW_DISTANCE; z++) {
-            int ix = ((x % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
-            int iz = ((z % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
-            int index = ix + iz * POOL_WIDTH;
-            Chunk *c = world->chunks[index];
-            if (!c || c->x != x || c->z != z) {
-                if (!c) {
-                    c = (Chunk *)malloc(sizeof(Chunk));
-                    world->chunks[index] = c;
-                } else {
-                    Chunk_Unload(c);
+
+    if (pcx != world->last_pcx || pcz != world->last_pcz) {
+        for (int x = pcx - VIEW_DISTANCE; x <= pcx + VIEW_DISTANCE; x++) {
+            for (int z = pcz - VIEW_DISTANCE; z <= pcz + VIEW_DISTANCE; z++) {
+                int ix = ((x % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
+                int iz = ((z % POOL_WIDTH) + POOL_WIDTH) % POOL_WIDTH;
+                int index = ix + iz * POOL_WIDTH;
+                Chunk *c = world->chunks[index];
+                if (!c || c->x != x || c->z != z) {
+                    if (!c) {
+                        c = (Chunk *)malloc(sizeof(Chunk));
+                        world->chunks[index] = c;
+                    } else {
+                        Chunk_Unload(c);
+                    }
+                    Chunk_Init(c, x, z); Chunk_Generate(c);
+                    World_ApplyEditsToChunk(world, c);
+                    Chunk *n;
+                    if ((n = World_GetChunk(world, x-1, z))) n->dirty = true;
+                    if ((n = World_GetChunk(world, x+1, z))) n->dirty = true;
+                    if ((n = World_GetChunk(world, x, z-1))) n->dirty = true;
+                    if ((n = World_GetChunk(world, x, z+1))) n->dirty = true;
                 }
-                Chunk_Init(c, x, z); Chunk_Generate(c);
-                World_ApplyEditsToChunk(world, c);
-                Chunk *n;
-                if ((n = World_GetChunk(world, x-1, z))) n->dirty = true;
-                if ((n = World_GetChunk(world, x+1, z))) n->dirty = true;
-                if ((n = World_GetChunk(world, x, z-1))) n->dirty = true;
-                if ((n = World_GetChunk(world, x, z+1))) n->dirty = true;
             }
         }
+        world->last_pcx = pcx;
+        world->last_pcz = pcz;
     }
+
     int buildsThisFrame = 0;
+
     for (int d = 0; d <= VIEW_DISTANCE; d++) {
         for (int x = -d; x <= d; x++) {
             for (int z = -d; z <= d; z++) {
@@ -313,41 +321,32 @@ void World_Update(World *world, Vector3 playerPos) {
 }
 
 void World_Render(World *world, Frustum frustum) {
-    static bool *visibleChunks = NULL;
-    if (visibleChunks == NULL) visibleChunks = (bool *)malloc(CHUNK_POOL_SIZE * sizeof(bool));
-
+    world->visibleCount = 0;
     for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
         Chunk *c = world->chunks[i];
-        visibleChunks[i] = false;
         if (!c || c->x == 999999) continue;
         
-        float x1 = (float)c->x * CHUNK_WIDTH;
-        float y1 = 0;
-        float z1 = (float)c->z * CHUNK_DEPTH;
-        float x2 = x1 + CHUNK_WIDTH;
-        float y2 = CHUNK_HEIGHT;
-        float z2 = z1 + CHUNK_DEPTH;
+        float x1 = (float)c->x * CHUNK_WIDTH, y1 = 0, z1 = (float)c->z * CHUNK_DEPTH;
+        float x2 = x1 + CHUNK_WIDTH, y2 = CHUNK_HEIGHT, z2 = z1 + CHUNK_DEPTH;
 
         bool inFrustum = true;
         for (int p = 0; p < 6; p++) {
-            if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z1 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y1 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0] * x1 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
-            if (frustum.planes[p][0] * x2 + frustum.planes[p][1] * y2 + frustum.planes[p][2] * z2 + frustum.planes[p][3] > 0) continue;
-            inFrustum = false;
-            break;
+            if (frustum.planes[p][0]*x1 + frustum.planes[p][1]*y1 + frustum.planes[p][2]*z1 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0]*x2 + frustum.planes[p][1]*y1 + frustum.planes[p][2]*z1 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0]*x1 + frustum.planes[p][1]*y2 + frustum.planes[p][2]*z1 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0]*x2 + frustum.planes[p][1]*y2 + frustum.planes[p][2]*z1 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0]*x1 + frustum.planes[p][1]*y1 + frustum.planes[p][2]*z2 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0]*x2 + frustum.planes[p][1]*y1 + frustum.planes[p][2] *z2 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0]*x1 + frustum.planes[p][1]*y2 + frustum.planes[p][2]*z2 + frustum.planes[p][3] > 0) continue;
+            if (frustum.planes[p][0]*x2 + frustum.planes[p][1]*y2 + frustum.planes[p][2]*z2 + frustum.planes[p][3] > 0) continue;
+            inFrustum = false; break;
         }
-        visibleChunks[i] = inFrustum;
-        if (inFrustum) Chunk_RenderOpaque(c);
+        if (inFrustum) {
+            world->visibleIndices[world->visibleCount++] = i;
+            Chunk_RenderOpaque(c);
+        }
     }
-    
-    for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
-        if (visibleChunks[i]) Chunk_RenderTransparent(world->chunks[i]);
-    }
+    for (int i = 0; i < world->visibleCount; i++) Chunk_RenderTransparent(world->chunks[world->visibleIndices[i]]);
 }
 
 void World_RenderClouds(World *world, Vector3 playerPos, float time, Frustum frustum) {

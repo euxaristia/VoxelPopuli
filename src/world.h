@@ -25,8 +25,11 @@ typedef struct {
 
 typedef struct {
     Chunk *chunks[CHUNK_POOL_SIZE];
+    int visibleIndices[CHUNK_POOL_SIZE];
+    int visibleCount;
     Texture2D atlas;
     int waterAnimFrame;
+    int last_pcx, last_pcz;
     WorldEdit *edits;
     int editCount;
     int editCapacity;

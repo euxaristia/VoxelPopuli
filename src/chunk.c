@@ -114,6 +114,13 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
     chunk->modelOpaque = chunk->modelTransparent = (Model){ 0 };
     chunk->meshOpaque = chunk->meshTransparent = (Mesh){ 0 };
 
+    Chunk *neighbors[4] = {
+        World_GetChunk(world, chunk->x, chunk->z+1),
+        World_GetChunk(world, chunk->x, chunk->z-1),
+        World_GetChunk(world, chunk->x+1, chunk->z),
+        World_GetChunk(world, chunk->x-1, chunk->z)
+    };
+
     int vCOp = 0, vCTr = 0;
     float ts = 1.0f / 16.0f, pad = 0.001f;
 
@@ -130,7 +137,6 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                 unsigned char *cB = isT ? cTrans : cOpaque;
                 int *vc = isT ? &vCTr : &vCOp;
 
-                int wx = chunk->x * CHUNK_WIDTH + x, wz = chunk->z * CHUNK_DEPTH + z;
                 float fx = (float)x, fy = (float)y, fz = (float)z;
                 
                 int tx = 0, ty = 0;
@@ -168,9 +174,23 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                     *vc += 6;
                 }
                 // Sides
-                float sn[] = { 0,0,1, 0,0,-1, 1,0,0, -1,0,0 };
+                int snx[] = {0, 0, 1, -1};
+                int snz[] = {1, -1, 0, 0};
                 for(int s=0; s<4; s++) {
-                    if (ShouldDrawFace(block, World_GetBlock(world, wx+sn[s*3], y, wz+sn[s*3+2]))) {
+                    int nx = x + snx[s], nz = z + snz[s];
+                    BlockType neighbor = BLOCK_AIR;
+                    if (nx >= 0 && nx < CHUNK_WIDTH && nz >= 0 && nz < CHUNK_DEPTH) {
+                        neighbor = chunk->blocks[nx][y][nz];
+                    } else {
+                        Chunk *nc = neighbors[s];
+                        if (nc) {
+                            int bx = (nx + CHUNK_WIDTH) % CHUNK_WIDTH;
+                            int bz = (nz + CHUNK_DEPTH) % CHUNK_DEPTH;
+                            neighbor = nc->blocks[bx][y][bz];
+                        }
+                    }
+
+                    if (ShouldDrawFace(block, neighbor)) {
                         float sv[18];
                         if(s==0){ float f[]={fx,fy,fz+1, fx+1,fy,fz+1, fx+1,fy+1-wOff,fz+1, fx,fy,fz+1, fx+1,fy+1-wOff,fz+1, fx,fy+1-wOff,fz+1}; memcpy(sv,f,72); }
                         else if(s==1){ float b[]={fx+1,fy,fz, fx,fy,fz, fx,fy+1-wOff,fz, fx+1,fy,fz, fx,fy+1-wOff,fz, fx+1,fy+1-wOff,fz}; memcpy(sv,b,72); }
@@ -178,7 +198,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                         else { float l[]={fx,fy,fz, fx,fy,fz+1, fx,fy+1-wOff,fz+1, fx,fy,fz, fx,fy+1-wOff,fz+1, fx,fy+1-wOff,fz}; memcpy(sv,l,72); }
                         float st[] = { u0,v1, u1,v1, u1,v0, u0,v1, u1,v0, u0,v0 };
                         memcpy(&vB[*vc*3], sv, 72); memcpy(&tB[*vc*2], st, 48);
-                        for(int i=0; i<6; i++){ int idx=*vc+i; nB[idx*3]=sn[s*3]; nB[idx*3+1]=0; nB[idx*3+2]=sn[s*3+2]; float sh=(s<2)?0.6f:0.8f; cB[idx*4]=cB[idx*4+1]=cB[idx*4+2]=(unsigned char)(255*sh); cB[idx*4+3]=(block==BLOCK_WATER)?WATER_VERTEX_ALPHA:255; }
+                        for(int i=0; i<6; i++){ int idx=*vc+i; nB[idx*3]=snx[s]; nB[idx*3+1]=0; nB[idx*3+2]=snz[s]; float sh=(s<2)?0.6f:0.8f; cB[idx*4]=cB[idx*4+1]=cB[idx*4+2]=(unsigned char)(255*sh); cB[idx*4+3]=(block==BLOCK_WATER)?WATER_VERTEX_ALPHA:255; }
                         *vc += 6;
                     }
                 }
