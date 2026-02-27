@@ -1,3 +1,6 @@
 *.o
 voxelpopuli
 save/
+perf.data
+.gitignore
+perf.data.old
