@@ -10,7 +10,7 @@
 void Chunk_Init(Chunk *chunk, int x, int z) {
     chunk->x = x; chunk->z = z;
     memset(chunk->blocks, 0, sizeof(chunk->blocks));
-    chunk->dirty = true;
+    chunk->dirty = false;
     chunk->meshOpaque = (Mesh){ 0 }; chunk->modelOpaque = (Model){ 0 };
     chunk->meshTransparent = (Mesh){ 0 }; chunk->modelTransparent = (Model){ 0 };
 }
