@@ -1,6 +1,15 @@
 CC = clang
-CFLAGS = -Wall -std=c99 -I/usr/local/include -O3 -march=native -flto -DNDEBUG
-LDFLAGS = -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 -flto
+CFLAGS = -Wall -std=c99 -Isrc -I/usr/local/include -O3 -march=native -flto -DNDEBUG
+LDFLAGS = -lm -lpthread -ldl -flto
+
+# Detect OS
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+    LDFLAGS += -Llib/linux -lraylib -lGL -lrt -lX11
+endif
+ifeq ($(UNAME_S),Darwin)
+    LDFLAGS += -Llib/macos -lraylib -framework CoreVideo -framework IOKit -framework Cocoa -framework GLUT -framework OpenGL
+endif
 
 SRC = src/main.c src/chunk.c src/world.c src/noise.c
 OBJ = $(SRC:.c=.o)
