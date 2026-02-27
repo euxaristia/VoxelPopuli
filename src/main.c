@@ -455,11 +455,19 @@ int main(void) {
     Vector2 cameraAngle = { PI, 0 };
     player.selectedBlock = hotbar[player.selectedSlot];
     int ignoreMouseDeltaFrames = 0;
+    float fpsTimer = 0.0f;
 
     DisableCursor(); SetTargetFPS(0);
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime(); if (dt > 0.05f) dt = 0.05f;
+
+        fpsTimer += GetFrameTime();
+        if (fpsTimer >= 1.0f) {
+            printf("FPS: %d\n", GetFPS());
+            fpsTimer = 0.0f;
+        }
+
         if (player.damageCooldown > 0.0f) {
             player.damageCooldown -= dt;
             if (player.damageCooldown < 0.0f) player.damageCooldown = 0.0f;
