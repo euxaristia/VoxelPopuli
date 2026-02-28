@@ -1,0 +1,28 @@
+name: C/C++ Static Analysis
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck flawfinder libraylib-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
+
+    - name: Run cppcheck
+      run: cppcheck --enable=all --error-exitcode=1 src/
+
+    - name: Run flawfinder
+      run: flawfinder --error-level=4 src/
+
+    - name: Build
+      run: make
