@@ -19,7 +19,7 @@ jobs:
         sudo apt-get install -y cppcheck flawfinder libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
 
     - name: Run cppcheck
-      run: cppcheck --enable=all --error-exitcode=1 src/
+      run: cppcheck --enable=all --error-exitcode=1 --exclude=src/raylib.h --exclude=src/rlgl.h src/
 
     - name: Run flawfinder
       run: flawfinder --error-level=4 src/
