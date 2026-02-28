@@ -16,7 +16,9 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cppcheck flawfinder libraylib-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
+        sudo apt-get install -y cppcheck flawfinder libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
+        git clone https://github.com/raysan5/raylib.git /tmp/raylib
+        cd /tmp/raylib && git checkout 5.0 && sudo make install && cd -
 
     - name: Run cppcheck
       run: cppcheck --enable=all --error-exitcode=1 src/
