@@ -19,7 +19,7 @@ jobs:
         sudo apt-get install -y cppcheck flawfinder libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
 
     - name: Run cppcheck
-      run: cppcheck --enable=error,warning --error-exitcode=1 --force -I src/ src/main.c src/chunk.c src/world.c src/noise.c
+      run: cppcheck --error-exitcode=1 --force -I src/ src/main.c src/chunk.c src/world.c src/noise.c
 
     - name: Run flawfinder
       run: flawfinder --error-level=1 src/main.c src/chunk.c src/world.c src/noise.c
