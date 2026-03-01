@@ -9,7 +9,7 @@ static const char* ps1_vs =
     "in vec2 vertexTexCoord;\n"
     "in vec4 vertexColor;\n"
     "uniform mat4 mvp;\n"
-    "uniform float precision = 240.0;\n"
+    "uniform float precision = 480.0;\n"
     "out vec4 fragColor;\n"
     "noperspective out vec2 fragTexCoord;\n"
     "void main() {\n"

@@ -489,7 +489,7 @@ Frustum ExtractFrustum(Camera3D camera) {
 void UpdatePS1Target(RenderTexture2D *target, int *currentW, int *currentH) {
     int sw = GetScreenWidth();
     int sh = GetScreenHeight();
-    int th = 240;
+    int th = 480;
     int tw = (int)((float)th * (float)sw/(float)sh);
     if (tw != *currentW || th != *currentH) {
         UnloadRenderTexture(*target);
@@ -511,12 +511,12 @@ int main(void) {
   World *world = (World *)malloc(sizeof(World));
   World_Init(world);
 #ifdef PS1_RENDERER
-  int ps1W = 320, ps1H = 240;
+  int ps1W = 640, ps1H = 480;
   Shader ps1Shader = LoadShaderFromMemory(ps1_vs, ps1_fs);
   RenderTexture2D ps1Target = LoadRenderTexture(ps1W, ps1H);
   SetTextureFilter(ps1Target.texture, TEXTURE_FILTER_POINT);
   int precisionLoc = GetShaderLocation(ps1Shader, "precision");
-  float precisionVal = 240.0f;
+  float precisionVal = 480.0f;
   SetShaderValue(ps1Shader, precisionLoc, &precisionVal, SHADER_UNIFORM_FLOAT);
 #endif
   Player player;
@@ -823,14 +823,14 @@ int main(void) {
     rh = ps1H;
 #endif
     int vignetteHeight = rh / 8;
-    int hotbarSlotSize = (int)(20 * rh / 240.0f);
+    int hotbarSlotSize = (int)(40 * rh / 480.0f);
     int hotbarWidth = hotbarSlotSize * 10;
-    int hotbarY = rh - hotbarSlotSize - 5;
+    int hotbarY = rh - hotbarSlotSize - 10;
     int hbX = (rw - hotbarWidth) / 2;
     int heartsX = hbX;
-    int heartsY = hotbarY - 15;
-    int inventoryStartX = rw / 2 - (int)(180 * rw / 320.0f / 2);
-    int inventoryStartY = rh / 2 - (int)(140 * rh / 240.0f / 2);
+    int heartsY = hotbarY - 30;
+    int inventoryStartX = rw / 2 - (int)(360 * rw / 640.0f / 2);
+    int inventoryStartY = rh / 2 - (int)(280 * rh / 480.0f / 2);
 
     BeginDrawing();
 #ifdef PS1_RENDERER
@@ -872,7 +872,7 @@ int main(void) {
     for (int i = 0; i < PLAYER_MAX_HEALTH / 2; i++) {
       int units = player.health - i * 2;
       int fill = (units >= 2) ? 2 : (units == 1 ? 1 : 0);
-      DrawHeartIcon(heartsX + i * 11, heartsY, fill);
+      DrawHeartIcon(heartsX + i * 22, heartsY, fill);
     }
     if (cameraInWater || player.airSeconds < PLAYER_MAX_AIR_SECONDS) {
       int bubbles =
@@ -882,57 +882,57 @@ int main(void) {
       if (bubbles > 10)
         bubbles = 10;
       for (int i = 0; i < 10; i++)
-        DrawBubbleIcon(heartsX + i * 10 + 4, heartsY - 10, i < bubbles);
+        DrawBubbleIcon(heartsX + i * 20 + 8, heartsY - 20, i < bubbles);
     }
     for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
       Rectangle rect = {(float)hbX + i * hotbarSlotSize, (float)hotbarY,
                         (float)hotbarSlotSize, (float)hotbarSlotSize};
       DrawRectangleRec(rect, player.selectedSlot == i ? Fade(WHITE, 0.6f)
                                                       : Fade(BLACK, 0.4f));
-      DrawRectangleLinesEx(rect, 1, player.selectedSlot == i ? YELLOW : WHITE);
+      DrawRectangleLinesEx(rect, 2, player.selectedSlot == i ? YELLOW : WHITE);
       if (hotbar[i] != BLOCK_AIR) {
         int idx = GetInventoryIndex(hotbar[i]);
         int count = (idx >= 0) ? player.blockCounts[idx] : 0;
         DrawRectangle(rect.x + rect.width * 0.15f, rect.y + rect.height * 0.15f,
                       rect.width * 0.7f, rect.height * 0.7f,
                       GetBlockUIColour(hotbar[i]));
-        DrawText(TextFormat("%d", count), (int)rect.x + 1, (int)rect.y + 1,
-                 10, (count > 0) ? WHITE : LIGHTGRAY);
+        DrawText(TextFormat("%d", count), (int)rect.x + 2, (int)rect.y + 2,
+                 20, (count > 0) ? WHITE : LIGHTGRAY);
       }
     }
 
     if (player.inventoryOpen) {
       DrawRectangle(0, 0, rw, rh, Fade(BLACK, 0.6f));
       const char *inventoryTitle = "Inventory";
-      int titleSize = 20;
+      int titleSize = 40;
       DrawText(inventoryTitle, (rw - MeasureText(inventoryTitle, titleSize)) / 2,
-               inventoryStartY - 25, titleSize, WHITE);
+               inventoryStartY - 50, titleSize, WHITE);
       for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
-        Rectangle r = {(float)inventoryStartX + (i % 5) * 35,
-                       (float)inventoryStartY + (i / 5) * 35,
-                       30, 30};
+        Rectangle r = {(float)inventoryStartX + (i % 5) * 70,
+                       (float)inventoryStartY + (i / 5) * 70,
+                       60, 60};
         DrawRectangleRec(r, Fade(WHITE, 0.2f));
-        DrawRectangle(r.x + 6, r.y + 6, 18, 18,
+        DrawRectangle(r.x + 12, r.y + 12, 36, 36,
                       GetBlockUIColour(inventoryBlocks[i]));
-        DrawText(TextFormat("%d", player.blockCounts[i]), (int)r.x + 2,
-                 (int)r.y + 20, 10, WHITE);
+        DrawText(TextFormat("%d", player.blockCounts[i]), (int)r.x + 4,
+                 (int)r.y + 40, 20, WHITE);
         if (CheckCollisionPointRec(
                 (Vector2){GetMouseX() * rw / screenWidth,
                           GetMouseY() * rh / screenHeight},
                 r)) {
-          DrawRectangleLinesEx(r, 1, YELLOW);
+          DrawRectangleLinesEx(r, 2, YELLOW);
           if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) &&
               player.blockCounts[i] > 0) {
             hotbar[player.selectedSlot] = inventoryBlocks[i];
             player.selectedBlock = hotbar[player.selectedSlot];
           }
         } else
-          DrawRectangleLinesEx(r, 1, Fade(WHITE, 0.6f));
+          DrawRectangleLinesEx(r, 2, Fade(WHITE, 0.6f));
       }
     }
     if (!player.inventoryOpen)
-      DrawCircle(rw / 2, rh / 2, 1, WHITE);
-    DrawText(TextFormat("FPS: %d", GetFPS()), 5, 5, 10, GREEN);
+      DrawCircle(rw / 2, rh / 2, 2, WHITE);
+    DrawText(TextFormat("FPS: %d", GetFPS()), 10, 10, 20, GREEN);
 
 #ifdef PS1_RENDERER
     EndTextureMode();
