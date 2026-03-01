@@ -447,10 +447,42 @@ void World_Init(World *world) {
     world->chunks[i] = NULL;
 }
 
+static void World_TickGravity(World *world, int pcx, int pcz) {
+  int r = 2;
+  for (int cx = pcx - r; cx <= pcx + r; cx++) {
+    for (int cz = pcz - r; cz <= pcz + r; cz++) {
+      Chunk *c = World_GetChunk(world, cx, cz);
+      if (!c)
+        continue;
+
+      for (int i = 0; i < 256; i++) {
+        int x = rand() % CHUNK_WIDTH;
+        int z = rand() % CHUNK_DEPTH;
+        int y = (rand() % (CHUNK_HEIGHT - 2)) + 1;
+
+        BlockType b = c->blocks[x][y][z];
+        if (b == BLOCK_GRAVEL || b == BLOCK_SAND) {
+          BlockType below = c->blocks[x][y - 1][z];
+          if (below == BLOCK_AIR || below == BLOCK_WATER) {
+            c->blocks[x][y - 1][z] = b;
+            c->blocks[x][y][z] = BLOCK_AIR;
+            if (!c->dirty) {
+              c->dirty = true;
+              world->dirtyCount++;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 void World_Update(World *world, Vector3 playerPos) {
   World_UpdateWaterAtlas(world, (float)GetTime());
   int pcx = (int)floor(playerPos.x / CHUNK_WIDTH);
   int pcz = (int)floor(playerPos.z / CHUNK_DEPTH);
+
+  World_TickGravity(world, pcx, pcz);
 
   if (pcx != world->last_pcx || pcz != world->last_pcz) {
     for (int x = pcx - VIEW_DISTANCE; x <= pcx + VIEW_DISTANCE; x++) {

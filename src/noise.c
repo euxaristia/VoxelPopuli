@@ -1,5 +1,6 @@
 #include "noise.h"
 #include <math.h>
+#include <stdlib.h>
 
 // Simple hash-based noise for brevity, or a basic Perlin implementation.
 // For now, let's use a simple sine-based pseudo-noise for testing,
@@ -24,6 +25,12 @@ static int p[512] = { 151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140
     138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180 };
 
 void InitNoise() {
+    for (int i = 0; i < 256; i++) {
+        int target = rand() % 256;
+        int temp = p[i];
+        p[i] = p[target];
+        p[target] = temp;
+    }
     for (int i=0; i < 256 ; i++) p[256+i] = p[i];
 }
 

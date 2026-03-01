@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 
 #include "noise.h"
 #include "raylib.h"
@@ -502,6 +503,7 @@ void UpdatePS1Target(RenderTexture2D *target, int *currentW, int *currentH) {
 #endif
 
 int main(void) {
+  srand(time(NULL));
   SetConfigFlags(FLAG_WINDOW_RESIZABLE);
   InitWindow(DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT,
              "VoxelPopuli - Minecraft 1.0 Clone");

@@ -127,6 +127,40 @@ void Chunk_Generate(Chunk *chunk) {
         currentZ--;
     }
   }
+
+  // PASS 4: Gravel
+  for (int attempt = 0; attempt < 8; attempt++) {
+    int x = rand() % CHUNK_WIDTH;
+    int y = (rand() % 64) + 64; // Gravel usually spawns at mid-to-low heights
+    int z = rand() % CHUNK_DEPTH;
+
+    int veinSize = (rand() % 32) + 16;
+    int currentX = x, currentY = y, currentZ = z;
+
+    for (int v = 0; v < veinSize; v++) {
+      if (currentX >= 0 && currentX < CHUNK_WIDTH && currentZ >= 0 &&
+          currentZ < CHUNK_DEPTH && currentY >= 0 && currentY < CHUNK_HEIGHT) {
+        if (chunk->blocks[currentX][currentY][currentZ] == BLOCK_STONE ||
+            chunk->blocks[currentX][currentY][currentZ] == BLOCK_DIRT) {
+          chunk->blocks[currentX][currentY][currentZ] = BLOCK_GRAVEL;
+        }
+      }
+
+      int dir = rand() % 6;
+      if (dir == 0)
+        currentX++;
+      else if (dir == 1)
+        currentX--;
+      else if (dir == 2)
+        currentY++;
+      else if (dir == 3)
+        currentY--;
+      else if (dir == 4)
+        currentZ++;
+      else if (dir == 5)
+        currentZ--;
+    }
+  }
 }
 
 static bool ShouldDrawFace(BlockType current, BlockType neighbor) {
