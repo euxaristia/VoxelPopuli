@@ -1,5 +1,8 @@
 CC = clang
 CFLAGS = -Wall -std=c99 -Isrc -I/usr/local/include -O3 -march=native -flto -DNDEBUG
+ifeq ($(PS1_RENDERER),1)
+    CFLAGS += -DPS1_RENDERER
+endif
 LDFLAGS = -lm -lpthread -ldl -flto
 
 # Detect OS
