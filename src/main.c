@@ -436,11 +436,9 @@ static void RespawnPlayer(Player *player, World *world) {
     player->position.y += 1.0f;
 }
 
-static Frustum ExtractFrustum(Camera3D camera) {
-  Matrix modelview = GetCameraMatrix(camera);
-  Matrix projection = MatrixPerspective(
-      camera.fovy * DEG2RAD, (float)GetScreenWidth() / (float)GetScreenHeight(),
-      0.1f, 1000.0f);
+static Frustum ExtractFrustum(void) {
+  Matrix modelview = rlGetMatrixModelview();
+  Matrix projection = rlGetMatrixProjection();
   Matrix viewProj = MatrixMultiply(modelview, projection);
 
   Frustum f;
@@ -504,19 +502,19 @@ static void UpdatePS1Target(RenderTexture2D *target, int *currentW, int *current
 #endif
 
 static void DrawSun(Vector3 playerPos, float time) {
-  float sunDist = 450.0f;
-  float sunSize = 45.0f;
-  float dayCycle = time / 120.0f;
-  float angle = (dayCycle * 2.0f * PI) + PI / 2.0f;
+  float sunDist = 400.0f;
+  float sunSize = 40.0f;
+  float angle = (time / 120.0f) * 2.0f * PI;
 
-  float sx = cosf(angle) * sunDist;
-  float sy = sinf(angle) * sunDist;
-
-  rlDisableDepthTest();
+  rlDrawRenderBatchActive();
   rlPushMatrix();
-  rlTranslatef(playerPos.x + sx, playerPos.y + sy, playerPos.z);
-  rlRotatef(RAD2DEG * -angle, 0, 0, 1);
-  rlRotatef(90, 0, 1, 0);
+  rlTranslatef(playerPos.x, playerPos.y, playerPos.z);
+  rlRotatef(RAD2DEG * angle, 1, 0, 0); 
+  rlTranslatef(0, 0, sunDist);
+  
+  rlDisableDepthTest();
+  rlDisableBackfaceCulling();
+  rlSetTexture(rlGetTextureIdDefault());
 
   rlBegin(RL_QUADS);
   rlColor4ub(255, 255, 255, 255);
@@ -525,8 +523,12 @@ static void DrawSun(Vector3 playerPos, float time) {
   rlVertex3f(sunSize, sunSize, 0);
   rlVertex3f(-sunSize, sunSize, 0);
   rlEnd();
-  rlPopMatrix();
+
+  rlSetTexture(0);
+  rlEnableBackfaceCulling();
   rlEnableDepthTest();
+  rlPopMatrix();
+  rlDrawRenderBatchActive();
 }
 
 int main(void) {
@@ -867,21 +869,22 @@ int main(void) {
     BeginTextureMode(ps1Target);
 #endif
     float time = (float)GetTime();
-    float sunY = sinf(((time / 120.0f) * 2.0f * PI) + PI / 2.0f);
+    float sunY = sinf((time / 120.0f) * 2.0f * PI);
     Color skyColor = SKYBLUE;
     if (sunY < 0.2f) {
-      float mix = fmaxf(0.0f, fminf(1.0f, (0.2f - sunY) * 2.0f));
+      float mix = fmaxf(0.0f, fminf(1.0f, (0.2f - sunY) * 2.5f));
       skyColor.r = (unsigned char)(SKYBLUE.r * (1.0f - mix) + 10 * mix);
       skyColor.g = (unsigned char)(SKYBLUE.g * (1.0f - mix) + 10 * mix);
       skyColor.b = (unsigned char)(SKYBLUE.b * (1.0f - mix) + 30 * mix);
     }
     ClearBackground(skyColor);
+    
     BeginMode3D(camera);
+    Frustum frustum = ExtractFrustum();
+    DrawSun(player.position, time);
 #ifdef PS1_RENDERER
     BeginShaderMode(ps1Shader);
 #endif
-    Frustum frustum = ExtractFrustum(camera);
-    DrawSun(player.position, time);
     World_Render(world, frustum);
     World_RenderClouds(world, player.position, (float)GetTime(), frustum);
     if (!player.inventoryOpen) {
@@ -889,15 +892,17 @@ int main(void) {
                                       camera.target, camera.position))};
       RaycastResult res =
           World_Raycast(world, ray.position, ray.direction, 5.0f);
-      if (res.hit)
+      if (res.hit) {
+        rlDrawRenderBatchActive();
         DrawCubeWires((Vector3){(float)res.x + 0.5f, (float)res.y + 0.5f,
                                 (float)res.z + 0.5f},
                       1.01f, 1.01f, 1.01f, BLACK);
+      }
     }
-    EndMode3D();
 #ifdef PS1_RENDERER
     EndShaderMode();
 #endif
+    EndMode3D();
 
     bool cameraInWater =
         World_GetBlock(world, (int)floor(camera.position.x),
