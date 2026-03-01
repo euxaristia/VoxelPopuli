@@ -517,7 +517,7 @@ int main(void) {
   Shader ps1Shader = LoadShaderFromMemory(ps1_vs, ps1_fs);
   RenderTexture2D ps1Target = LoadRenderTexture(ps1W, ps1H);
   SetTextureFilter(ps1Target.texture, TEXTURE_FILTER_POINT);
-  int precisionLoc = GetShaderLocation(ps1Shader, "precision");
+  int precisionLoc = GetShaderLocation(ps1Shader, "uPrecision");
   float precisionVal = 480.0f;
   SetShaderValue(ps1Shader, precisionLoc, &precisionVal, SHADER_UNIFORM_FLOAT);
 #endif

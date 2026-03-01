@@ -188,10 +188,10 @@ void Chunk_Generate(Chunk *chunk) {
       int currentLight = 15;
       for (int y = CHUNK_HEIGHT - 1; y >= 0; y--) {
         BlockType b = chunk->blocks[x][y][z];
-        if (b != BLOCK_AIR && b != BLOCK_WATER && b != BLOCK_OAK_LEAVES) {
+        if (b != BLOCK_AIR) {
           currentLight = 0;
         }
-        chunk->light[x][y][z] = (unsigned char)currentLight;
+        chunk->light[x][y][z] = (unsigned char)(currentLight > 4 ? currentLight : 4);
       }
     }
   }
