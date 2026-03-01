@@ -1,4 +1,7 @@
 CC = clang
+# Default to PS1 Renderer
+PS1_RENDERER ?= 1
+
 CFLAGS = -Wall -std=c99 -Isrc -I/usr/local/include -O3 -march=native -flto -DNDEBUG
 ifeq ($(PS1_RENDERER),1)
     CFLAGS += -DPS1_RENDERER
