@@ -47,7 +47,7 @@ typedef struct {
   int blockCounts[INVENTORY_BLOCK_COUNT];
 } Player;
 
-BlockType inventoryBlocks[INVENTORY_BLOCK_COUNT] = {
+static const BlockType inventoryBlocks[INVENTORY_BLOCK_COUNT] = {
     BLOCK_GRASS, BLOCK_DIRT,  BLOCK_STONE,  BLOCK_OAK_LOG, BLOCK_OAK_LEAVES,
     BLOCK_SAND,  BLOCK_WATER, BLOCK_GRAVEL, BLOCK_BEDROCK, BLOCK_COAL_ORE};
 
@@ -83,14 +83,14 @@ typedef struct {
   uint8_t reserved[3];
 } WindowSaveData;
 
-int GetInventoryIndex(BlockType block) {
+static int GetInventoryIndex(BlockType block) {
   for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++)
     if (inventoryBlocks[i] == block)
       return i;
   return -1;
 }
 
-Color GetBlockUIColour(BlockType block) {
+static Color GetBlockUIColour(BlockType block) {
   if (block == BLOCK_GRASS)
     return GREEN;
   if (block == BLOCK_DIRT)
@@ -114,7 +114,7 @@ Color GetBlockUIColour(BlockType block) {
   return WHITE;
 }
 
-void DrawHeartIcon(int x, int y, int fillState) {
+static void DrawHeartIcon(int x, int y, int fillState) {
   // 0 = transparent, 1 = outline, 2 = fill.
   static const unsigned char sprite[8][9] = {  // flawfinder: ignore
       {0, 1, 1, 0, 0, 0, 1, 1, 0}, {1, 2, 2, 1, 0, 1, 2, 2, 1},
@@ -139,7 +139,7 @@ void DrawHeartIcon(int x, int y, int fillState) {
   }
 }
 
-void DrawBubbleIcon(int x, int y, bool filled) {
+static void DrawBubbleIcon(int x, int y, bool filled) {
   Color fill =
       filled ? (Color){169, 216, 255, 230} : (Color){76, 101, 130, 210};
   Color highlight =
@@ -150,7 +150,7 @@ void DrawBubbleIcon(int x, int y, bool filled) {
   DrawCircleLines(x, y, 6.0f, border);
 }
 
-int ClampInt(int value, int minValue, int maxValue) {
+static int ClampInt(int value, int minValue, int maxValue) {
   if (value < minValue)
     return minValue;
   if (value > maxValue)
@@ -158,7 +158,7 @@ int ClampInt(int value, int minValue, int maxValue) {
   return value;
 }
 
-bool SaveWindowState(const char *path) {
+static bool SaveWindowState(const char *path) {
   FILE *file = fopen(path, "wb");  // flawfinder: ignore
   if (!file)
     return false;
@@ -168,14 +168,14 @@ bool SaveWindowState(const char *path) {
   data.version = WINDOW_SAVE_VERSION;
   data.width = GetScreenWidth();
   data.height = GetScreenHeight();
-  data.maximized = IsWindowState(FLAG_WINDOW_MAXIMIZED) ? 1u : 0u;
+  data.maximized = (uint8_t)(IsWindowState(FLAG_WINDOW_MAXIMIZED) ? 1u : 0u);
 
   bool ok = fwrite(&data, sizeof(data), 1, file) == 1;
   fclose(file);
   return ok;
 }
 
-bool LoadWindowState(const char *path) {
+static bool LoadWindowState(const char *path) {
   FILE *file = fopen(path, "rb");  // flawfinder: ignore
   if (!file)
     return false;
@@ -196,7 +196,7 @@ bool LoadWindowState(const char *path) {
   return true;
 }
 
-void LoadInventoryFromSave(Player *player, BlockType *hotbar,
+static void LoadInventoryFromSave(Player *player, BlockType *hotbar,
                            const int32_t *counts, const int32_t *hotbarBlocks) {
   for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
     int count = counts[i];
@@ -206,7 +206,7 @@ void LoadInventoryFromSave(Player *player, BlockType *hotbar,
 
     int hb = hotbarBlocks[i];
     BlockType candidate =
-        (hb >= BLOCK_AIR && hb <= BLOCK_BEDROCK) ? (BlockType)hb : BLOCK_AIR;
+        (hb >= BLOCK_AIR && hb < BLOCK_COUNT) ? (BlockType)hb : BLOCK_AIR;
     int idx = GetInventoryIndex(candidate);
     if (candidate != BLOCK_AIR && (idx < 0 || player->blockCounts[idx] <= 0))
       candidate = BLOCK_AIR;
@@ -214,7 +214,7 @@ void LoadInventoryFromSave(Player *player, BlockType *hotbar,
   }
 }
 
-void DamagePlayer(Player *player, int amount) {
+static void DamagePlayer(Player *player, int amount) {
   if (amount <= 0 || player->health <= 0)
     return;
   if (player->damageCooldown > 0.0f)
@@ -225,7 +225,7 @@ void DamagePlayer(Player *player, int amount) {
   player->damageCooldown = 0.45f;
 }
 
-void TryAutoAssignHotbar(BlockType *hotbar, BlockType block) {
+static void TryAutoAssignHotbar(BlockType *hotbar, BlockType block) {
   if (block == BLOCK_AIR)
     return;
   for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++)
@@ -239,7 +239,7 @@ void TryAutoAssignHotbar(BlockType *hotbar, BlockType block) {
   }
 }
 
-void CleanupHotbarSlots(Player *player, BlockType *hotbar) {
+static void CleanupHotbarSlots(Player *player, BlockType *hotbar) {
   for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
     if (hotbar[i] == BLOCK_AIR)
       continue;
@@ -250,13 +250,13 @@ void CleanupHotbarSlots(Player *player, BlockType *hotbar) {
   player->selectedBlock = hotbar[player->selectedSlot];
 }
 
-bool EnsureSaveDir(void) {
+static bool EnsureSaveDir(void) {
   if (mkdir(SAVE_DIR, 0755) == 0)
     return true;
   return errno == EEXIST;
 }
 
-void InitDefaultPlayer(Player *player, BlockType *hotbar) {
+static void InitDefaultPlayer(Player *player, BlockType *hotbar) {
   memset(player, 0, sizeof(*player));
   player->position = (Vector3){32.5f, 164.0f, 32.5f};
   player->respawnPosition = player->position;
@@ -274,7 +274,7 @@ void InitDefaultPlayer(Player *player, BlockType *hotbar) {
   player->selectedBlock = hotbar[player->selectedSlot];
 }
 
-bool SavePlayerState(Player *player, BlockType *hotbar, const char *path) {
+static bool SavePlayerState(const Player *player, const BlockType *hotbar, const char *path) {
   FILE *file = fopen(path, "wb");  // flawfinder: ignore
   if (!file)
     return false;
@@ -304,7 +304,7 @@ bool SavePlayerState(Player *player, BlockType *hotbar, const char *path) {
   return ok;
 }
 
-bool LoadPlayerState(Player *player, BlockType *hotbar, const char *path) {
+static bool LoadPlayerState(Player *player, BlockType *hotbar, const char *path) {
   FILE *file = fopen(path, "rb");  // flawfinder: ignore
   if (!file)
     return false;
@@ -388,13 +388,13 @@ bool LoadPlayerState(Player *player, BlockType *hotbar, const char *path) {
   return false;
 }
 
-bool IsPointInBlock(World *world, Vector3 p) {
+static bool IsPointInBlock(World *world, Vector3 p) {
   BlockType b =
       World_GetBlock(world, (int)floor(p.x), (int)floor(p.y), (int)floor(p.z));
   return b != BLOCK_AIR && b != BLOCK_WATER;
 }
 
-bool CheckCollision(World *world, Vector3 pos) {
+static bool CheckCollision(World *world, Vector3 pos) {
   float w = 0.22f, h = 1.75f; // Slightly slimmer for smoother transitions
   for (float x = -w; x <= w; x += w * 2) {
     for (float z = -w; z <= w; z += w * 2) {
@@ -408,7 +408,7 @@ bool CheckCollision(World *world, Vector3 pos) {
   return false;
 }
 
-void RespawnPlayer(Player *player, World *world) {
+static void RespawnPlayer(Player *player, World *world) {
   int sx = (int)floor(player->respawnPosition.x);
   int sz = (int)floor(player->respawnPosition.z);
   float safeY = player->respawnPosition.y;
@@ -435,7 +435,7 @@ void RespawnPlayer(Player *player, World *world) {
     player->position.y += 1.0f;
 }
 
-Frustum ExtractFrustum(Camera3D camera) {
+static Frustum ExtractFrustum(Camera3D camera) {
   Matrix modelview = GetCameraMatrix(camera);
   Matrix projection = MatrixPerspective(
       camera.fovy * DEG2RAD, (float)GetScreenWidth() / (float)GetScreenHeight(),
@@ -487,7 +487,7 @@ Frustum ExtractFrustum(Camera3D camera) {
 }
 
 #ifdef PS1_RENDERER
-void UpdatePS1Target(RenderTexture2D *target, int *currentW, int *currentH) {
+static void UpdatePS1Target(RenderTexture2D *target, int *currentW, int *currentH) {
     int sw = GetScreenWidth();
     int sh = GetScreenHeight();
     int th = 480;
@@ -503,7 +503,7 @@ void UpdatePS1Target(RenderTexture2D *target, int *currentW, int *currentH) {
 #endif
 
 int main(void) {
-  srand(time(NULL));
+  srand((unsigned int)time(NULL));
   SetConfigFlags(FLAG_WINDOW_RESIZABLE);
   InitWindow(DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT,
              "VoxelPopuli - Minecraft 1.0 Clone");
@@ -511,6 +511,7 @@ int main(void) {
   SetWindowMinSize(960, 540);
   LoadWindowState(WINDOW_SAVE_PATH);
   World *world = (World *)malloc(sizeof(World));
+  if (!world) return 1;
   World_Init(world);
 #ifdef PS1_RENDERER
   int ps1W = 640, ps1H = 480;
@@ -686,7 +687,7 @@ int main(void) {
       int ySteps = (int)ceilf(fabsf(player.velocity.y * dt) / 0.1f);
       if (ySteps == 0)
         ySteps = 1;
-      float stepY = (player.velocity.y * dt) / ySteps;
+      float stepY = (player.velocity.y * dt) / (float)ySteps;
       for (int i = 0; i < ySteps; i++) {
         player.position.y += stepY;
         if (CheckCollision(world, player.position)) {
@@ -705,7 +706,7 @@ int main(void) {
       int xSteps = (int)ceilf(fabsf(player.velocity.x * dt) / 0.1f);
       if (xSteps == 0)
         xSteps = 1;
-      float stepX = (player.velocity.x * dt) / xSteps;
+      float stepX = (player.velocity.x * dt) / (float)xSteps;
       for (int i = 0; i < xSteps; i++) {
         player.position.x += stepX;
         if (CheckCollision(world, player.position)) {
@@ -718,7 +719,7 @@ int main(void) {
       int zSteps = (int)ceilf(fabsf(player.velocity.z * dt) / 0.1f);
       if (zSteps == 0)
         zSteps = 1;
-      float stepZ = (player.velocity.z * dt) / zSteps;
+      float stepZ = (player.velocity.z * dt) / (float)zSteps;
       for (int i = 0; i < zSteps; i++) {
         player.position.z += stepZ;
         if (CheckCollision(world, player.position)) {
@@ -825,14 +826,14 @@ int main(void) {
     rh = ps1H;
 #endif
     int vignetteHeight = rh / 8;
-    int hotbarSlotSize = (int)(40 * rh / 480.0f);
+    int hotbarSlotSize = (int)(40 * (float)rh / 480.0f);
     int hotbarWidth = hotbarSlotSize * 10;
     int hotbarY = rh - hotbarSlotSize - 10;
     int hbX = (rw - hotbarWidth) / 2;
     int heartsX = hbX;
     int heartsY = hotbarY - 30;
-    int inventoryStartX = rw / 2 - (int)(360 * rw / 640.0f / 2);
-    int inventoryStartY = rh / 2 - (int)(280 * rh / 480.0f / 2);
+    int inventoryStartX = rw / 2 - (int)(360 * (float)rw / 640.0f / 2);
+    int inventoryStartY = rh / 2 - (int)(280 * (float)rh / 480.0f / 2);
 
     BeginDrawing();
 #ifdef PS1_RENDERER
@@ -887,7 +888,7 @@ int main(void) {
         DrawBubbleIcon(heartsX + i * 20 + 8, heartsY - 20, i < bubbles);
     }
     for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
-      Rectangle rect = {(float)hbX + i * hotbarSlotSize, (float)hotbarY,
+      Rectangle rect = {(float)hbX + (float)i * (float)hotbarSlotSize, (float)hotbarY,
                         (float)hotbarSlotSize, (float)hotbarSlotSize};
       DrawRectangleRec(rect, player.selectedSlot == i ? Fade(WHITE, 0.6f)
                                                       : Fade(BLACK, 0.4f));
@@ -895,8 +896,8 @@ int main(void) {
       if (hotbar[i] != BLOCK_AIR) {
         int idx = GetInventoryIndex(hotbar[i]);
         int count = (idx >= 0) ? player.blockCounts[idx] : 0;
-        DrawRectangle(rect.x + rect.width * 0.15f, rect.y + rect.height * 0.15f,
-                      rect.width * 0.7f, rect.height * 0.7f,
+        DrawRectangle((int)(rect.x + rect.width * 0.15f), (int)(rect.y + rect.height * 0.15f),
+                      (int)(rect.width * 0.7f), (int)(rect.height * 0.7f),
                       GetBlockUIColour(hotbar[i]));
         DrawText(TextFormat("%d", count), (int)rect.x + 2, (int)rect.y + 2,
                  20, (count > 0) ? WHITE : LIGHTGRAY);
@@ -910,17 +911,17 @@ int main(void) {
       DrawText(inventoryTitle, (rw - MeasureText(inventoryTitle, titleSize)) / 2,
                inventoryStartY - 50, titleSize, WHITE);
       for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
-        Rectangle r = {(float)inventoryStartX + (i % 5) * 70,
-                       (float)inventoryStartY + (i / 5) * 70,
+        Rectangle r = {(float)inventoryStartX + (float)(i % 5) * 70.0f,
+                       (float)inventoryStartY + (float)(i / 5) * 70.0f,
                        60, 60};
         DrawRectangleRec(r, Fade(WHITE, 0.2f));
-        DrawRectangle(r.x + 12, r.y + 12, 36, 36,
+        DrawRectangle((int)(r.x + 12), (int)(r.y + 12), 36, 36,
                       GetBlockUIColour(inventoryBlocks[i]));
         DrawText(TextFormat("%d", player.blockCounts[i]), (int)r.x + 4,
                  (int)r.y + 40, 20, WHITE);
         if (CheckCollisionPointRec(
-                (Vector2){GetMouseX() * rw / screenWidth,
-                          GetMouseY() * rh / screenHeight},
+                (Vector2){(float)GetMouseX() * (float)rw / (float)screenWidth,
+                          (float)GetMouseY() * (float)rh / (float)screenHeight},
                 r)) {
           DrawRectangleLinesEx(r, 2, YELLOW);
           if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) &&

@@ -17,6 +17,7 @@ void Chunk_Init(Chunk *chunk, int x, int z) {
   chunk->modelOpaque = (Model){0};
   chunk->meshTransparent = (Mesh){0};
   chunk->modelTransparent = (Model){0};
+  memset(chunk->light, 0, sizeof(chunk->light));
 }
 
 void Chunk_Generate(Chunk *chunk) {
@@ -212,21 +213,21 @@ static unsigned char *cOpaque = NULL;
 static float *vTrans = NULL, *nTrans = NULL, *tTrans = NULL;
 static unsigned char *cTrans = NULL;
 
-static void EnsureBuffers() {
+static void EnsureBuffers(void) {
   if (vOpaque != NULL)
     return;
   int maxF = CHUNK_WIDTH * CHUNK_HEIGHT * CHUNK_DEPTH * 6;
-  vOpaque = (float *)malloc(maxF * 18 * sizeof(float));
-  nOpaque = (float *)malloc(maxF * 18 * sizeof(float));
-  tOpaque = (float *)malloc(maxF * 12 * sizeof(float));
-  cOpaque = (unsigned char *)malloc(maxF * 24 * sizeof(unsigned char));
-  vTrans = (float *)malloc(maxF * 18 * sizeof(float));
-  nTrans = (float *)malloc(maxF * 18 * sizeof(float));
-  tTrans = (float *)malloc(maxF * 12 * sizeof(float));
-  cTrans = (unsigned char *)malloc(maxF * 24 * sizeof(unsigned char));
+  vOpaque = (float *)malloc((size_t)maxF * 18 * sizeof(float));
+  nOpaque = (float *)malloc((size_t)maxF * 18 * sizeof(float));
+  tOpaque = (float *)malloc((size_t)maxF * 12 * sizeof(float));
+  cOpaque = (unsigned char *)malloc((size_t)maxF * 24 * sizeof(unsigned char));
+  vTrans = (float *)malloc((size_t)maxF * 18 * sizeof(float));
+  nTrans = (float *)malloc((size_t)maxF * 18 * sizeof(float));
+  tTrans = (float *)malloc((size_t)maxF * 12 * sizeof(float));
+  cTrans = (unsigned char *)malloc((size_t)maxF * 24 * sizeof(unsigned char));
 }
 
-static unsigned char GetLight(Chunk *chunk, World *world, int x, int y, int z) {
+static unsigned char GetLight(const Chunk *chunk, World *world, int x, int y, int z) {
   if (y < 0)
     return 0;
   if (y >= CHUNK_HEIGHT)
@@ -337,11 +338,11 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
             tu1 = 6 * ts - pad;
             tv1 = 2 * ts - pad;
           }
-          float v[] = {
+          const float v[] = {
               fx,     fy + 1 - wOff, fz,     fx,     fy + 1 - wOff, fz + 1,
               fx + 1, fy + 1 - wOff, fz + 1, fx,     fy + 1 - wOff, fz,
               fx + 1, fy + 1 - wOff, fz + 1, fx + 1, fy + 1 - wOff, fz};
-          float t[] = {tu0, tv0, tu0, tv1, tu1, tv1,
+          const float t[] = {tu0, tv0, tu0, tv1, tu1, tv1,
                        tu0, tv0, tu1, tv1, tu1, tv0};
           memcpy(&vB[*vc * 3], v, 72);  // flawfinder: ignore
           memcpy(&tB[*vc * 2], t, 48);  // flawfinder: ignore
@@ -373,9 +374,9 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
             tu1 = 6 * ts - pad;
             tv1 = 2 * ts - pad;
           }
-          float v[] = {fx, fy, fz, fx + 1, fy, fz + 1, fx,     fy, fz + 1,
+          const float v[] = {fx, fy, fz, fx + 1, fy, fz + 1, fx,     fy, fz + 1,
                        fx, fy, fz, fx + 1, fy, fz,     fx + 1, fy, fz + 1};
-          float t[] = {tu0, tv0, tu1, tv1, tu0, tv1,
+          const float t[] = {tu0, tv0, tu1, tv1, tu0, tv1,
                        tu0, tv0, tu1, tv0, tu1, tv1};
           memcpy(&vB[*vc * 3], v, 72);  // flawfinder: ignore
           memcpy(&tB[*vc * 2], t, 48);  // flawfinder: ignore
@@ -393,8 +394,8 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
           *vc += 6;
         }
         // Sides
-        int snx[] = {0, 0, 1, -1};
-        int snz[] = {1, -1, 0, 0};
+        const int snx[] = {0, 0, 1, -1};
+        const int snz[] = {1, -1, 0, 0};
         for (int s = 0; s < 4; s++) {
           int nx = x + snx[s], nz = z + snz[s];
           BlockType neighbor = BLOCK_AIR;
@@ -412,7 +413,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
           if (ShouldDrawFace(block, neighbor)) {
             float sv[18];
             if (s == 0) {
-              float f[] = {fx,
+              const float f[] = {fx,
                            fy,
                            fz + 1,
                            fx + 1,
@@ -432,7 +433,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                            fz + 1};
               memcpy(sv, f, 72);  // flawfinder: ignore
             } else if (s == 1) {
-              float b[] = {fx + 1,
+              const float b[] = {fx + 1,
                            fy,
                            fz,
                            fx,
@@ -452,7 +453,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                            fz};
               memcpy(sv, b, 72);  // flawfinder: ignore
             } else if (s == 2) {
-              float r[] = {fx + 1,
+              const float r[] = {fx + 1,
                            fy,
                            fz + 1,
                            fx + 1,
@@ -472,7 +473,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                            fz + 1};
               memcpy(sv, r, 72);  // flawfinder: ignore
             } else {
-              float l[] = {fx,
+              const float l[] = {fx,
                            fy,
                            fz,
                            fx,
@@ -492,7 +493,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                            fz};
               memcpy(sv, l, 72);  // flawfinder: ignore
             }
-            float st[] = {u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0};
+            const float st[] = {u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0};
             memcpy(&vB[*vc * 3], sv, 72);  // flawfinder: ignore
             memcpy(&tB[*vc * 2], st, 48);  // flawfinder: ignore
             unsigned char light = GetLight(chunk, world, nx, y, nz);
@@ -500,9 +501,9 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
             if (lightF < 0.05f) lightF = 0.05f;
             for (int i = 0; i < 6; i++) {
               int idx = *vc + i;
-              nB[idx * 3] = snx[s];
+              nB[idx * 3] = (float)snx[s];
               nB[idx * 3 + 1] = 0;
-              nB[idx * 3 + 2] = snz[s];
+              nB[idx * 3 + 2] = (float)snz[s];
               float sh = (s < 2) ? 0.6f : 0.8f;
               cB[idx * 4] = cB[idx * 4 + 1] = cB[idx * 4 + 2] =
                   (unsigned char)(255 * sh * lightF);
@@ -519,32 +520,46 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
   if (vCOp > 0) {
     chunk->meshOpaque.vertexCount = vCOp;
     chunk->meshOpaque.triangleCount = vCOp / 3;
-    chunk->meshOpaque.vertices = (float *)malloc(vCOp * 12);
-    chunk->meshOpaque.normals = (float *)malloc(vCOp * 12);
-    chunk->meshOpaque.texcoords = (float *)malloc(vCOp * 8);
-    chunk->meshOpaque.colors = (unsigned char *)malloc(vCOp * 4);
-    memcpy(chunk->meshOpaque.vertices, vOpaque, vCOp * 12);  // flawfinder: ignore
-    memcpy(chunk->meshOpaque.normals, nOpaque, vCOp * 12);  // flawfinder: ignore
-    memcpy(chunk->meshOpaque.texcoords, tOpaque, vCOp * 8);  // flawfinder: ignore
-    memcpy(chunk->meshOpaque.colors, cOpaque, vCOp * 4);  // flawfinder: ignore
-    UploadMesh(&chunk->meshOpaque, false);
-    chunk->modelOpaque = LoadModelFromMesh(chunk->meshOpaque);
+    chunk->meshOpaque.vertices = (float *)malloc((size_t)vCOp * 12);
+    chunk->meshOpaque.normals = (float *)malloc((size_t)vCOp * 12);
+    chunk->meshOpaque.texcoords = (float *)malloc((size_t)vCOp * 8);
+    chunk->meshOpaque.colors = (unsigned char *)malloc((size_t)vCOp * 4);
+    if (chunk->meshOpaque.vertices && chunk->meshOpaque.normals && chunk->meshOpaque.texcoords && chunk->meshOpaque.colors) {
+      memcpy(chunk->meshOpaque.vertices, vOpaque, (size_t)vCOp * 12);  // flawfinder: ignore
+      memcpy(chunk->meshOpaque.normals, nOpaque, (size_t)vCOp * 12);  // flawfinder: ignore
+      memcpy(chunk->meshOpaque.texcoords, tOpaque, (size_t)vCOp * 8);  // flawfinder: ignore
+      memcpy(chunk->meshOpaque.colors, cOpaque, (size_t)vCOp * 4);  // flawfinder: ignore
+      UploadMesh(&chunk->meshOpaque, false);
+      chunk->modelOpaque = LoadModelFromMesh(chunk->meshOpaque);
+    } else {
+        free(chunk->meshOpaque.vertices);
+        free(chunk->meshOpaque.normals);
+        free(chunk->meshOpaque.texcoords);
+        free(chunk->meshOpaque.colors);
+    }
   }
   if (vCTr > 0) {
     chunk->meshTransparent.vertexCount = vCTr;
     chunk->meshTransparent.triangleCount = vCTr / 3;
-    chunk->meshTransparent.vertices = (float *)malloc(vCTr * 3 * sizeof(float));
-    chunk->meshTransparent.normals = (float *)malloc(vCTr * 3 * sizeof(float));
+    chunk->meshTransparent.vertices = (float *)malloc((size_t)vCTr * 3 * sizeof(float));
+    chunk->meshTransparent.normals = (float *)malloc((size_t)vCTr * 3 * sizeof(float));
     chunk->meshTransparent.texcoords =
-        (float *)malloc(vCTr * 2 * sizeof(float));
+        (float *)malloc((size_t)vCTr * 2 * sizeof(float));
     chunk->meshTransparent.colors =
-        (unsigned char *)malloc(vCTr * 4 * sizeof(unsigned char));
-    memcpy(chunk->meshTransparent.vertices, vTrans, vCTr * 12);  // flawfinder: ignore
-    memcpy(chunk->meshTransparent.normals, nTrans, vCTr * 12);  // flawfinder: ignore
-    memcpy(chunk->meshTransparent.texcoords, tTrans, vCTr * 8);  // flawfinder: ignore
-    memcpy(chunk->meshTransparent.colors, cTrans, vCTr * 4);  // flawfinder: ignore
-    UploadMesh(&chunk->meshTransparent, false);
-    chunk->modelTransparent = LoadModelFromMesh(chunk->meshTransparent);
+        (unsigned char *)malloc((size_t)vCTr * 4 * sizeof(unsigned char));
+    if (chunk->meshTransparent.vertices && chunk->meshTransparent.normals && chunk->meshTransparent.texcoords && chunk->meshTransparent.colors) {
+      memcpy(chunk->meshTransparent.vertices, vTrans, (size_t)vCTr * 12);  // flawfinder: ignore
+      memcpy(chunk->meshTransparent.normals, nTrans, (size_t)vCTr * 12);  // flawfinder: ignore
+      memcpy(chunk->meshTransparent.texcoords, tTrans, (size_t)vCTr * 8);  // flawfinder: ignore
+      memcpy(chunk->meshTransparent.colors, cTrans, (size_t)vCTr * 4);  // flawfinder: ignore
+      UploadMesh(&chunk->meshTransparent, false);
+      chunk->modelTransparent = LoadModelFromMesh(chunk->meshTransparent);
+    } else {
+        free(chunk->meshTransparent.vertices);
+        free(chunk->meshTransparent.normals);
+        free(chunk->meshTransparent.texcoords);
+        free(chunk->meshTransparent.colors);
+    }
   }
 
   if (currentMinY <= currentMaxY) {
@@ -555,14 +570,14 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
   chunk->dirty = false;
 }
 
-void Chunk_RenderOpaque(Chunk *chunk) {
+void Chunk_RenderOpaque(const Chunk *chunk) {
   if (chunk->modelOpaque.meshCount > 0)
     DrawModel(chunk->modelOpaque,
               (Vector3){(float)chunk->x * CHUNK_WIDTH, 0,
                         (float)chunk->z * CHUNK_DEPTH},
               1.0f, WHITE);
 }
-void Chunk_RenderTransparent(Chunk *chunk) {
+void Chunk_RenderTransparent(const Chunk *chunk) {
   if (chunk->modelTransparent.meshCount > 0)
     DrawModel(chunk->modelTransparent,
               (Vector3){(float)chunk->x * CHUNK_WIDTH, 0,

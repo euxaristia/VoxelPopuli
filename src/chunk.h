@@ -24,8 +24,8 @@ typedef struct {
 void Chunk_Init(Chunk *chunk, int x, int z);
 void Chunk_Generate(Chunk *chunk);
 void Chunk_BuildMesh(Chunk *chunk, void *world);
-void Chunk_RenderOpaque(Chunk *chunk);
-void Chunk_RenderTransparent(Chunk *chunk);
+void Chunk_RenderOpaque(const Chunk *chunk);
+void Chunk_RenderTransparent(const Chunk *chunk);
 void Chunk_Unload(Chunk *chunk);
 
 #endif

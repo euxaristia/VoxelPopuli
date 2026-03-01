@@ -20,9 +20,9 @@ typedef struct {
   int32_t count;
 } WorldSaveHeader;
 
-static int World_FindEditIndex(World *world, int x, int y, int z) {
+static int World_FindEditIndex(const World *world, int x, int y, int z) {
   for (int i = 0; i < world->editCount; i++) {
-    WorldEdit *edit = &world->edits[i];
+    const WorldEdit *edit = &world->edits[i];
     if (edit->x == x && edit->y == y && edit->z == z)
       return i;
   }
@@ -73,6 +73,7 @@ static void World_UpdateSkylight(Chunk *chunk, int x, int z) {
 }
 
 static bool World_ApplyEditsToChunk(World *world, Chunk *chunk) {
+  if (!chunk) return false;
   bool changed = false;
   int minX = chunk->x * CHUNK_WIDTH;
   int minZ = chunk->z * CHUNK_DEPTH;
@@ -80,7 +81,7 @@ static bool World_ApplyEditsToChunk(World *world, Chunk *chunk) {
   int maxZ = minZ + CHUNK_DEPTH;
 
   for (int i = 0; i < world->editCount; i++) {
-    WorldEdit *edit = &world->edits[i];
+    const WorldEdit *edit = &world->edits[i];
     if (edit->x < minX || edit->x >= maxX || edit->z < minZ || edit->z >= maxZ)
       continue;
     if (edit->y < 0 || edit->y >= CHUNK_HEIGHT)
@@ -303,7 +304,7 @@ RaycastResult World_Raycast(World *world, Vector3 origin, Vector3 direction,
   return result;
 }
 
-void DrawPixelatedBlock(Image *img, int tx, int ty, Color baseColor,
+static void DrawPixelatedBlock(Image *img, int tx, int ty, Color baseColor,
                         float noiseAmount) {
   for (int y = 0; y < 16; y++) {
     for (int x = 0; x < 16; x++) {
@@ -463,14 +464,15 @@ void World_Init(World *world) {
 }
 
 static void World_TickGravity(World *world, int pcx, int pcz) {
-  int r = 2;
+  int r = 1; // Further reduced range for efficiency
   for (int cx = pcx - r; cx <= pcx + r; cx++) {
     for (int cz = pcz - r; cz <= pcz + r; cz++) {
       Chunk *c = World_GetChunk(world, cx, cz);
       if (!c)
         continue;
 
-      for (int i = 0; i < 256; i++) {
+      // Only check 64 spots to reduce CPU usage
+      for (int i = 0; i < 64; i++) {
         int x = rand() % CHUNK_WIDTH;
         int z = rand() % CHUNK_DEPTH;
         int y = (rand() % (CHUNK_HEIGHT - 2)) + 1;
@@ -481,6 +483,8 @@ static void World_TickGravity(World *world, int pcx, int pcz) {
           if (below == BLOCK_AIR || below == BLOCK_WATER) {
             c->blocks[x][y - 1][z] = b;
             c->blocks[x][y][z] = BLOCK_AIR;
+            World_UpdateSkylight(c, x, y);
+            World_UpdateSkylight(c, x, y - 1);
             if (!c->dirty) {
               c->dirty = true;
               world->dirtyCount++;
@@ -509,6 +513,7 @@ void World_Update(World *world, Vector3 playerPos) {
         if (!c || c->x != x || c->z != z) {
           if (!c) {
             c = (Chunk *)malloc(sizeof(Chunk));
+            if (!c) continue; // Safety check
             world->chunks[index] = c;
           } else {
             Chunk_Unload(c);
@@ -569,7 +574,7 @@ void World_Update(World *world, Vector3 playerPos) {
                 .texture = world->atlas;
           c->dirty = false;
           world->dirtyCount--;
-          if (++buildsThisFrame >= 8)
+          if (++buildsThisFrame >= 4) // Reduced mesh builds per frame
             return;
         }
       }
@@ -641,6 +646,12 @@ static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
       (unsigned char *)malloc(maxCubes * 36 * 4 * sizeof(unsigned char));
   int vCount = 0;
 
+  if (!vertices || !colors) {
+      free(vertices);
+      free(colors);
+      return;
+  }
+
   Color cloudColor = {225, 233, 240, 150};
 
   for (int x = startX; x < startX + range * 2; x++) {
@@ -695,10 +706,15 @@ static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
     mesh.triangleCount = vCount / 3;
     mesh.vertices = (float *)malloc(vCount * 3 * sizeof(float));
     mesh.colors = (unsigned char *)malloc(vCount * 4 * sizeof(unsigned char));
-    memcpy(mesh.vertices, vertices, vCount * 3 * sizeof(float));  // flawfinder: ignore
-    memcpy(mesh.colors, colors, vCount * 4 * sizeof(unsigned char));  // flawfinder: ignore
-    UploadMesh(&mesh, false);
-    world->cloudModel = LoadModelFromMesh(mesh);
+    if (mesh.vertices && mesh.colors) {
+      memcpy(mesh.vertices, vertices, vCount * 3 * sizeof(float));  // flawfinder: ignore
+      memcpy(mesh.colors, colors, vCount * 4 * sizeof(unsigned char));  // flawfinder: ignore
+      UploadMesh(&mesh, false);
+      world->cloudModel = LoadModelFromMesh(mesh);
+    } else {
+        free(mesh.vertices);
+        free(mesh.colors);
+    }
   }
 
   free(vertices);
@@ -801,7 +817,7 @@ bool World_LoadEdits(World *world, const char *path) {
     }
     if (y < 0 || y >= CHUNK_HEIGHT)
       continue;
-    if (block > (uint8_t)BLOCK_BEDROCK)
+    if (block >= BLOCK_COUNT)
       continue;
     World_AddOrUpdateEdit(world, (int)x, (int)y, (int)z, (BlockType)block);
   }
