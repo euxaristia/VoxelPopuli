@@ -80,6 +80,7 @@ static bool World_ApplyEditsToChunk(World *world, Chunk *chunk) {
     BlockType target = (BlockType)edit->block;
     if (chunk->blocks[bx][edit->y][bz] != target) {
       chunk->blocks[bx][edit->y][bz] = target;
+      World_UpdateSkylight(chunk, bx, bz);
       changed = true;
     }
   }
@@ -203,6 +204,16 @@ BlockType World_GetBlock(World *world, int x, int y, int z) {
   int bz = z - (cz * CHUNK_DEPTH);
   return chunk->blocks[bx][y][bz];
 }
+static void World_UpdateSkylight(Chunk *chunk, int x, int z) {
+  int currentLight = 15;
+  for (int y = CHUNK_HEIGHT - 1; y >= 0; y--) {
+    BlockType b = chunk->blocks[x][y][z];
+    if (b != BLOCK_AIR && b != BLOCK_WATER && b != BLOCK_OAK_LEAVES) {
+      currentLight = 0;
+    }
+    chunk->light[x][y][z] = (unsigned char)currentLight;
+  }
+}
 
 void World_SetBlock(World *world, int x, int y, int z, BlockType block) {
   if (y < 0 || y >= CHUNK_HEIGHT)
@@ -217,7 +228,11 @@ void World_SetBlock(World *world, int x, int y, int z, BlockType block) {
   int bx = x - (cx * CHUNK_WIDTH);
   int bz = z - (cz * CHUNK_DEPTH);
   chunk->blocks[bx][y][bz] = block;
+
+  World_UpdateSkylight(chunk, bx, bz);
+
   if (!chunk->dirty) {
+...
     chunk->dirty = true;
     world->dirtyCount++;
   }

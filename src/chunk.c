@@ -161,6 +161,40 @@ void Chunk_Generate(Chunk *chunk) {
         currentZ--;
     }
   }
+
+  // PASS 5: Caves
+  for (int x = 0; x < CHUNK_WIDTH; x++) {
+    for (int z = 0; z < CHUNK_DEPTH; z++) {
+      float worldX = (float)(chunk->x * CHUNK_WIDTH + x);
+      float worldZ = (float)(chunk->z * CHUNK_DEPTH + z);
+      for (int y = 1; y < CHUNK_HEIGHT - 10; y++) {
+        float n3d = Perlin2D(worldX * 0.04f, (float)y * 0.08f, 1.0f, 2) +
+                    Perlin2D(worldZ * 0.04f, (float)y * 0.08f, 1.0f, 2);
+        if (n3d > 1.25f) {
+          if (chunk->blocks[x][y][z] == BLOCK_STONE ||
+              chunk->blocks[x][y][z] == BLOCK_DIRT ||
+              chunk->blocks[x][y][z] == BLOCK_GRAVEL ||
+              chunk->blocks[x][y][z] == BLOCK_SAND) {
+            chunk->blocks[x][y][z] = BLOCK_AIR;
+          }
+        }
+      }
+    }
+  }
+
+  // PASS 6: Skylight
+  for (int x = 0; x < CHUNK_WIDTH; x++) {
+    for (int z = 0; z < CHUNK_DEPTH; z++) {
+      int currentLight = 15;
+      for (int y = CHUNK_HEIGHT - 1; y >= 0; y--) {
+        BlockType b = chunk->blocks[x][y][z];
+        if (b != BLOCK_AIR && b != BLOCK_WATER && b != BLOCK_OAK_LEAVES) {
+          currentLight = 0;
+        }
+        chunk->light[x][y][z] = (unsigned char)currentLight;
+      }
+    }
+  }
 }
 
 static bool ShouldDrawFace(BlockType current, BlockType neighbor) {
@@ -190,6 +224,23 @@ static void EnsureBuffers() {
   nTrans = (float *)malloc(maxF * 18 * sizeof(float));
   tTrans = (float *)malloc(maxF * 12 * sizeof(float));
   cTrans = (unsigned char *)malloc(maxF * 24 * sizeof(unsigned char));
+}
+
+static unsigned char GetLight(Chunk *chunk, World *world, int x, int y, int z) {
+  if (y < 0)
+    return 0;
+  if (y >= CHUNK_HEIGHT)
+    return 15;
+  if (x >= 0 && x < CHUNK_WIDTH && z >= 0 && z < CHUNK_DEPTH)
+    return chunk->light[x][y][z];
+  int cx = chunk->x + (x < 0 ? -1 : (x >= CHUNK_WIDTH ? 1 : 0));
+  int cz = chunk->z + (z < 0 ? -1 : (z >= CHUNK_DEPTH ? 1 : 0));
+  Chunk *nc = World_GetChunk(world, cx, cz);
+  if (!nc)
+    return 15;
+  int bx = (x + CHUNK_WIDTH) % CHUNK_WIDTH;
+  int bz = (z + CHUNK_DEPTH) % CHUNK_DEPTH;
+  return nc->light[bx][y][bz];
 }
 
 void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
@@ -294,12 +345,15 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                        tu0, tv0, tu1, tv1, tu1, tv0};
           memcpy(&vB[*vc * 3], v, 72);  // flawfinder: ignore
           memcpy(&tB[*vc * 2], t, 48);  // flawfinder: ignore
+          unsigned char light = GetLight(chunk, world, x, y + 1, z);
+          float lightF = (float)light / 15.0f;
+          if (lightF < 0.05f) lightF = 0.05f;
           for (int i = 0; i < 6; i++) {
             int idx = *vc + i;
             nB[idx * 3] = 0;
             nB[idx * 3 + 1] = 1;
             nB[idx * 3 + 2] = 0;
-            cB[idx * 4] = cB[idx * 4 + 1] = cB[idx * 4 + 2] = 255;
+            cB[idx * 4] = cB[idx * 4 + 1] = cB[idx * 4 + 2] = (unsigned char)(255 * lightF);
             cB[idx * 4 + 3] = (block == BLOCK_WATER) ? WATER_VERTEX_ALPHA : 255;
           }
           *vc += 6;
@@ -325,12 +379,15 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
                        tu0, tv0, tu1, tv0, tu1, tv1};
           memcpy(&vB[*vc * 3], v, 72);  // flawfinder: ignore
           memcpy(&tB[*vc * 2], t, 48);  // flawfinder: ignore
+          unsigned char light = GetLight(chunk, world, x, y - 1, z);
+          float lightF = (float)light / 15.0f;
+          if (lightF < 0.05f) lightF = 0.05f;
           for (int i = 0; i < 6; i++) {
             int idx = *vc + i;
             nB[idx * 3] = 0;
             nB[idx * 3 + 1] = -1;
             nB[idx * 3 + 2] = 0;
-            cB[idx * 4] = cB[idx * 4 + 1] = cB[idx * 4 + 2] = 120;
+            cB[idx * 4] = cB[idx * 4 + 1] = cB[idx * 4 + 2] = (unsigned char)(120 * lightF);
             cB[idx * 4 + 3] = 255;
           }
           *vc += 6;
@@ -438,6 +495,9 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
             float st[] = {u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0};
             memcpy(&vB[*vc * 3], sv, 72);  // flawfinder: ignore
             memcpy(&tB[*vc * 2], st, 48);  // flawfinder: ignore
+            unsigned char light = GetLight(chunk, world, nx, y, nz);
+            float lightF = (float)light / 15.0f;
+            if (lightF < 0.05f) lightF = 0.05f;
             for (int i = 0; i < 6; i++) {
               int idx = *vc + i;
               nB[idx * 3] = snx[s];
@@ -445,7 +505,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
               nB[idx * 3 + 2] = snz[s];
               float sh = (s < 2) ? 0.6f : 0.8f;
               cB[idx * 4] = cB[idx * 4 + 1] = cB[idx * 4 + 2] =
-                  (unsigned char)(255 * sh);
+                  (unsigned char)(255 * sh * lightF);
               cB[idx * 4 + 3] =
                   (block == BLOCK_WATER) ? WATER_VERTEX_ALPHA : 255;
             }

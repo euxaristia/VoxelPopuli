@@ -10,6 +10,7 @@
 
 typedef struct {
   BlockType blocks[CHUNK_WIDTH][CHUNK_HEIGHT][CHUNK_DEPTH];
+  unsigned char light[CHUNK_WIDTH][CHUNK_HEIGHT][CHUNK_DEPTH];
   Mesh meshOpaque;
   Model modelOpaque;
   Mesh meshTransparent;
