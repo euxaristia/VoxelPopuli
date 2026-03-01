@@ -13,6 +13,7 @@
 #include "raymath.h"
 #include "world.h"
 #include "ps1.h"
+#include "rlgl.h"
 
 #define INVENTORY_BLOCK_COUNT 10
 #define SAVE_DIR "save"
@@ -502,6 +503,32 @@ static void UpdatePS1Target(RenderTexture2D *target, int *currentW, int *current
 }
 #endif
 
+static void DrawSun(Vector3 playerPos, float time) {
+  float sunDist = 450.0f;
+  float sunSize = 45.0f;
+  float dayCycle = time / 120.0f;
+  float angle = (dayCycle * 2.0f * PI) + PI / 2.0f;
+
+  float sx = cosf(angle) * sunDist;
+  float sy = sinf(angle) * sunDist;
+
+  rlDisableDepthTest();
+  rlPushMatrix();
+  rlTranslatef(playerPos.x + sx, playerPos.y + sy, playerPos.z);
+  rlRotatef(RAD2DEG * -angle, 0, 0, 1);
+  rlRotatef(90, 0, 1, 0);
+
+  rlBegin(RL_QUADS);
+  rlColor4ub(255, 255, 255, 255);
+  rlVertex3f(-sunSize, -sunSize, 0);
+  rlVertex3f(sunSize, -sunSize, 0);
+  rlVertex3f(sunSize, sunSize, 0);
+  rlVertex3f(-sunSize, sunSize, 0);
+  rlEnd();
+  rlPopMatrix();
+  rlEnableDepthTest();
+}
+
 int main(void) {
   srand((unsigned int)time(NULL));
   SetConfigFlags(FLAG_WINDOW_RESIZABLE);
@@ -839,12 +866,22 @@ int main(void) {
 #ifdef PS1_RENDERER
     BeginTextureMode(ps1Target);
 #endif
-    ClearBackground(SKYBLUE);
+    float time = (float)GetTime();
+    float sunY = sinf(((time / 120.0f) * 2.0f * PI) + PI / 2.0f);
+    Color skyColor = SKYBLUE;
+    if (sunY < 0.2f) {
+      float mix = fmaxf(0.0f, fminf(1.0f, (0.2f - sunY) * 2.0f));
+      skyColor.r = (unsigned char)(SKYBLUE.r * (1.0f - mix) + 10 * mix);
+      skyColor.g = (unsigned char)(SKYBLUE.g * (1.0f - mix) + 10 * mix);
+      skyColor.b = (unsigned char)(SKYBLUE.b * (1.0f - mix) + 30 * mix);
+    }
+    ClearBackground(skyColor);
     BeginMode3D(camera);
 #ifdef PS1_RENDERER
     BeginShaderMode(ps1Shader);
 #endif
     Frustum frustum = ExtractFrustum(camera);
+    DrawSun(player.position, time);
     World_Render(world, frustum);
     World_RenderClouds(world, player.position, (float)GetTime(), frustum);
     if (!player.inventoryOpen) {
