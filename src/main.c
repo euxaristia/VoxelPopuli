@@ -111,6 +111,15 @@ static void DrawHeartIcon(int x, int y, int fillState) {
   }
 }
 
+static void DrawBubbleIcon(int x, int y, bool filled) {
+  Color fill = filled ? (Color){169, 216, 255, 230} : (Color){76, 101, 130, 210};
+  Color highlight = filled ? (Color){235, 248, 255, 220} : (Color){120, 144, 170, 190};
+  Color border = (Color){26, 45, 66, 230};
+  DrawCircle(x, y, 6.0f, fill);
+  DrawCircle(x - 2, y - 2, 2.0f, highlight);
+  DrawCircleLines(x, y, 6.0f, border);
+}
+
 static bool SaveWindowState(const char *path) {
   FILE *file = fopen(path, "wb"); if (!file) return false;
   WindowSaveData data = {WINDOW_SAVE_MAGIC, WINDOW_SAVE_VERSION, GetScreenWidth(), GetScreenHeight(), (uint8_t)(IsWindowState(FLAG_WINDOW_MAXIMIZED) ? 1u : 0u), {0}};
@@ -198,7 +207,7 @@ static void RespawnPlayer(Player *player, World *world) {
   player->position = (Vector3){player->respawnPosition.x, safeY, player->respawnPosition.z};
   player->velocity = (Vector3){0}; player->grounded = false; player->health = PLAYER_MAX_HEALTH;
   player->airSeconds = PLAYER_MAX_AIR_SECONDS; player->fallDistance = 0.0f;
-  for (int i = 0; i < 32 && CheckCollision(world, player->position); i++) player->position.y += 1.0f;
+  for (int i = 0; i < 32 && (CheckCollision(world, player->position) || World_GetBlock(world, (int)floor(player->position.x), (int)floor(player->position.y), (int)floor(player->position.z)) == BLOCK_WATER); i++) player->position.y += 1.0f;
 }
 
 static Frustum ExtractFrustum(void) {
@@ -281,15 +290,27 @@ int main(void) {
     camera.target = Vector3Add(camera.position, (Vector3){cosf(cameraAngle.y)*sinf(cameraAngle.x), sinf(cameraAngle.y), cosf(cameraAngle.y)*cosf(cameraAngle.x)});
     Vector3 forward = {sinf(cameraAngle.x), 0, cosf(cameraAngle.x)}, right = Vector3CrossProduct(forward, (Vector3){0, 1, 0});
     if (!player.inventoryOpen) {
-      bool inW = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 0.9f), (int)floor(player.position.z)) == BLOCK_WATER;
+      bool headInW = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 1.6f), (int)floor(player.position.z)) == BLOCK_WATER;
+      bool waistInW = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 0.9f), (int)floor(player.position.z)) == BLOCK_WATER;
+      bool feetInW = World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 0.1f), (int)floor(player.position.z)) == BLOCK_WATER;
       Vector3 mv = {0}; if (IsKeyDown(KEY_W)) mv = Vector3Add(mv, forward); if (IsKeyDown(KEY_S)) mv = Vector3Subtract(mv, forward); if (IsKeyDown(KEY_A)) mv = Vector3Subtract(mv, right); if (IsKeyDown(KEY_D)) mv = Vector3Add(mv, right);
-      if (Vector3Length(mv) > 0.1f) mv = Vector3Scale(Vector3Normalize(mv), (inW ? 3.5f : (IsKeyDown(KEY_LEFT_CONTROL) ? 8.5f : 4.5f)));
-      player.velocity.x = mv.x; player.velocity.z = mv.z; player.velocity.y -= (inW ? 14.0f : 28.0f) * dt;
-      if (IsKeyDown(KEY_SPACE)) { if (inW) { player.velocity.y += 35.0f * dt; if (player.velocity.y > 5.6f) player.velocity.y = 5.6f; } else if (player.grounded) { player.velocity.y = 9.0f; player.grounded = false; } }
+      if (Vector3Length(mv) > 0.1f) mv = Vector3Scale(Vector3Normalize(mv), (waistInW ? 3.5f : (IsKeyDown(KEY_LEFT_CONTROL) ? 8.5f : 4.5f)));
+      player.velocity.x = mv.x; player.velocity.z = mv.z; player.velocity.y -= (waistInW ? 14.0f : 28.0f) * dt;
+      if (IsKeyDown(KEY_SPACE)) { 
+        if (waistInW) { 
+          player.velocity.y = 4.0f; 
+        } else if (player.grounded) { 
+          player.velocity.y = 9.0f; 
+          player.grounded = false; 
+        } else if (feetInW) {
+          player.velocity.y = 5.0f; 
+        }
+      }
       float dy = player.velocity.y * dt; player.position.y += dy;
       if (CheckCollision(world, player.position)) { if (player.velocity.y < 0.0f) player.grounded = true; player.position.y -= dy; player.velocity.y = 0.0f; } else if (player.velocity.y != 0.0f) player.grounded = false;
       float dx = player.velocity.x * dt; player.position.x += dx; if (CheckCollision(world, player.position)) player.position.x -= dx;
       float dz = player.velocity.z * dt; player.position.z += dz; if (CheckCollision(world, player.position)) player.position.z -= dz;
+      if (headInW) { player.airSeconds -= dt; if (player.airSeconds < 0) player.airSeconds = 0; } else { player.airSeconds += dt * 3.0f; if (player.airSeconds > PLAYER_MAX_AIR_SECONDS) player.airSeconds = PLAYER_MAX_AIR_SECONDS; }
       if (player.position.y < PLAYER_VOID_Y) RespawnPlayer(&player, world);
     }
     World_Update(world, player.position);
@@ -326,6 +347,10 @@ int main(void) {
     if (World_GetBlock(world, (int)floor(camera.position.x), (int)floor(camera.position.y), (int)floor(camera.position.z)) == BLOCK_WATER) DrawRectangle(0, 0, sw, sh, (Color){0, 121, 241, 150});
     int hbX = (sw - 400) / 2, heartsY = sh - 80;
     for (int i = 0; i < PLAYER_MAX_HEALTH / 2; i++) DrawHeartIcon(hbX + i * 30, heartsY, (player.health - i * 2 >= 2) ? 2 : (player.health - i * 2 == 1 ? 1 : 0));
+    if (player.airSeconds < PLAYER_MAX_AIR_SECONDS || World_GetBlock(world, (int)floor(player.position.x), (int)floor(player.position.y + 1.6f), (int)floor(player.position.z)) == BLOCK_WATER) {
+      int bubbles = (int)ceilf((player.airSeconds / PLAYER_MAX_AIR_SECONDS) * 10.0f);
+      for (int i = 0; i < 10; i++) DrawBubbleIcon(hbX + i * 20, heartsY - 20, i < bubbles);
+    }
     for (int i = 0; i < INVENTORY_BLOCK_COUNT; i++) {
       Rectangle r = {(float)hbX + i * 40, (float)sh - 45, 35, 35}; DrawRectangleRec(r, player.selectedSlot == i ? Fade(WHITE, 0.6f) : Fade(BLACK, 0.4f));
       DrawRectangleLinesEx(r, 2, player.selectedSlot == i ? YELLOW : WHITE);
