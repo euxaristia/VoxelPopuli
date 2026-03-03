@@ -107,18 +107,14 @@ static bool World_ApplyEditsToChunk(World *world, Chunk *chunk) {
 }
 
 static unsigned char ClampToByte(int value) {
-  if (value < 0)
-    return 0;
-  if (value > 255)
-    return 255;
+  if (value < 0) return 0;
+  if (value > 255) return 255;
   return (unsigned char)value;
 }
 
 static float Saturate(float value) {
-  if (value < 0.0f)
-    return 0.0f;
-  if (value > 1.0f)
-    return 1.0f;
+  if (value < 0.0f) return 0.0f;
+  if (value > 1.0f) return 1.0f;
   return value;
 }
 
@@ -162,16 +158,8 @@ static void BuildWaterTile(Color *pixels, float time) {
       int b = (int)(205.0f + mix * 48.0f);
       int a = 228;
 
-      if (detail < -0.35f) {
-        r -= 10;
-        g -= 8;
-        b -= 5;
-      }
-      if (foam > 0.48f) {
-        r += 8;
-        g += 12;
-        b += 16;
-      }
+      if (detail < -0.35f) { r -= 10; g -= 8; b -= 5; }
+      if (foam > 0.48f) { r += 8; g += 12; b += 16; }
 
       Color c = {ClampToByte(r), ClampToByte(g), ClampToByte(b),
                  ClampToByte(a)};
@@ -336,13 +324,11 @@ void World_Init(World *world) {
   DrawPixelatedBlock(&img, 5, 1, (Color){110, 90, 60, 255}, 0.1f);
   DrawPixelatedBlock(&img, 2, 1, (Color){140, 140, 140, 255}, 0.15f);
 
-  // Draw classic Minecraft 1.0 coal chunks
+  // Coal ore texture dots
   Color coal = (Color){20, 20, 20, 255};
   Color darkCoal = (Color){5, 5, 5, 255};
   int basex = 2 * 16;
   int basey = 1 * 16;
-
-  // Top chunk
   ImageDrawPixel(&img, basex + 10, basey + 1, coal);
   ImageDrawPixel(&img, basex + 11, basey + 1, coal);
   ImageDrawPixel(&img, basex + 12, basey + 1, coal);
@@ -355,87 +341,6 @@ void World_Init(World *world) {
   ImageDrawPixel(&img, basex + 11, basey + 3, coal);
   ImageDrawPixel(&img, basex + 12, basey + 3, coal);
 
-  // Upper-left chunk
-  ImageDrawPixel(&img, basex + 4, basey + 2, coal);
-  ImageDrawPixel(&img, basex + 5, basey + 2, coal);
-  ImageDrawPixel(&img, basex + 3, basey + 3, coal);
-  ImageDrawPixel(&img, basex + 4, basey + 3, darkCoal);
-  ImageDrawPixel(&img, basex + 5, basey + 3, coal);
-  ImageDrawPixel(&img, basex + 6, basey + 3, coal);
-  ImageDrawPixel(&img, basex + 3, basey + 4, coal);
-  ImageDrawPixel(&img, basex + 4, basey + 4, coal);
-  ImageDrawPixel(&img, basex + 5, basey + 4, darkCoal);
-  ImageDrawPixel(&img, basex + 6, basey + 4, darkCoal);
-  ImageDrawPixel(&img, basex + 7, basey + 4, coal);
-  ImageDrawPixel(&img, basex + 4, basey + 5, coal);
-  ImageDrawPixel(&img, basex + 5, basey + 5, coal);
-  ImageDrawPixel(&img, basex + 6, basey + 5, coal);
-
-  // Middle-left chunk
-  ImageDrawPixel(&img, basex + 3, basey + 6, coal);
-  ImageDrawPixel(&img, basex + 4, basey + 6, coal);
-  ImageDrawPixel(&img, basex + 5, basey + 6, coal);
-  ImageDrawPixel(&img, basex + 1, basey + 7, coal);
-  ImageDrawPixel(&img, basex + 2, basey + 7, coal);
-  ImageDrawPixel(&img, basex + 3, basey + 7, darkCoal);
-  ImageDrawPixel(&img, basex + 4, basey + 7, darkCoal);
-  ImageDrawPixel(&img, basex + 5, basey + 7, darkCoal);
-  ImageDrawPixel(&img, basex + 6, basey + 7, coal);
-  ImageDrawPixel(&img, basex + 1, basey + 8, coal);
-  ImageDrawPixel(&img, basex + 2, basey + 8, darkCoal);
-  ImageDrawPixel(&img, basex + 3, basey + 8, coal);
-  ImageDrawPixel(&img, basex + 4, basey + 8, coal);
-  ImageDrawPixel(&img, basex + 5, basey + 8, coal);
-
-  // Center right chunk
-  ImageDrawPixel(&img, basex + 10, basey + 6, coal);
-  ImageDrawPixel(&img, basex + 11, basey + 6, coal);
-  ImageDrawPixel(&img, basex + 9, basey + 7, coal);
-  ImageDrawPixel(&img, basex + 10, basey + 7, darkCoal);
-  ImageDrawPixel(&img, basex + 11, basey + 7, darkCoal);
-  ImageDrawPixel(&img, basex + 9, basey + 8, darkCoal);
-  ImageDrawPixel(&img, basex + 10, basey + 8, darkCoal);
-  ImageDrawPixel(&img, basex + 11, basey + 8, coal);
-  ImageDrawPixel(&img, basex + 10, basey + 9, coal);
-
-  // Middle-right chunk
-  ImageDrawPixel(&img, basex + 12, basey + 10, coal);
-  ImageDrawPixel(&img, basex + 11, basey + 11, coal);
-  ImageDrawPixel(&img, basex + 12, basey + 11, coal);
-  ImageDrawPixel(&img, basex + 13, basey + 11, coal);
-  ImageDrawPixel(&img, basex + 14, basey + 11, coal);
-  ImageDrawPixel(&img, basex + 11, basey + 12, darkCoal);
-  ImageDrawPixel(&img, basex + 12, basey + 12, darkCoal);
-  ImageDrawPixel(&img, basex + 13, basey + 12, darkCoal);
-  ImageDrawPixel(&img, basex + 14, basey + 12, darkCoal);
-  ImageDrawPixel(&img, basex + 12, basey + 13, coal);
-  ImageDrawPixel(&img, basex + 13, basey + 13, coal);
-
-  // Bottom-center chunk
-  ImageDrawPixel(&img, basex + 5, basey + 11, coal);
-  ImageDrawPixel(&img, basex + 6, basey + 11, coal);
-  ImageDrawPixel(&img, basex + 7, basey + 11, coal);
-  ImageDrawPixel(&img, basex + 8, basey + 11, coal);
-  ImageDrawPixel(&img, basex + 4, basey + 12, coal);
-  ImageDrawPixel(&img, basex + 5, basey + 12, darkCoal);
-  ImageDrawPixel(&img, basex + 6, basey + 12, darkCoal);
-  ImageDrawPixel(&img, basex + 7, basey + 12, darkCoal);
-  ImageDrawPixel(&img, basex + 8, basey + 12, darkCoal);
-  ImageDrawPixel(&img, basex + 9, basey + 12, coal);
-  ImageDrawPixel(&img, basex + 5, basey + 13, coal);
-  ImageDrawPixel(&img, basex + 6, basey + 13, coal);
-  ImageDrawPixel(&img, basex + 7, basey + 13, coal);
-  ImageDrawPixel(&img, basex + 8, basey + 13, coal);
-
-  // Bottom-left chunk
-  ImageDrawPixel(&img, basex + 3, basey + 13, coal);
-  ImageDrawPixel(&img, basex + 4, basey + 13, coal);
-  ImageDrawPixel(&img, basex + 2, basey + 14, coal);
-  ImageDrawPixel(&img, basex + 3, basey + 14, darkCoal);
-  ImageDrawPixel(&img, basex + 4, basey + 14, darkCoal);
-  ImageDrawPixel(&img, basex + 5, basey + 14, coal);
-  ImageDrawPixel(&img, basex + 3, basey + 15, coal);
-  ImageDrawPixel(&img, basex + 4, basey + 15, coal);
   Color waterPixels[TILE_SIZE * TILE_SIZE];
   BuildWaterTile(waterPixels, 0.0f);
   for (int y = 0; y < TILE_SIZE; y++) {
@@ -458,20 +363,20 @@ void World_Init(World *world) {
   world->editCount = 0;
   world->editCapacity = 0;
   world->suppressEditRecording = false;
+  world->ps1Shader = (Shader){0};
   World_UpdateWaterAtlas(world, 0.0f);
   for (int i = 0; i < CHUNK_POOL_SIZE; i++)
     world->chunks[i] = NULL;
 }
 
 static void World_TickGravity(World *world, int pcx, int pcz) {
-  int r = 1; // Further reduced range for efficiency
+  int r = 1;
   for (int cx = pcx - r; cx <= pcx + r; cx++) {
     for (int cz = pcz - r; cz <= pcz + r; cz++) {
       Chunk *c = World_GetChunk(world, cx, cz);
       if (!c)
         continue;
 
-      // Only check 64 spots to reduce CPU usage
       for (int i = 0; i < 64; i++) {
         int x = rand() % CHUNK_WIDTH;
         int z = rand() % CHUNK_DEPTH;
@@ -513,7 +418,7 @@ void World_Update(World *world, Vector3 playerPos) {
         if (!c || c->x != x || c->z != z) {
           if (!c) {
             c = (Chunk *)malloc(sizeof(Chunk));
-            if (!c) continue; // Safety check
+            if (!c) continue;
             world->chunks[index] = c;
           } else {
             Chunk_Unload(c);
@@ -565,16 +470,17 @@ void World_Update(World *world, Vector3 playerPos) {
         Chunk *c = world->chunks[ix + iz * POOL_WIDTH];
         if (c && c->dirty && c->x == cx && c->z == cz) {
           Chunk_BuildMesh(c, world);
-          if (c->modelOpaque.meshCount > 0)
-            c->modelOpaque.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture =
-                world->atlas;
-          if (c->modelTransparent.meshCount > 0)
-            c->modelTransparent.materials[0]
-                .maps[MATERIAL_MAP_DIFFUSE]
-                .texture = world->atlas;
+          if (c->modelOpaque.meshCount > 0) {
+            c->modelOpaque.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
+            c->modelOpaque.materials[0].shader = world->ps1Shader;
+          }
+          if (c->modelTransparent.meshCount > 0) {
+            c->modelTransparent.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = world->atlas;
+            c->modelTransparent.materials[0].shader = world->ps1Shader;
+          }
           c->dirty = false;
           world->dirtyCount--;
-          if (++buildsThisFrame >= 4) // Reduced mesh builds per frame
+          if (++buildsThisFrame >= 4)
             return;
         }
       }
@@ -596,7 +502,7 @@ static inline bool IsBoxInFrustum(Frustum f, float minX, float minY, float minZ,
   return true;
 }
 
-void World_Render(World *world, Frustum frustum) {
+void World_Render(World *world, Frustum f) {
   world->visibleCount = 0;
   for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
     Chunk *c = world->chunks[i];
@@ -608,7 +514,7 @@ void World_Render(World *world, Frustum frustum) {
     float x2 = x1 + CHUNK_WIDTH, y2 = (float)c->maxY + 1.0f,
           z2 = z1 + CHUNK_DEPTH;
 
-    if (IsBoxInFrustum(frustum, x1, y1, z1, x2, y2, z2)) {
+    if (IsBoxInFrustum(f, x1, y1, z1, x2, y2, z2)) {
       world->visibleIndices[world->visibleCount++] = i;
       Chunk_RenderOpaque(c);
     }
@@ -633,10 +539,9 @@ static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
 
   lastCloudRebuildTime = time;
 
-  float cloudHeight = 200.0f; // Static height fixes jumping jitter
+  float cloudHeight = 200.0f;
   float cloudSize = 16.0f;
-  int range = 64; // Smaller range but larger blocks for better
-                  // coverage/performance balance
+  int range = 64;
   int startX = (int)floor(playerPos.x / cloudSize) - range;
   int startZ = (int)floor(playerPos.z / cloudSize) - range;
 
@@ -666,28 +571,21 @@ static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
               pz = (float)z * cloudSize;
         float sx = cloudSize, sy = 1.1f, sz = cloudSize;
 
-        // Add 6 faces of a cube
         float cubeVerts[] = {
-            // Top
             px, py + sy, pz, px, py + sy, pz + sz, px + sx, py + sy, pz + sz,
             px, py + sy, pz, px + sx, py + sy, pz + sz, px + sx, py + sy, pz,
-            // Bottom
             px, py, pz, px + sx, py, pz + sz, px, py, pz + sz, px, py, pz,
             px + sx, py, pz, px + sx, py, pz + sz,
-            // Front
             px, py, pz + sz, px + sx, py, pz + sz, px + sx, py + sy, pz + sz,
             px, py, pz + sz, px + sx, py + sy, pz + sz, px, py + sy, pz + sz,
-            // Back
             px + sx, py, pz, px, py, pz, px, py + sy, pz, px + sx, py, pz, px,
             py + sy, pz, px + sx, py + sy, pz,
-            // Right
             px + sx, py, pz + sz, px + sx, py, pz, px + sx, py + sy, pz,
             px + sx, py, pz + sz, px + sx, py + sy, pz, px + sx, py + sy,
             pz + sz,
-            // Left
             px, py, pz, px, py, pz + sz, px, py + sy, pz + sz, px, py, pz, px,
             py + sy, pz + sz, px, py + sy, pz};
-        memcpy(&vertices[vCount * 3], cubeVerts, sizeof(cubeVerts));  // flawfinder: ignore
+        memcpy(&vertices[vCount * 3], cubeVerts, sizeof(cubeVerts));
         for (int i = 0; i < 36; i++) {
           int idx = (vCount + i) * 4;
           colors[idx] = cloudColor.r;
@@ -707,10 +605,11 @@ static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
     mesh.vertices = (float *)malloc(vCount * 3 * sizeof(float));
     mesh.colors = (unsigned char *)malloc(vCount * 4 * sizeof(unsigned char));
     if (mesh.vertices && mesh.colors) {
-      memcpy(mesh.vertices, vertices, vCount * 3 * sizeof(float));  // flawfinder: ignore
-      memcpy(mesh.colors, colors, vCount * 4 * sizeof(unsigned char));  // flawfinder: ignore
+      memcpy(mesh.vertices, vertices, vCount * 3 * sizeof(float));
+      memcpy(mesh.colors, colors, vCount * 4 * sizeof(unsigned char));
       UploadMesh(&mesh, false);
       world->cloudModel = LoadModelFromMesh(mesh);
+      // Clean, blocky clouds don't use the PS1 shader
     } else {
         free(mesh.vertices);
         free(mesh.colors);
@@ -724,8 +623,8 @@ static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
 }
 
 void World_RenderClouds(World *world, Vector3 playerPos, float time,
-                        Frustum frustum) {
-  (void)frustum;
+                        Frustum f) {
+  (void)f;
   World_UpdateCloudMesh(world, playerPos, time);
   if (world->cloudModel.meshCount > 0) {
     rlDisableBackfaceCulling();
@@ -752,7 +651,7 @@ void World_Unload(World *world) {
 }
 
 bool World_SaveEdits(World *world, const char *path) {
-  FILE *file = fopen(path, "wb");  // flawfinder: ignore
+  FILE *file = fopen(path, "wb");
   if (!file)
     return false;
 
@@ -783,7 +682,7 @@ bool World_SaveEdits(World *world, const char *path) {
 }
 
 bool World_LoadEdits(World *world, const char *path) {
-  FILE *file = fopen(path, "rb");  // flawfinder: ignore
+  FILE *file = fopen(path, "rb");
   if (!file)
     return true;
 

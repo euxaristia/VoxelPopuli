@@ -31,7 +31,9 @@ typedef struct {
     Model cloudModel;
     Vector3 lastCloudUpdatePos;
     Texture2D atlas;
+    Shader ps1Shader;
     int waterAnimFrame;
+
     int last_pcx, last_pcz;
     WorldEdit *edits;
     int editCount;
