@@ -2,20 +2,15 @@
 #include <math.h>
 #include <stdlib.h>
 
-// Simple hash-based noise for brevity, or a basic Perlin implementation.
-// For now, let's use a simple sine-based pseudo-noise for testing,
-// but for a real engine we'd want a proper Perlin/Simplex implementation.
-
 static float NoiseFade(float t) { return t * t * t * (t * (t * 6 - 15) + 10); }
 static float NoiseLerp(float t, float a, float b) { return a + t * (b - a); }
-static float NoiseGrad(int hash, float x, float y) {
+static float NoiseGrad(int hash, float x, float y, float z) {
     int h = hash & 15;
     float u = h < 8 ? x : y;
-    float v = h < 4 ? y : h == 12 || h == 14 ? x : 0;
+    float v = h < 4 ? y : h == 12 || h == 14 ? x : z;
     return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
 }
 
-// Fixed permutation table for Perlin noise
 static int p[512] = { 151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,
     190, 6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,168, 68,175,74,165,71,134,139,48,27,166,
     77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54, 65,25,63,161, 1,216,80,73,209,76,132,187,208, 89,18,169,200,196,
@@ -43,10 +38,33 @@ float Noise2D(float x, float y) {
     float v = NoiseFade(y);
     int A = p[X]+Y, AA = p[A], AB = p[A+1], B = p[X+1]+Y, BA = p[B], BB = p[B+1];
 
-    return NoiseLerp(v, NoiseLerp(u, NoiseGrad(p[AA], x, y),
-                                     NoiseGrad(p[BA], x-1, y)),
-                        NoiseLerp(u, NoiseGrad(p[AB], x, y-1),
-                                     NoiseGrad(p[BB], x-1, y-1)));
+    return NoiseLerp(v, NoiseLerp(u, NoiseGrad(p[AA], x, y, 0),
+                                     NoiseGrad(p[BA], x-1, y, 0)),
+                        NoiseLerp(u, NoiseGrad(p[AB], x, y-1, 0),
+                                     NoiseGrad(p[BB], x-1, y-1, 0)));
+}
+
+float Noise3D(float x, float y, float z) {
+    int X = (int)floor(x) & 255;
+    int Y = (int)floor(y) & 255;
+    int Z = (int)floor(z) & 255;
+    x -= floor(x);
+    y -= floor(y);
+    z -= floor(z);
+    float u = NoiseFade(x);
+    float v = NoiseFade(y);
+    float w = NoiseFade(z);
+    int A = p[X]+Y, AA = p[A]+Z, AB = p[A+1]+Z,
+        B = p[X+1]+Y, BA = p[B]+Z, BB = p[B+1]+Z;
+
+    return NoiseLerp(w, NoiseLerp(v, NoiseLerp(u, NoiseGrad(p[AA], x, y, z),
+                                                  NoiseGrad(p[BA], x-1, y, z)),
+                                     NoiseLerp(u, NoiseGrad(p[AB], x, y-1, z),
+                                                  NoiseGrad(p[BB], x-1, y-1, z))),
+                        NoiseLerp(v, NoiseLerp(u, NoiseGrad(p[AA+1], x, y, z-1),
+                                                  NoiseGrad(p[BA+1], x-1, y, z-1)),
+                                     NoiseLerp(u, NoiseGrad(p[AB+1], x, y-1, z-1),
+                                                  NoiseGrad(p[BB+1], x-1, y-1, z-1))));
 }
 
 float Perlin2D(float x, float y, float frequency, int octaves) {
@@ -55,6 +73,19 @@ float Perlin2D(float x, float y, float frequency, int octaves) {
     float maxAmplitude = 0;
     for (int i = 0; i < octaves; i++) {
         total += Noise2D(x * frequency, y * frequency) * amplitude;
+        maxAmplitude += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2;
+    }
+    return total / maxAmplitude;
+}
+
+float Perlin3D(float x, float y, float z, float frequency, int octaves) {
+    float total = 0;
+    float amplitude = 1;
+    float maxAmplitude = 0;
+    for (int i = 0; i < octaves; i++) {
+        total += Noise3D(x * frequency, y * frequency, z * frequency) * amplitude;
         maxAmplitude += amplitude;
         amplitude *= 0.5;
         frequency *= 2;

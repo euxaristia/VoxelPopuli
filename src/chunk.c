@@ -168,15 +168,37 @@ void Chunk_Generate(Chunk *chunk) {
     for (int z = 0; z < CHUNK_DEPTH; z++) {
       float worldX = (float)(chunk->x * CHUNK_WIDTH + x);
       float worldZ = (float)(chunk->z * CHUNK_DEPTH + z);
+
+      // Re-calculate surface height to avoid carving surface too much
+      float continental = Perlin2D(worldX, worldZ, 0.005f, 3);
+      float baseH = continental * 40.0f + 128.0f;
+      float detail = Perlin2D(worldX, worldZ, 0.03f, 4);
+      float hillF = (continental > 0.2f) ? (continental - 0.2f) * 2.0f : 0.0f;
+      int surfaceHeight = (int)(baseH + detail * 15.0f * (1.0f + hillF));
+
       for (int y = 1; y < CHUNK_HEIGHT - 10; y++) {
-        float n3d = Perlin2D(worldX * 0.04f, (float)y * 0.08f, 1.0f, 2) +
-                    Perlin2D(worldZ * 0.04f, (float)y * 0.08f, 1.0f, 2);
-        if (n3d > 1.25f) {
-          if (chunk->blocks[x][y][z] == BLOCK_STONE ||
-              chunk->blocks[x][y][z] == BLOCK_DIRT ||
-              chunk->blocks[x][y][z] == BLOCK_GRAVEL ||
-              chunk->blocks[x][y][z] == BLOCK_SAND) {
-            chunk->blocks[x][y][z] = BLOCK_AIR;
+        // Use 3D noise for "Swiss cheese" caves
+        float n3d = Perlin3D(worldX, (float)y, worldZ, 0.035f, 2);
+        
+        // Threshold for carving. Lower threshold = more caves.
+        // We slightly ease the threshold near the surface to allow openings.
+        float threshold = 0.55f;
+        if (y > surfaceHeight - 8) {
+            // Surface proximity easing: allows some caves to break through
+            threshold = 0.58f; 
+        }
+
+        if (n3d > threshold) {
+          BlockType current = chunk->blocks[x][y][z];
+          if (current == BLOCK_STONE || current == BLOCK_DIRT ||
+              current == BLOCK_GRAVEL || current == BLOCK_SAND || 
+              current == BLOCK_GRASS) {
+            
+            // Don't carve if it's too close to the surface and not a "strong" cave
+            // This prevents the surface from being entirely destroyed.
+            if (y < surfaceHeight || n3d > 0.62f) {
+                chunk->blocks[x][y][z] = BLOCK_AIR;
+            }
           }
         }
       }
