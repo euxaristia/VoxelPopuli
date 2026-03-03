@@ -585,7 +585,7 @@ static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
             pz + sz,
             px, py, pz, px, py, pz + sz, px, py + sy, pz + sz, px, py, pz, px,
             py + sy, pz + sz, px, py + sy, pz};
-        memcpy(&vertices[vCount * 3], cubeVerts, sizeof(cubeVerts));
+        memcpy(&vertices[vCount * 3], cubeVerts, sizeof(cubeVerts)); // flawfinder: ignore
         for (int i = 0; i < 36; i++) {
           int idx = (vCount + i) * 4;
           colors[idx] = cloudColor.r;
@@ -605,8 +605,8 @@ static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
     mesh.vertices = (float *)malloc(vCount * 3 * sizeof(float));
     mesh.colors = (unsigned char *)malloc(vCount * 4 * sizeof(unsigned char));
     if (mesh.vertices && mesh.colors) {
-      memcpy(mesh.vertices, vertices, vCount * 3 * sizeof(float));
-      memcpy(mesh.colors, colors, vCount * 4 * sizeof(unsigned char));
+      memcpy(mesh.vertices, vertices, vCount * 3 * sizeof(float)); // flawfinder: ignore
+      memcpy(mesh.colors, colors, vCount * 4 * sizeof(unsigned char)); // flawfinder: ignore
       UploadMesh(&mesh, false);
       world->cloudModel = LoadModelFromMesh(mesh);
       // Clean, blocky clouds don't use the PS1 shader

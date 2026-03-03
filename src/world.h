@@ -3,7 +3,7 @@
 
 #include "chunk.h"
 
-#define VIEW_DISTANCE 8
+#define VIEW_DISTANCE 12
 #define POOL_WIDTH (VIEW_DISTANCE * 2 + 1)
 #define CHUNK_POOL_SIZE (POOL_WIDTH * POOL_WIDTH)
 

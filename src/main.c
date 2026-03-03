@@ -236,28 +236,48 @@ static void UpdatePS1Target(RenderTexture2D *target, int *currentW, int *current
 }
 #endif
 
-static void DrawSun(Vector3 playerPos, float time) {
-  float sunDist = 450.0f, sunSize = 80.0f, angle = (time / 120.0f) * 2.0f * PI;
+static void DrawSunMoon(Vector3 playerPos, float time) {
+  float dist = 450.0f, size = 60.0f, angle = (time / 120.0f) * 2.0f * PI;
   Vector3 sunDir = { 0, sinf(angle), cosf(angle) };
-  Vector3 sunPos = Vector3Add(playerPos, Vector3Scale(sunDir, sunDist));
+  Vector3 sunPos = Vector3Add(playerPos, Vector3Scale(sunDir, dist));
+  Vector3 moonDir = { 0, sinf(angle + PI), cosf(angle + PI) };
+  Vector3 moonPos = Vector3Add(playerPos, Vector3Scale(moonDir, dist));
+
   rlDrawRenderBatchActive(); rlPushMatrix();
+  rlDisableDepthTest(); rlDisableBackfaceCulling(); rlSetTexture(rlGetTextureIdDefault());
+  
+  // Draw Sun
+  rlPushMatrix();
   rlTranslatef(sunPos.x, sunPos.y, sunPos.z);
   rlRotatef(RAD2DEG * atan2f(playerPos.x - sunPos.x, playerPos.z - sunPos.z), 0, 1, 0);
-  rlRotatef(RAD2DEG * asinf((sunPos.y - playerPos.y) / sunDist), 1, 0, 0);
-  rlDisableDepthTest(); rlDisableBackfaceCulling(); rlSetTexture(rlGetTextureIdDefault());
-  rlBegin(RL_QUADS); rlColor4ub(255, 255, 255, 255);
-  rlVertex3f(-sunSize, -sunSize, 0); rlVertex3f(sunSize, -sunSize, 0);
-  rlVertex3f(sunSize, sunSize, 0); rlVertex3f(-sunSize, sunSize, 0);
+  rlRotatef(RAD2DEG * asinf((sunPos.y - playerPos.y) / dist), 1, 0, 0);
+  rlBegin(RL_QUADS); rlColor4ub(255, 255, 220, 255);
+  rlVertex3f(-size, -size, 0); rlVertex3f(size, -size, 0); rlVertex3f(size, size, 0); rlVertex3f(-size, size, 0);
   rlEnd();
+  rlPopMatrix();
+
+  // Draw Moon
+  rlPushMatrix();
+  rlTranslatef(moonPos.x, moonPos.y, moonPos.z);
+  rlRotatef(RAD2DEG * atan2f(playerPos.x - moonPos.x, playerPos.z - moonPos.z), 0, 1, 0);
+  rlRotatef(RAD2DEG * asinf((moonPos.y - playerPos.y) / dist), 1, 0, 0);
+  rlBegin(RL_QUADS); rlColor4ub(200, 210, 230, 255);
+  rlVertex3f(-size*0.8f, -size*0.8f, 0); rlVertex3f(size*0.8f, -size*0.8f, 0); rlVertex3f(size*0.8f, size*0.8f, 0); rlVertex3f(-size*0.8f, size*0.8f, 0);
+  rlEnd();
+  rlPopMatrix();
+
   rlSetTexture(0); rlEnableBackfaceCulling(); rlEnableDepthTest();
   rlPopMatrix(); rlDrawRenderBatchActive();
 }
 
 int main(void) {
-  srand((unsigned int)time(NULL)); SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+  srand((unsigned int)time(NULL)); // flawfinder: ignore
+  SetConfigFlags(FLAG_WINDOW_RESIZABLE);
   InitWindow(DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT, "VoxelPopuli - Minecraft 1.0 Clone");
   InitNoise(); SetWindowMinSize(960, 540); LoadWindowState(WINDOW_SAVE_PATH);
-  World *world = (World *)malloc(sizeof(World)); World_Init(world);
+  World *world = (World *)malloc(sizeof(World)); 
+  if (!world) { TraceLog(LOG_FATAL, "Failed to allocate world"); return 1; }
+  World_Init(world);
 #ifdef PS1_RENDERER
   Shader ps1Shader = LoadShaderFromMemory(ps1_vs, ps1_fs);
   int ps1W = 640, ps1H = 480; RenderTexture2D ps1Target = LoadRenderTexture(ps1W, ps1H);
@@ -323,13 +343,26 @@ int main(void) {
     BeginTextureMode(ps1Target);
 #endif
     float time = (float)GetTime(), sunAngle = (time / 120.0f) * 2.0f * PI, sunY = sinf(sunAngle);
-    Color skyC = SKYBLUE; if (sunY < 0.2f) { float m = fmaxf(0.0f, fminf(1.0f, (0.2f-sunY)*2.5f)); skyC.r=(unsigned char)(SKYBLUE.r*(1-m)+10*m); skyC.g=(unsigned char)(SKYBLUE.g*(1-m)+10*m); skyC.b=(unsigned char)(SKYBLUE.b*(1-m)+30*m); }
+    Color skyC = SKYBLUE;
+    if (sunY > 0.1f) {
+      // Day
+    } else if (sunY > -0.1f) {
+      // Sunset/Sunrise
+      float m = (0.1f - sunY) * 5.0f; // 0 to 1
+      float sunsetMult = (sunY > 0.0f) ? 0.5f : 1.0f;
+      skyC.r = (unsigned char)fmaxf(10, SKYBLUE.r * (1.0f - m) + 200 * m * sunsetMult);
+      skyC.g = (unsigned char)fmaxf(10, SKYBLUE.g * (1.0f - m) + 80 * m);
+      skyC.b = (unsigned char)fmaxf(30, SKYBLUE.b * (1.0f - m) + 40 * m);
+    } else {
+      // Night
+      skyC = (Color){10, 10, 30, 255};
+    }
     ClearBackground(skyC);
     BeginMode3D(camera);
-    Frustum f = ExtractFrustum(); DrawSun(player.position, time);
+    Frustum f = ExtractFrustum(); DrawSunMoon(player.position, time);
 #ifdef PS1_RENDERER
     BeginShaderMode(ps1Shader);
-    Vector3 sD = {0, sinf(sunAngle), cosf(sunAngle)}; Vector4 sCV = ColorNormalize(skyC);
+    Vector3 sD = {0, sunY, cosf(sunAngle)}; Vector4 sCV = ColorNormalize(skyC);
     SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "sunDir"), &sD, SHADER_UNIFORM_VEC3);
     SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "time"), &time, SHADER_UNIFORM_FLOAT);
     SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
