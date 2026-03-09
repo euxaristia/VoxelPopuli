@@ -156,7 +156,7 @@ static void BuildWaterTile(Color *pixels, float time) {
       int r = (int)(24.0f + mix * 38.0f);
       int g = (int)(92.0f + mix * 58.0f);
       int b = (int)(205.0f + mix * 48.0f);
-      int a = 228;
+      int a = 245;
 
       if (detail < -0.35f) { r -= 10; g -= 8; b -= 5; }
       if (foam > 0.48f) { r += 8; g += 12; b += 16; }

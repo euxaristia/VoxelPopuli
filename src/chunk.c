@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define WATER_VERTEX_ALPHA 208
+#define WATER_VERTEX_ALPHA 240
 
 void Chunk_Init(Chunk *chunk, int x, int z) {
   chunk->x = x;
