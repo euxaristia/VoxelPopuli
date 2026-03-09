@@ -236,22 +236,75 @@ static void UpdatePS1Target(RenderTexture2D *target, int *currentW, int *current
 }
 #endif
 
-static void DrawSunMoon(Vector3 playerPos, float time) {
-  float dist = 450.0f, size = 60.0f, angle = (time / 1200.0f) * 2.0f * PI;
-  Vector3 sunDir = { 0, sinf(angle), cosf(angle) };
-  Vector3 sunPos = Vector3Add(playerPos, Vector3Scale(sunDir, dist));
-  Vector3 moonDir = { 0, sinf(angle + PI), cosf(angle + PI) };
-  Vector3 moonPos = Vector3Add(playerPos, Vector3Scale(moonDir, dist));
-
+static void DrawStars(Vector3 playerPos, float time) {
+  // Draw stars only at night
+  float angle = (time / 1200.0f) * 2.0f * PI;
+  float sunY = sinf(angle);
+  if (sunY > -0.3f) return;  // Only show stars when sun is well below horizon
+  
+  float starIntensity = 1.0f - ((sunY + 0.3f) / 0.3f);  // 0 to 1 based on sun position
+  if (starIntensity < 0.0f) starIntensity = 0.0f;
+  if (starIntensity > 1.0f) starIntensity = 1.0f;
+  
+  unsigned char starAlpha = (unsigned char)(200.0f * starIntensity);
+  if (starAlpha < 30) starAlpha = 30;
+  
   rlDrawRenderBatchActive(); rlPushMatrix();
   rlDisableDepthTest(); rlDisableBackfaceCulling(); rlSetTexture(rlGetTextureIdDefault());
   
+  // Draw random stars in a fixed pattern (deterministic based on position)
+  for (int i = 0; i < 150; i++) {
+    float starX = ((i * 137.5f) - 200.0f);
+    float starY = ((i * 73.3f) - 100.0f) + 50.0f;  // Keep stars in upper sky
+    float starZ = ((i * 251.7f) - 200.0f);
+    
+    // Simple hash for twinkle
+    float twinkle = 0.7f + 0.3f * sinf(time * 2.0f + (float)i);
+    unsigned char brightness = (unsigned char)(200.0f * twinkle * starIntensity);
+    if (brightness < 100) brightness = 100;
+    
+    rlPushMatrix();
+    rlTranslatef(playerPos.x + starX, playerPos.y + starY + 100.0f, playerPos.z + starZ);
+    rlBegin(RL_QUADS);
+    rlColor4ub(brightness, brightness, brightness + 50, starAlpha);
+    rlVertex3f(-0.5f, -0.5f, 0); rlVertex3f(0.5f, -0.5f, 0);
+    rlVertex3f(0.5f, 0.5f, 0); rlVertex3f(-0.5f, 0.5f, 0);
+    rlEnd();
+    rlPopMatrix();
+  }
+  
+  rlSetTexture(0); rlEnableBackfaceCulling(); rlEnableDepthTest();
+  rlPopMatrix(); rlDrawRenderBatchActive();
+}
+
+static void DrawSunMoon(Vector3 playerPos, float time) {
+  float dist = 450.0f, size = 60.0f, angle = (time / 1200.0f) * 2.0f * PI;
+  float sunY = sinf(angle);
+  Vector3 sunDir = { 0, sunY, cosf(angle) };
+  Vector3 sunPos = Vector3Add(playerPos, Vector3Scale(sunDir, dist));
+  Vector3 moonDir = { 0, sinf(angle + PI), cosf(angle + PI) };
+  Vector3 moonPos = Vector3Add(playerPos, Vector3Scale(moonDir, dist));
+  
+  // Calculate sun/moon colors based on position
+  float sunriseMult = 1.0f;
+  if (sunY > -0.3f && sunY < 0.3f) {
+    // Sunrise/sunset - rich orange
+    sunriseMult = 0.6f;
+  }
+  
+  unsigned char sunR = (unsigned char)(255.0f * sunriseMult);
+  unsigned char sunG = (unsigned char)(200.0f * sunriseMult);
+  unsigned char sunB = (unsigned char)(150.0f * sunriseMult);
+
+  rlDrawRenderBatchActive(); rlPushMatrix();
+  rlDisableDepthTest(); rlDisableBackfaceCulling(); rlSetTexture(rlGetTextureIdDefault());
+
   // Draw Sun
   rlPushMatrix();
   rlTranslatef(sunPos.x, sunPos.y, sunPos.z);
   rlRotatef(RAD2DEG * atan2f(playerPos.x - sunPos.x, playerPos.z - sunPos.z), 0, 1, 0);
   rlRotatef(RAD2DEG * asinf((sunPos.y - playerPos.y) / dist), 1, 0, 0);
-  rlBegin(RL_QUADS); rlColor4ub(255, 255, 220, 255);
+  rlBegin(RL_QUADS); rlColor4ub(sunR, sunG, sunB, 255);
   rlVertex3f(-size, -size, 0); rlVertex3f(size, -size, 0); rlVertex3f(size, size, 0); rlVertex3f(-size, size, 0);
   rlEnd();
   rlPopMatrix();
@@ -261,7 +314,7 @@ static void DrawSunMoon(Vector3 playerPos, float time) {
   rlTranslatef(moonPos.x, moonPos.y, moonPos.z);
   rlRotatef(RAD2DEG * atan2f(playerPos.x - moonPos.x, playerPos.z - moonPos.z), 0, 1, 0);
   rlRotatef(RAD2DEG * asinf((moonPos.y - playerPos.y) / dist), 1, 0, 0);
-  rlBegin(RL_QUADS); rlColor4ub(200, 210, 230, 255);
+  rlBegin(RL_QUADS); rlColor4ub(220, 225, 255, 255);
   rlVertex3f(-size*0.8f, -size*0.8f, 0); rlVertex3f(size*0.8f, -size*0.8f, 0); rlVertex3f(size*0.8f, size*0.8f, 0); rlVertex3f(-size*0.8f, size*0.8f, 0);
   rlEnd();
   rlPopMatrix();
@@ -367,22 +420,46 @@ int main(void) {
 #endif
     float time = (float)GetTime(), sunAngle = (time / 1200.0f) * 2.0f * PI, sunY = sinf(sunAngle);
     Color skyC = SKYBLUE;
-    if (sunY > 0.1f) {
-      // Day
-    } else if (sunY > -0.1f) {
-      // Sunset/Sunrise
-      float m = (0.1f - sunY) * 5.0f; // 0 to 1
-      float sunsetMult = (sunY > 0.0f) ? 0.5f : 1.0f;
-      skyC.r = (unsigned char)fmaxf(10, SKYBLUE.r * (1.0f - m) + 200 * m * sunsetMult);
-      skyC.g = (unsigned char)fmaxf(10, SKYBLUE.g * (1.0f - m) + 80 * m);
-      skyC.b = (unsigned char)fmaxf(30, SKYBLUE.b * (1.0f - m) + 40 * m);
+    
+    // Day/night cycle with realistic colors
+    if (sunY > 0.3f) {
+      // Full day - bright blue sky
+      skyC = (Color){135, 206, 235, 255};
+    } else if (sunY > -0.2f) {
+      // Sunrise/sunset transition
+      float t = (sunY + 0.2f) / 0.5f;  // 0 to 1
+      if (t < 0.0f) t = 0.0f;
+      if (t > 1.0f) t = 1.0f;
+      
+      if (t < 0.5f) {
+        // Dawn/dusk - pinkish/orange sky
+        float u = t * 2.0f;  // 0 to 1
+        skyC.r = (unsigned char)(255.0f * u + 135.0f * (1.0f - u));
+        skyC.g = (unsigned char)(160.0f * u + 100.0f * (1.0f - u));
+        skyC.b = (unsigned char)(180.0f * u + 150.0f * (1.0f - u));
+      } else {
+        // Transition to day
+        float u = (t - 0.5f) * 2.0f;  // 0 to 1
+        skyC.r = (unsigned char)(135.0f * u + 255.0f * (1.0f - u));
+        skyC.g = (unsigned char)(206.0f * u + 160.0f * (1.0f - u));
+        skyC.b = (unsigned char)(235.0f * u + 180.0f * (1.0f - u));
+      }
+    } else if (sunY > -0.5f) {
+      // Deep twilight - dark blue-purple
+      float t = (sunY + 0.5f) / 0.3f;  // 0 to 1
+      skyC.r = (unsigned char)(30.0f * t + 10.0f * (1.0f - t));
+      skyC.g = (unsigned char)(30.0f * t + 10.0f * (1.0f - t));
+      skyC.b = (unsigned char)(80.0f * t + 50.0f * (1.0f - t));
     } else {
-      // Night
-      skyC = (Color){10, 10, 30, 255};
+      // Full night - very dark blue
+      skyC = (Color){5, 5, 15, 255};
     }
+    
     ClearBackground(skyC);
     BeginMode3D(camera);
-    Frustum f = ExtractFrustum(); DrawSunMoon(player.position, time);
+    Frustum f = ExtractFrustum();
+    DrawStars(player.position, time);
+    DrawSunMoon(player.position, time);
 #ifdef PS1_RENDERER
     Vector3 sD = {0, sunY, cosf(sunAngle)};
     Vector4 sCV = ColorNormalize(skyC);
