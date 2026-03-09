@@ -502,7 +502,7 @@ static inline bool IsBoxInFrustum(Frustum f, float minX, float minY, float minZ,
   return true;
 }
 
-void World_Render(World *world, Frustum f) {
+void World_RenderOpaque(World *world, Frustum f) {
   world->visibleCount = 0;
   for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
     Chunk *c = world->chunks[i];
@@ -519,11 +519,21 @@ void World_Render(World *world, Frustum f) {
       Chunk_RenderOpaque(c);
     }
   }
+}
+
+void World_RenderTransparent(World *world, Frustum f) {
+  rlDisableDepthMask();
   for (int i = 0; i < world->visibleCount; i++) {
     Chunk *c = world->chunks[world->visibleIndices[i]];
     if (c->meshTransparent.vertexCount > 0)
       Chunk_RenderTransparent(c);
   }
+  rlEnableDepthMask();
+}
+
+void World_Render(World *world, Frustum f) {
+  World_RenderOpaque(world, f);
+  World_RenderTransparent(world, f);
 }
 
 static void World_UpdateCloudMesh(World *world, Vector3 playerPos, float time) {
@@ -627,9 +637,11 @@ void World_RenderClouds(World *world, Vector3 playerPos, float time,
   (void)f;
   World_UpdateCloudMesh(world, playerPos, time);
   if (world->cloudModel.meshCount > 0) {
+    rlDisableDepthMask();
     rlDisableBackfaceCulling();
     DrawModel(world->cloudModel, (Vector3){0, 0, 0}, 1.0f, WHITE);
     rlEnableBackfaceCulling();
+    rlEnableDepthMask();
   }
 }
 

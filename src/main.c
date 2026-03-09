@@ -282,7 +282,7 @@ int main(void) {
   Shader ps1Shader = LoadShaderFromMemory(ps1_vs, ps1_fs);
   int ps1W = 640, ps1H = 480; RenderTexture2D ps1Target = LoadRenderTexture(ps1W, ps1H);
   SetTextureFilter(ps1Target.texture, TEXTURE_FILTER_POINT);
-  float precisionVal = 480.0f; SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "uPrecision"), &precisionVal, SHADER_UNIFORM_FLOAT);
+  float precisionVal = 960.0f; SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "uPrecision"), &precisionVal, SHADER_UNIFORM_FLOAT);
   world->ps1Shader = ps1Shader;
 #endif
   Player player; BlockType hotbar[INVENTORY_BLOCK_COUNT]; InitDefaultPlayer(&player, hotbar);
@@ -384,18 +384,30 @@ int main(void) {
     BeginMode3D(camera);
     Frustum f = ExtractFrustum(); DrawSunMoon(player.position, time);
 #ifdef PS1_RENDERER
+    Vector3 sD = {0, sunY, cosf(sunAngle)};
+    Vector4 sCV = ColorNormalize(skyC);
     BeginShaderMode(ps1Shader);
-    Vector3 sD = {0, sunY, cosf(sunAngle)}; Vector4 sCV = ColorNormalize(skyC);
     SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "sunDir"), &sD, SHADER_UNIFORM_VEC3);
     SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "time"), &time, SHADER_UNIFORM_FLOAT);
     SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
     SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "skyCol"), &sCV, SHADER_UNIFORM_VEC4);
 #endif
-    World_Render(world, f);
+    World_RenderOpaque(world, f);
 #ifdef PS1_RENDERER
     EndShaderMode();
 #endif
     World_RenderClouds(world, player.position, time, f);
+#ifdef PS1_RENDERER
+    BeginShaderMode(ps1Shader);
+    SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "sunDir"), &sD, SHADER_UNIFORM_VEC3);
+    SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "time"), &time, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
+    SetShaderValue(ps1Shader, GetShaderLocation(ps1Shader, "skyCol"), &sCV, SHADER_UNIFORM_VEC4);
+#endif
+    World_RenderTransparent(world, f);
+#ifdef PS1_RENDERER
+    EndShaderMode();
+#endif
     EndMode3D();
 #ifdef PS1_RENDERER
     EndTextureMode(); DrawTexturePro(ps1Target.texture, (Rectangle){0, 0, (float)ps1Target.texture.width, (float)-ps1Target.texture.height}, (Rectangle){0, 0, (float)sw, (float)sh}, (Vector2){0}, 0.0f, WHITE);

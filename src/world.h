@@ -43,6 +43,8 @@ typedef struct {
 
 void World_Init(World *world);
 void World_Update(World *world, Vector3 playerPos);
+void World_RenderOpaque(World *world, Frustum frustum);
+void World_RenderTransparent(World *world, Frustum frustum);
 void World_Render(World *world, Frustum frustum);
 void World_RenderClouds(World *world, Vector3 playerPos, float time, Frustum frustum);
 void World_Unload(World *world);

@@ -305,7 +305,8 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
         if (y > currentMaxY)
           currentMaxY = y;
 
-        bool isT = (block == BLOCK_WATER || block == BLOCK_OAK_LEAVES);
+        // Water is transparent, leaves are now opaque (with alpha-tested texture)
+        bool isT = (block == BLOCK_WATER);
         float *vB = isT ? vTrans : vOpaque;
         float *nB = isT ? nTrans : nOpaque;
         float *tB = isT ? tTrans : tOpaque;
@@ -342,7 +343,7 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
 
         float u0 = tx * ts + pad, v0 = ty * ts + pad, u1 = (tx + 1) * ts - pad,
               v1 = (ty + 1) * ts - pad;
-        float wOff = (block == BLOCK_WATER) ? 0.1f : 0.0f;
+        float wOff = (block == BLOCK_WATER) ? 0.0f : 0.0f;
 
         // Top
         if (ShouldDrawFace(block, (y == CHUNK_HEIGHT - 1)

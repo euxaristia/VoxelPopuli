@@ -32,7 +32,7 @@ static const char* ps1_vs =
     "    gl_Position = pos;\n"
     "}\n";
 
-static const char* ps1_fs = 
+static const char* ps1_fs =
     "#version 330\n"
     "in vec4 fragColor;\n"
     "in vec2 fragTexCoord;\n"
@@ -56,19 +56,6 @@ static const char* ps1_fs =
     "    \n"
     "    vec3 baseColor = texelColor.rgb * fragColor.rgb * colDiffuse.rgb;\n"
     "    vec3 color = baseColor * light;\n"
-    "    \n"
-    "    // Water logic (Reflective/Vibrant)\n"
-    "    bool isWater = (fragColor.a < 0.9 && fragColor.a > 0.1);\n"
-    "    if (isWater) {\n"
-    "        vec3 viewDir = normalize(viewPos - fragPos);\n"
-    "        float fresnel = pow(1.0 - max(0.0, dot(viewDir, vec3(0.0, 1.0, 0.0))), 3.0);\n"
-    "        float shimmer = sin(fragPos.x * 1.2 + time * 2.0) * cos(fragPos.z * 1.2 + time * 1.5) * 0.04;\n"
-    "        color = mix(color, skyCol.rgb, fresnel * 0.6 + 0.2) + shimmer;\n"
-    "        // Specular highlight\n"
-    "        vec3 halfDir = normalize(sunDir + viewDir);\n"
-    "        float spec = pow(max(0.0, dot(vec3(0.0, 1.0, 0.0), halfDir)), 64.0) * 1.5 * max(0.0, sunDir.y);\n"
-    "        color += vec3(spec);\n"
-    "    }\n"
     "    \n"
     "    // Vibrancy and Tone Mapping\n"
     "    float sunY = max(0.0, sunDir.y);\n"
