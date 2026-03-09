@@ -182,10 +182,10 @@ void Chunk_Generate(Chunk *chunk) {
         
         // Threshold for carving. Lower threshold = more caves.
         // We slightly ease the threshold near the surface to allow openings.
-        float threshold = 0.55f;
+        float threshold = 0.45f;
         if (y > surfaceHeight - 8) {
             // Surface proximity easing: allows some caves to break through
-            threshold = 0.58f; 
+            threshold = 0.48f; 
         }
 
         if (n3d > threshold) {

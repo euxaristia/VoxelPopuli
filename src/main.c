@@ -237,7 +237,7 @@ static void UpdatePS1Target(RenderTexture2D *target, int *currentW, int *current
 #endif
 
 static void DrawSunMoon(Vector3 playerPos, float time) {
-  float dist = 450.0f, size = 60.0f, angle = (time / 120.0f) * 2.0f * PI;
+  float dist = 450.0f, size = 60.0f, angle = (time / 1200.0f) * 2.0f * PI;
   Vector3 sunDir = { 0, sinf(angle), cosf(angle) };
   Vector3 sunPos = Vector3Add(playerPos, Vector3Scale(sunDir, dist));
   Vector3 moonDir = { 0, sinf(angle + PI), cosf(angle + PI) };
@@ -291,7 +291,13 @@ int main(void) {
   for (int i=0; i<100; i++) World_Update(world, player.position);
   if (!loaded) {
     int sx = (int)floor(player.position.x), sz = (int)floor(player.position.z);
-    for (int y=CHUNK_HEIGHT-1; y>=0; y--) { if (World_GetBlock(world, sx, y, sz) != BLOCK_AIR) { player.position.y = (float)y + 1.8f; break; } }
+    for (int y=CHUNK_HEIGHT-1; y>=0; y--) { 
+      BlockType b = World_GetBlock(world, sx, y, sz); 
+      if (b != BLOCK_AIR && b != BLOCK_WATER) { 
+        player.position.y = (float)y + 1.8f; 
+        break; 
+      } 
+    }
     player.respawnPosition = player.position;
   }
   for (int i = 0; i < 32 && CheckCollision(world, player.position); i++) player.position.y += 1.0f;
@@ -305,6 +311,23 @@ int main(void) {
     if (!player.inventoryOpen) {
       Vector2 md = GetMouseDelta(); cameraAngle.x -= md.x * 0.003f; cameraAngle.y -= md.y * 0.003f; cameraAngle.y = fmaxf(-1.56f, fminf(1.56f, cameraAngle.y));
       int wheel = (int)GetMouseWheelMove(); if (wheel != 0) { player.selectedSlot = (player.selectedSlot - wheel + INVENTORY_BLOCK_COUNT) % INVENTORY_BLOCK_COUNT; player.selectedBlock = hotbar[player.selectedSlot]; }
+      
+      // Block breaking/placing
+      if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
+        RaycastResult hit = World_Raycast(world, camera.position, Vector3Normalize(Vector3Subtract(camera.target, camera.position)), 8.0f);
+        if (hit.hit) {
+          World_SetBlock(world, hit.x, hit.y, hit.z, BLOCK_AIR);
+        }
+      }
+      if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) && player.selectedBlock != BLOCK_AIR) {
+        RaycastResult hit = World_Raycast(world, camera.position, Vector3Normalize(Vector3Subtract(camera.target, camera.position)), 8.0f);
+        if (hit.hit) {
+          int nx = hit.x + hit.nx, ny = hit.y + hit.ny, nz = hit.z + hit.nz;
+          if (World_GetBlock(world, nx, ny, nz) == BLOCK_AIR) {
+            World_SetBlock(world, nx, ny, nz, player.selectedBlock);
+          }
+        }
+      }
     }
     camera.position = (Vector3){player.position.x, player.position.y + 1.6f, player.position.z};
     camera.target = Vector3Add(camera.position, (Vector3){cosf(cameraAngle.y)*sinf(cameraAngle.x), sinf(cameraAngle.y), cosf(cameraAngle.y)*cosf(cameraAngle.x)});
@@ -342,7 +365,7 @@ int main(void) {
 #ifdef PS1_RENDERER
     BeginTextureMode(ps1Target);
 #endif
-    float time = (float)GetTime(), sunAngle = (time / 120.0f) * 2.0f * PI, sunY = sinf(sunAngle);
+    float time = (float)GetTime(), sunAngle = (time / 1200.0f) * 2.0f * PI, sunY = sinf(sunAngle);
     Color skyC = SKYBLUE;
     if (sunY > 0.1f) {
       // Day
@@ -389,7 +412,16 @@ int main(void) {
       DrawRectangleLinesEx(r, 2, player.selectedSlot == i ? YELLOW : WHITE);
       if (hotbar[i] != BLOCK_AIR) {
         int idx = GetInventoryIndex(hotbar[i]), count = (idx >= 0) ? player.blockCounts[idx] : 0;
-        DrawRectangle((int)(r.x + 5), (int)(r.y + 5), 25, 25, GetBlockUIColour(hotbar[i]));
+        Color blockColor = GetBlockUIColour(hotbar[i]);
+        if (hotbar[i] == BLOCK_WATER) {
+          // Draw water with a wave pattern instead of solid blue
+          DrawRectangle((int)(r.x + 5), (int)(r.y + 5), 25, 25, Fade(blockColor, 0.3f));
+          for (int w = 0; w < 5; w++) {
+            DrawRectangle((int)(r.x + 7 + w * 4), (int)(r.y + 12 + sinf((float)w * 0.8f + (float)GetTime() * 2.0f) * 2), 3, 3, blockColor);
+          }
+        } else {
+          DrawRectangle((int)(r.x + 5), (int)(r.y + 5), 25, 25, blockColor);
+        }
         DrawText(TextFormat("%d", count), (int)r.x + 2, (int)r.y + 2, 10, WHITE);
       }
     }
