@@ -271,7 +271,7 @@ static void DrawSunMoon(Vector3 playerPos, float time) {
 }
 
 int main(void) {
-  srand((unsigned int)time(NULL)); // flawfinder: ignore
+  srand((unsigned int)time(NULL));
   SetConfigFlags(FLAG_WINDOW_RESIZABLE);
   InitWindow(DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT, "VoxelPopuli - Minecraft 1.0 Clone");
   InitNoise(); SetWindowMinSize(960, 540); LoadWindowState(WINDOW_SAVE_PATH);

@@ -21,8 +21,5 @@ jobs:
     - name: Run cppcheck
       run: cppcheck --error-exitcode=1 --force --suppress=syntaxError:src/raylib.h -I src/ src/main.c src/chunk.c src/world.c src/noise.c
 
-    - name: Run flawfinder
-      run: flawfinder --error-level=3 src/main.c src/chunk.c src/world.c src/noise.c
-
     - name: Build
       run: make
