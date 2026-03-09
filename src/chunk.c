@@ -371,7 +371,8 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
           memcpy(&tB[*vc * 2], t, 48);
           unsigned char light = GetLight(chunk, world, x, y + 1, z);
           float lightF = (float)light / 15.0f;
-          if (lightF < 0.05f) lightF = 0.05f;
+          // Water always has decent brightness to avoid dark patches
+          if (lightF < 0.7f) lightF = 0.7f;
           for (int i = 0; i < 6; i++) {
             int idx = *vc + i;
             nB[idx * 3] = 0;
@@ -521,6 +522,8 @@ void Chunk_BuildMesh(Chunk *chunk, void *pWorld) {
             memcpy(&tB[*vc * 2], st, 48);
             unsigned char light = GetLight(chunk, world, nx, y, nz);
             float lightF = (float)light / 15.0f;
+            // Water always has decent brightness to avoid dark patches
+            if (block == BLOCK_WATER && lightF < 0.7f) lightF = 0.7f;
             if (lightF < 0.05f) lightF = 0.05f;
             for (int i = 0; i < 6; i++) {
               int idx = *vc + i;
