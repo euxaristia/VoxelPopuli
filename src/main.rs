@@ -96,52 +96,80 @@ struct Player {
     position: Vec3,
     velocity: Vec3,
     grounded: bool,
+    air_seconds: f32,
+    health: i32,
 }
 
 impl Player {
-    fn update(&mut self, world: &World, move_dir: Vec3, dt: f32) {
-        let speed = 15.0;
-        let gravity = -30.0;
-        let jump_force = 10.0;
+    fn is_point_in_block(world: &World, p: Vec3) -> bool {
+        let b = world.get_block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        b != BlockType::Air && b != BlockType::Water
+    }
 
-        self.velocity.x = move_dir.x * speed;
-        self.velocity.z = move_dir.z * speed;
-        self.velocity.y += gravity * dt;
+    fn check_collision(world: &World, pos: Vec3) -> bool {
+        let w = 0.22;
+        let h = 1.75;
+        for x_off in [-w, w] {
+            for z_off in [-w, w] {
+                for yi in 0..=2 {
+                    let y = 0.1 + yi as f32 * ((h - 0.1) / 2.0);
+                    if Self::is_point_in_block(world, Vec3::new(pos.x + x_off, pos.y + y, pos.z + z_off)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
 
-        let next_pos = self.position + self.velocity * dt;
+    fn update(&mut self, world: &World, move_input: Vec3, dt: f32, is_sprinting: bool) {
+        let waist_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 0.9).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
+        let feet_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 0.1).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
         
-        // Simple voxel collision (check only for Air/Water)
-        let is_solid = |pos: Vec3| {
-            let b = world.get_block(pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
-            b != BlockType::Air && b != BlockType::Water
-        };
+        let mut mv = move_input;
+        if mv.length_squared() > 0.1 {
+            mv = mv.normalize();
+            let speed = if waist_in_w { 3.5 } else if is_sprinting { 8.5 } else { 4.5 };
+            mv *= speed;
+        }
 
-        // Y collision
-        let mut final_pos = self.position;
-        if is_solid(Vec3::new(final_pos.x, next_pos.y, final_pos.z)) || 
-           is_solid(Vec3::new(final_pos.x, next_pos.y + 1.8, final_pos.z)) {
+        self.velocity.x = mv.x;
+        self.velocity.z = mv.z;
+        self.velocity.y -= (if waist_in_w { 14.0 } else { 28.0 }) * dt;
+
+        // Apply dy
+        let dy = self.velocity.y * dt;
+        self.position.y += dy;
+        if Self::check_collision(world, self.position) {
             if self.velocity.y < 0.0 {
                 self.grounded = true;
             }
+            self.position.y -= dy;
             self.velocity.y = 0.0;
-        } else {
-            final_pos.y = next_pos.y;
+        } else if self.velocity.y != 0.0 {
             self.grounded = false;
         }
 
-        // X collision
-        if !is_solid(Vec3::new(next_pos.x, final_pos.y + 0.1, final_pos.z)) &&
-           !is_solid(Vec3::new(next_pos.x, final_pos.y + 1.7, final_pos.z)) {
-            final_pos.x = next_pos.x;
+        // Apply dx
+        let dx = self.velocity.x * dt;
+        self.position.x += dx;
+        if Self::check_collision(world, self.position) {
+            self.position.x -= dx;
         }
 
-        // Z collision
-        if !is_solid(Vec3::new(final_pos.x, final_pos.y + 0.1, next_pos.z)) &&
-           !is_solid(Vec3::new(final_pos.x, final_pos.y + 1.7, next_pos.z)) {
-            final_pos.z = next_pos.z;
+        // Apply dz
+        let dz = self.velocity.z * dt;
+        self.position.z += dz;
+        if Self::check_collision(world, self.position) {
+            self.position.z -= dz;
         }
 
-        self.position = final_pos;
+        let head_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 1.6).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
+        if head_in_w {
+            self.air_seconds = (self.air_seconds - dt).max(0.0);
+        } else {
+            self.air_seconds = (self.air_seconds + dt * 3.0).min(15.0);
+        }
     }
 }
 
@@ -177,9 +205,11 @@ fn main() {
     let shader = Shader::new(PS1_VS, PS1_FS).expect("Failed to compile PS1 shader");
 
     let mut player = Player {
-        position: Vec3::new(0.0, 150.0, 0.0),
+        position: Vec3::new(32.5, 164.0, 32.5),
         velocity: Vec3::ZERO,
         grounded: false,
+        air_seconds: 15.0,
+        health: 20,
     };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
@@ -198,8 +228,16 @@ fn main() {
                     window.set_should_close(true)
                 }
                 glfw::WindowEvent::Key(Key::Space, _, Action::Press, _) => {
-                    if player.grounded {
-                        player.velocity.y = 10.0;
+                    let waist_in_w = world.get_block(player.position.x.floor() as i32, (player.position.y + 0.9).floor() as i32, player.position.z.floor() as i32) == BlockType::Water;
+                    let feet_in_w = world.get_block(player.position.x.floor() as i32, (player.position.y + 0.1).floor() as i32, player.position.z.floor() as i32) == BlockType::Water;
+                    
+                    if waist_in_w {
+                        player.velocity.y = 4.0;
+                    } else if player.grounded {
+                        player.velocity.y = 9.0;
+                        player.grounded = false;
+                    } else if feet_in_w {
+                        player.velocity.y = 5.0;
                     }
                 }
                 glfw::WindowEvent::CursorPos(x, y) => {
@@ -225,11 +263,8 @@ fn main() {
         if window.get_key(Key::A) == Action::Press { move_dir -= right; }
         if window.get_key(Key::D) == Action::Press { move_dir += right; }
 
-        if move_dir.length_squared() > 0.1 {
-            move_dir = move_dir.normalize();
-        }
-
-        player.update(&world, move_dir, delta_time);
+        let is_sprinting = window.get_key(Key::LeftControl) == Action::Press;
+        player.update(&world, move_dir, delta_time, is_sprinting);
         world.update(player.position, current_time as f32);
 
         unsafe {
