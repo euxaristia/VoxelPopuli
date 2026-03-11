@@ -243,11 +243,69 @@ impl Mesh {
     }
 }
 
-impl Drop for Mesh {
+pub struct RenderTexture2D {
+    pub fbo: GLuint,
+    pub texture: Texture2D,
+    pub rbo: GLuint,
+}
+
+impl RenderTexture2D {
+    pub fn new(width: i32, height: i32) -> Self {
+        let mut fbo = 0;
+        let mut rbo = 0;
+        let texture = Texture2D::from_data(&vec![0u8; (width * height * 4) as usize], width, height);
+
+        unsafe {
+            gl::GenFramebuffers(1, &mut fbo);
+            gl::BindFramebuffer(gl::FRAMEBUFFER, fbo);
+
+            gl::FramebufferTexture2D(
+                gl::FRAMEBUFFER,
+                gl::COLOR_ATTACHMENT0,
+                gl::TEXTURE_2D,
+                texture.id,
+                0,
+            );
+
+            gl::GenRenderbuffers(1, &mut rbo);
+            gl::BindRenderbuffer(gl::RENDERBUFFER, rbo);
+            gl::RenderbufferStorage(gl::RENDERBUFFER, gl::DEPTH24_STENCIL8, width, height);
+            gl::FramebufferRenderbuffer(
+                gl::FRAMEBUFFER,
+                gl::DEPTH_STENCIL_ATTACHMENT,
+                gl::RENDERBUFFER,
+                rbo,
+            );
+
+            if gl::CheckFramebufferStatus(gl::FRAMEBUFFER) != gl::FRAMEBUFFER_COMPLETE {
+                eprintln!("Error: Framebuffer is not complete!");
+            }
+
+            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+        }
+
+        Self { fbo, texture, rbo }
+    }
+
+    pub fn bind(&self) {
+        unsafe {
+            gl::BindFramebuffer(gl::FRAMEBUFFER, self.fbo);
+            gl::Viewport(0, 0, self.texture.width, self.texture.height);
+        }
+    }
+
+    pub fn unbind() {
+        unsafe {
+            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+        }
+    }
+}
+
+impl Drop for RenderTexture2D {
     fn drop(&mut self) {
         unsafe {
-            gl::DeleteBuffers(4, self.vbo.as_ptr());
-            gl::DeleteVertexArrays(1, &self.vao);
+            gl::DeleteRenderbuffers(1, &self.rbo);
+            gl::DeleteFramebuffers(1, &self.fbo);
         }
     }
 }
