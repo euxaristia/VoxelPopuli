@@ -1,0 +1,3 @@
+target/** linguist-vendored
+*.d linguist-vendored
+docs/** linguist-documentation
