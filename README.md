@@ -1,35 +1,38 @@
 # VoxelPopuli 🧱
 
-A lightweight Minecraft-inspired voxel sandbox written in C with raylib.
+A lightweight Minecraft-inspired voxel sandbox written in Rust with OpenGL.
 
 ## Highlights ✨
 - Infinite-style chunk streaming around the player
 - Procedural terrain and trees via Perlin noise
-- Dynamic cloud rendering
-- Animated water texture with runtime atlas updates
-- Block placing and mining with a 9-slot hotbar
-- Inventory panel for quick block selection
-- Survival vitals: hearts, drowning/air meter, fall damage, respawn
-- Persistent world edits and player state across runs
+- Dynamic cloud and celestial rendering (Sun, Moon, Stars)
+- PS1-style vertex snapping and visual aesthetic
+- Procedural texture atlas generation
+- Block placing and mining
+- Survival physics: gravity, voxel collision, swimming, and jumping
+- High performance via optimized Rust noise and mesh generation
 
 ## Stack 🛠️
-- C99
-- [raylib](https://www.raylib.com/)
-- GNU Make
-- Clang (default), GCC (optional)
+- [Rust](https://www.rust-lang.org/) (2021 Edition)
+- [OpenGL 3.3 Core](https://www.opengl.org/)
+- [GLFW](https://www.glfw.org/) (Windowing & Input)
+- [glam](https://github.com/bit_shifter/glam-rs) (Linear Algebra)
 
 ## Build
 
+You will need system dependencies for GLFW and OpenGL:
+- **Linux**: `libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev libwayland-dev wayland-protocols libxkbcommon-dev`
+
 ```bash
-make        # default build (clang)
-make gcc    # build with gcc for comparison
-make clang  # explicit clang build
+cargo build --release
 ```
 
 ## Run 🚀
 
+For the best performance and to avoid visual artifacts, always run in release mode:
+
 ```bash
-./voxelpopuli
+cargo run --release
 ```
 
 ## Controls 🎮
@@ -38,17 +41,16 @@ make clang  # explicit clang build
 - `Space`: Jump / swim up
 - `Left Ctrl`: Sprint
 - `Left Click`: Break block
-- `Right Click`: Place selected block
-- `1..9`: Select hotbar slot
-- `Mouse Wheel`: Cycle hotbar slot
-- `E`: Toggle inventory
+- `Right Click`: Place block (Stone)
 - `Esc`: Quit
 
 ## Project Layout 📁
-- `src/main.c`: Game loop, input, player movement, UI
-- `src/world.c`: World systems, texture atlas, clouds, water animation
-- `src/chunk.c`: Chunk generation and mesh building
-- `src/noise.c`: Perlin noise implementation
+- `src/main.rs`: Entry point, window management, player physics, and celestial rendering.
+- `src/renderer.rs`: OpenGL abstractions for Shaders, Textures, and Meshes.
+- `src/world.rs`: World state, chunk pool management, raycasting, and clouds.
+- `src/chunk.rs`: Procedural terrain generation and optimized mesh building.
+- `src/noise.rs`: Thread-safe Perlin noise implementation.
+- `src/block.rs`: Block types and properties.
 
 ## License 📜
 Licensed under **GNU AGPLv3**. See [LICENSE](./LICENSE).
