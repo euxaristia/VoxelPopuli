@@ -39,9 +39,9 @@ void main() {
     
     vec4 pos = uMVP * vec4(vertexPosition, 1.0);
     if (pos.w > 0.0) {
-        // Snap to pixel centers to prevent gaps
-        vec2 res = vec2(1280.0, 720.0); // Assume fixed for snapping, or pass as uniform
-        pos.xy = floor((pos.xy / pos.w) * (res * 0.5) + 0.5) / (res * 0.5) * pos.w;
+        vec2 snappedPos = pos.xy / pos.w;
+        snappedPos = floor(snappedPos * uPrecision + 0.5) / uPrecision;
+        pos.xy = snappedPos * pos.w;
     }
     gl_Position = pos;
 }
@@ -132,11 +132,6 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
     let mut c = Vec::new();
 
     let mut add_quad = |pos: Vec3, color: [u8; 4], q_size: f32| {
-        // Billboard quad
-        let right = Vec3::new(1.0, 0.0, 0.0); // Simplified billboarding for zenith-aligned orbit
-        let up = Vec3::new(0.0, 1.0, 0.0);
-        
-        // Face player
         let look = (player_pos - pos).normalize();
         let r = look.cross(Vec3::Y).normalize();
         let u = r.cross(look).normalize();
@@ -153,6 +148,43 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
 
     add_quad(sun_pos, sun_c, size);
     add_quad(moon_pos, moon_c, size * 0.8);
+
+    let mesh = renderer::Mesh::new(&v, None, None, Some(&c));
+    shader.bind();
+    shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+    unsafe {
+        gl::Disable(gl::DEPTH_TEST);
+        gl::Disable(gl::CULL_FACE);
+        mesh.draw();
+        gl::Enable(gl::CULL_FACE);
+        gl::Enable(gl::DEPTH_TEST);
+    }
+}
+
+fn draw_stars(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
+    let angle = (time / 1200.0) * 2.0 * std::f32::consts::PI;
+    let sun_y = angle.sin();
+    if sun_y > -0.3 { return; }
+    
+    let star_intensity = (1.0 - ((sun_y + 0.3) / 0.3)).clamp(0.0, 1.0);
+    let star_alpha = (200.0 * star_intensity) as u8;
+    if star_alpha < 30 { return; }
+
+    let mut v = Vec::new();
+    let mut c = Vec::new();
+
+    for i in 0..150 {
+        let star_x = (i as f32 * 137.5).rem_euclid(400.0) - 200.0;
+        let star_y = (i as f32 * 73.3).rem_euclid(150.0) + 100.0;
+        let star_z = (i as f32 * 251.7).rem_euclid(400.0) - 200.0;
+        
+        let pos = player_pos + Vec3::new(star_x, star_y, star_z);
+        let q_size = 0.5;
+        
+        v.extend_from_slice(&[pos.x - q_size, pos.y, pos.z, pos.x + q_size, pos.y, pos.z, pos.x + q_size, pos.y + q_size, pos.z]);
+        v.extend_from_slice(&[pos.x - q_size, pos.y, pos.z, pos.x + q_size, pos.y + q_size, pos.z, pos.x - q_size, pos.y + q_size, pos.z]);
+        for _ in 0..6 { c.extend_from_slice(&[200, 200, 255, star_alpha]); }
+    }
 
     let mesh = renderer::Mesh::new(&v, None, None, Some(&c));
     shader.bind();
@@ -432,6 +464,7 @@ fn main() {
         shader.set_vec4(loc_skycol, sky_c);
 
         // Render celestial
+        draw_stars(&flat_shader, player.position, current_time as f32, mvp);
         draw_sun_moon(&flat_shader, player.position, current_time as f32, mvp);
 
         // Render world here
@@ -439,7 +472,8 @@ fn main() {
         world.render_opaque();
         
         // Render clouds
-        Shader::unbind();
+        flat_shader.bind();
+        flat_shader.set_mat4(flat_shader.get_uniform_location("uMVP"), &mvp);
         world.render_clouds();
         
         shader.bind();
