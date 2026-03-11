@@ -4,3 +4,4 @@ save/
 perf.data
 .gitignore
 perf.data.old
+target/
