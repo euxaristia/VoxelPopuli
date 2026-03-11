@@ -40,7 +40,9 @@ void main() {
     
     vec4 pos = uMVP * vec4(vertexPosition, 1.0);
     if (pos.w > 0.0) {
-        pos.xy = floor((pos.xy / pos.w) * (uResolution * 0.5) + 0.5) / (uResolution * 0.5) * pos.w;
+        // Highly stable clip-space snapping
+        float p = 512.0; 
+        pos.xy = floor((pos.xy / pos.w) * p + 0.5) / p * pos.w;
     }
     gl_Position = pos;
 }

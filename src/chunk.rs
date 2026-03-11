@@ -279,7 +279,6 @@ impl Chunk {
                     let u1 = (tx + 1) as f32 * ts - pad;
                     let v1 = (ty + 1) as f32 * ts - pad;
                     let w_off = 0.0;
-                    let bleed = 0.005;
 
                     // Top
                     let neighbor_top = if y < CHUNK_HEIGHT - 1 { self.blocks[x][y + 1][z] } else { BlockType::Air };
@@ -291,12 +290,12 @@ impl Chunk {
                             tu0 = 5.0 * ts + pad; tv0 = ts + pad; tu1 = 6.0 * ts - pad; tv1 = 2.0 * ts - pad;
                         }
                         v.extend_from_slice(&[
-                            fx - bleed, fy + 1.0 - w_off, fz - bleed, 
-                            fx - bleed, fy + 1.0 - w_off, fz + 1.0 + bleed, 
-                            fx + 1.0 + bleed, fy + 1.0 - w_off, fz + 1.0 + bleed, 
-                            fx - bleed, fy + 1.0 - w_off, fz - bleed, 
-                            fx + 1.0 + bleed, fy + 1.0 - w_off, fz + 1.0 + bleed, 
-                            fx + 1.0 + bleed, fy + 1.0 - w_off, fz - bleed
+                            fx, fy + 1.0 - w_off, fz, 
+                            fx, fy + 1.0 - w_off, fz + 1.0, 
+                            fx + 1.0, fy + 1.0 - w_off, fz + 1.0, 
+                            fx, fy + 1.0 - w_off, fz, 
+                            fx + 1.0, fy + 1.0 - w_off, fz + 1.0, 
+                            fx + 1.0, fy + 1.0 - w_off, fz
                         ]);
                         t.extend_from_slice(&[tu0, tv0, tu0, tv1, tu1, tv1, tu0, tv0, tu1, tv1, tu1, tv0]);
                         let light = self.light[x][y.min(CHUNK_HEIGHT - 1)][z];
@@ -319,12 +318,12 @@ impl Chunk {
                             tu0 = 5.0 * ts + pad; tv0 = ts + pad; tu1 = 6.0 * ts - pad; tv1 = 2.0 * ts - pad;
                         }
                         v.extend_from_slice(&[
-                            fx - bleed, fy, fz - bleed, 
-                            fx + 1.0 + bleed, fy, fz + 1.0 + bleed, 
-                            fx - bleed, fy, fz + 1.0 + bleed, 
-                            fx - bleed, fy, fz - bleed, 
-                            fx + 1.0 + bleed, fy, fz - bleed, 
-                            fx + 1.0 + bleed, fy, fz + 1.0 + bleed
+                            fx, fy, fz, 
+                            fx + 1.0, fy, fz + 1.0, 
+                            fx, fy, fz + 1.0, 
+                            fx, fy, fz, 
+                            fx + 1.0, fy, fz, 
+                            fx + 1.0, fy, fz + 1.0
                         ]);
                         t.extend_from_slice(&[tu0, tv0, tu1, tv1, tu0, tv1, tu0, tv0, tu1, tv0, tu1, tv1]);
                         let light = if y > 0 { self.light[x][y - 1][z] } else { 0 };
@@ -342,12 +341,12 @@ impl Chunk {
                     let neighbor_zp = if z < CHUNK_DEPTH - 1 { self.blocks[x][y][z + 1] } else { n_pz.map_or(BlockType::Air, |c| c.blocks[x][y][0]) };
                     if should_draw_face(block, neighbor_zp) {
                         v.extend_from_slice(&[
-                            fx - bleed, fy - bleed, fz + 1.0, 
-                            fx + 1.0 + bleed, fy - bleed, fz + 1.0, 
-                            fx + 1.0 + bleed, fy + 1.0 + bleed - w_off, fz + 1.0, 
-                            fx - bleed, fy - bleed, fz + 1.0, 
-                            fx + 1.0 + bleed, fy + 1.0 + bleed - w_off, fz + 1.0, 
-                            fx - bleed, fy + 1.0 + bleed - w_off, fz + 1.0
+                            fx, fy, fz + 1.0, 
+                            fx + 1.0, fy, fz + 1.0, 
+                            fx + 1.0, fy + 1.0 - w_off, fz + 1.0, 
+                            fx, fy, fz + 1.0, 
+                            fx + 1.0, fy + 1.0 - w_off, fz + 1.0, 
+                            fx, fy + 1.0 - w_off, fz + 1.0
                         ]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
                         let light = if z < CHUNK_DEPTH - 1 { self.light[x][y][z + 1] } else { 15 };
@@ -364,12 +363,12 @@ impl Chunk {
                     let neighbor_zn = if z > 0 { self.blocks[x][y][z - 1] } else { n_nz.map_or(BlockType::Air, |c| c.blocks[x][y][CHUNK_DEPTH - 1]) };
                     if should_draw_face(block, neighbor_zn) {
                         v.extend_from_slice(&[
-                            fx + 1.0 + bleed, fy - bleed, fz, 
-                            fx - bleed, fy - bleed, fz, 
-                            fx - bleed, fy + 1.0 + bleed - w_off, fz, 
-                            fx + 1.0 + bleed, fy - bleed, fz, 
-                            fx - bleed, fy + 1.0 + bleed - w_off, fz, 
-                            fx + 1.0 + bleed, fy + 1.0 + bleed - w_off, fz
+                            fx + 1.0, fy, fz, 
+                            fx, fy, fz, 
+                            fx, fy + 1.0 - w_off, fz, 
+                            fx + 1.0, fy, fz, 
+                            fx, fy + 1.0 - w_off, fz, 
+                            fx + 1.0, fy + 1.0 - w_off, fz
                         ]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
                         let light = if z > 0 { self.light[x][y][z - 1] } else { 15 };
@@ -386,12 +385,12 @@ impl Chunk {
                     let neighbor_xp = if x < CHUNK_WIDTH - 1 { self.blocks[x + 1][y][z] } else { n_px.map_or(BlockType::Air, |c| c.blocks[0][y][z]) };
                     if should_draw_face(block, neighbor_xp) {
                         v.extend_from_slice(&[
-                            fx + 1.0, fy - bleed, fz + 1.0 + bleed, 
-                            fx + 1.0, fy - bleed, fz - bleed, 
-                            fx + 1.0, fy + 1.0 + bleed - w_off, fz - bleed, 
-                            fx + 1.0, fy - bleed, fz + 1.0 + bleed, 
-                            fx + 1.0, fy + 1.0 + bleed - w_off, fz - bleed, 
-                            fx + 1.0, fy + 1.0 + bleed - w_off, fz + 1.0 + bleed
+                            fx + 1.0, fy, fz + 1.0, 
+                            fx + 1.0, fy, fz, 
+                            fx + 1.0, fy + 1.0 - w_off, fz, 
+                            fx + 1.0, fy, fz + 1.0, 
+                            fx + 1.0, fy + 1.0 - w_off, fz, 
+                            fx + 1.0, fy + 1.0 - w_off, fz + 1.0
                         ]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
                         let light = if x < CHUNK_WIDTH - 1 { self.light[x + 1][y][z] } else { 15 };
@@ -408,12 +407,12 @@ impl Chunk {
                     let neighbor_xn = if x > 0 { self.blocks[x - 1][y][z] } else { n_nx.map_or(BlockType::Air, |c| c.blocks[CHUNK_WIDTH - 1][y][z]) };
                     if should_draw_face(block, neighbor_xn) {
                         v.extend_from_slice(&[
-                            fx, fy - bleed, fz - bleed, 
-                            fx, fy - bleed, fz + 1.0 + bleed, 
-                            fx, fy + 1.0 + bleed - w_off, fz + 1.0 + bleed, 
-                            fx, fy - bleed, fz - bleed, 
-                            fx, fy + 1.0 + bleed - w_off, fz + 1.0 + bleed, 
-                            fx, fy + 1.0 + bleed - w_off, fz - bleed
+                            fx, fy, fz, 
+                            fx, fy, fz + 1.0, 
+                            fx, fy + 1.0 - w_off, fz + 1.0, 
+                            fx, fy, fz, 
+                            fx, fy + 1.0 - w_off, fz + 1.0, 
+                            fx, fy + 1.0 - w_off, fz
                         ]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
                         let light = if x > 0 { self.light[x - 1][y][z] } else { 15 };
