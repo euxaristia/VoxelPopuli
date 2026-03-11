@@ -25,6 +25,7 @@ layout(location = 3) in vec4 vertexColor;
 uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform float uPrecision;
+uniform vec2 uResolution;
 
 out vec4 fragColor;
 out vec2 fragTexCoord;
@@ -39,9 +40,7 @@ void main() {
     
     vec4 pos = uMVP * vec4(vertexPosition, 1.0);
     if (pos.w > 0.0) {
-        vec2 snappedPos = pos.xy / pos.w;
-        snappedPos = floor(snappedPos * uPrecision + 0.5) / uPrecision;
-        pos.xy = snappedPos * pos.w;
+        pos.xy = floor((pos.xy / pos.w) * (uResolution * 0.5) + 0.5) / (uResolution * 0.5) * pos.w;
     }
     gl_Position = pos;
 }
@@ -269,6 +268,7 @@ fn main() {
     window.make_current();
     window.set_key_polling(true);
     window.set_cursor_pos_polling(true);
+    window.set_size_polling(true);
     window.set_cursor_mode(glfw::CursorMode::Disabled);
 
     gl::load_with(|s| window.get_proc_address(s).map_or(std::ptr::null(), |p| p as *const _));
@@ -308,6 +308,9 @@ fn main() {
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
             match event {
+                glfw::WindowEvent::Size(width, height) => {
+                    unsafe { gl::Viewport(0, 0, width, height); }
+                }
                 glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                     window.set_should_close(true)
                 }
@@ -420,7 +423,7 @@ fn main() {
         // Camera matrices
         let (width, height) = window.get_framebuffer_size();
         let aspect = width as f32 / height.max(1) as f32;
-        let projection = Mat4::perspective_rh_gl(75.0_f32.to_radians(), aspect, 0.01, 1000.0);
+        let projection = Mat4::perspective_rh_gl(75.0_f32.to_radians(), aspect, 0.1, 1000.0);
         let view = Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
         let mvp = projection * view;
         let model_mat = Mat4::IDENTITY;
@@ -429,6 +432,7 @@ fn main() {
         let loc_mvp = shader.get_uniform_location("uMVP");
         let loc_model = shader.get_uniform_location("uModel");
         let loc_precision = shader.get_uniform_location("uPrecision");
+        let loc_resolution = shader.get_uniform_location("uResolution");
         let loc_sundir = shader.get_uniform_location("sunDir");
         let loc_col_diffuse = shader.get_uniform_location("colDiffuse");
         let loc_viewpos = shader.get_uniform_location("viewPos");
@@ -437,6 +441,7 @@ fn main() {
         shader.set_mat4(loc_mvp, &mvp);
         shader.set_mat4(loc_model, &model_mat);
         shader.set_float(loc_precision, 960.0);
+        shader.set_vec2(loc_resolution, glam::Vec2::new(width as f32, height as f32));
         shader.set_vec3(loc_sundir, glam::Vec3::new(0.0, sun_y, sun_angle.cos()));
         shader.set_vec4(loc_col_diffuse, glam::Vec4::new(1.0, 1.0, 1.0, 1.0));
         shader.set_vec3(loc_viewpos, eye_pos);
