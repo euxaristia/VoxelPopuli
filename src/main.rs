@@ -40,9 +40,10 @@ void main() {
     
     vec4 pos = uMVP * vec4(vertexPosition, 1.0);
     if (pos.w > 0.0) {
-        // Highly stable clip-space snapping
+        // High stability snapping: Snap projected XY coordinates to grid
         float p = 512.0; 
-        pos.xy = floor((pos.xy / pos.w) * p + 0.5) / p * pos.w;
+        vec2 grid = pos.xy / pos.w * p;
+        pos.xy = floor(grid + 0.5) / p * pos.w;
     }
     gl_Position = pos;
 }
@@ -454,14 +455,15 @@ fn main() {
         draw_sun_moon(&flat_shader, player.position, current_time as f32, mvp);
 
         // Render world here
+        let frustum = world::Frustum::from_matrix(&mvp);
         shader.bind();
-        world.render_opaque();
+        world.render_opaque(&frustum);
         
         // Render clouds
         world.render_clouds(&flat_shader, &mvp);
         
         shader.bind();
-        world.render_transparent();
+        world.render_transparent(&frustum);
 
         window.swap_buffers();
     }
