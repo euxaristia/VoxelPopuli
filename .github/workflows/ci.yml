@@ -1,4 +1,4 @@
-name: C/C++ Static Analysis
+name: Rust CI
 
 on:
   push:
@@ -6,20 +6,26 @@ on:
   pull_request:
     branches: [ "main" ]
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  analyze:
+  build:
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install dependencies
+    - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cppcheck flawfinder libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
+        sudo apt-get install -y libgl1-mesa-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
 
-    - name: Run cppcheck
-      run: cppcheck --error-exitcode=1 --force --suppress=syntaxError:src/raylib.h -I src/ src/main.c src/chunk.c src/world.c src/noise.c
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cargo Check
+      run: cargo check --verbose
 
     - name: Build
-      run: make
+      run: cargo build --release --verbose
