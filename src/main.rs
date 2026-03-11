@@ -161,41 +161,6 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
     }
 }
 
-fn draw_stars(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
-    let angle = (time / 1200.0) * 2.0 * std::f32::consts::PI;
-    let sun_y = angle.sin();
-    if sun_y > -0.3 { return; }
-    
-    let star_intensity = (1.0 - ((sun_y + 0.3) / 0.3)).clamp(0.0, 1.0);
-    let star_alpha = (200.0 * star_intensity) as u8;
-    if star_alpha < 30 { return; }
-
-    let mut v = Vec::new();
-    let mut c = Vec::new();
-
-    for i in 0..150 {
-        let star_x = (i as f32 * 137.5).rem_euclid(400.0) - 200.0;
-        let star_y = (i as f32 * 73.3).rem_euclid(150.0) + 100.0;
-        let star_z = (i as f32 * 251.7).rem_euclid(400.0) - 200.0;
-        
-        let pos = player_pos + Vec3::new(star_x, star_y, star_z);
-        let q_size = 0.5;
-        
-        v.extend_from_slice(&[pos.x - q_size, pos.y, pos.z, pos.x + q_size, pos.y, pos.z, pos.x + q_size, pos.y + q_size, pos.z]);
-        v.extend_from_slice(&[pos.x - q_size, pos.y, pos.z, pos.x + q_size, pos.y + q_size, pos.z, pos.x - q_size, pos.y + q_size, pos.z]);
-        for _ in 0..6 { c.extend_from_slice(&[200, 200, 255, star_alpha]); }
-    }
-
-    let mesh = renderer::Mesh::new(&v, None, None, Some(&c));
-    shader.bind();
-    shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
-    unsafe {
-        gl::Disable(gl::DEPTH_TEST);
-        mesh.draw();
-        gl::Enable(gl::DEPTH_TEST);
-    }
-}
-
 struct Player {
     position: Vec3,
     velocity: Vec3,
@@ -305,6 +270,7 @@ fn main() {
 
     let mut world = World::new();
     world.generate_atlas();
+    world.init_celestial();
 
     let shader = Shader::new(PS1_VS, PS1_FS).expect("Failed to compile PS1 shader");
     let flat_shader = Shader::new(FLAT_VS, FLAT_FS).expect("Failed to compile FLAT shader");
@@ -464,7 +430,7 @@ fn main() {
         shader.set_vec4(loc_skycol, sky_c);
 
         // Render celestial
-        draw_stars(&flat_shader, player.position, current_time as f32, mvp);
+        world.render_stars(player.position, current_time as f32, &flat_shader, &mvp);
         draw_sun_moon(&flat_shader, player.position, current_time as f32, mvp);
 
         // Render world here

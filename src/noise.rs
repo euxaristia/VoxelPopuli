@@ -34,8 +34,8 @@ fn grad(hash: usize, x: f32, y: f32, z: f32) -> f32 {
 }
 
 pub fn noise_2d(mut x: f32, mut y: f32) -> f32 {
-    let xi = (x.floor() as usize) & 255;
-    let yi = (y.floor() as usize) & 255;
+    let xi = (x.floor() as i32).rem_euclid(256) as usize;
+    let yi = (y.floor() as i32).rem_euclid(256) as usize;
     x -= x.floor();
     y -= y.floor();
     
@@ -45,7 +45,7 @@ pub fn noise_2d(mut x: f32, mut y: f32) -> f32 {
     let a = P[xi] + yi;
     let aa = P[a];
     let ab = P[a + 1];
-    let b = P[xi + 1] + yi;
+    let b = P[(xi + 1) & 255] + yi; // Fixed wrap-around
     let ba = P[b];
     let bb = P[b + 1];
     
@@ -56,9 +56,9 @@ pub fn noise_2d(mut x: f32, mut y: f32) -> f32 {
 }
 
 pub fn noise_3d(mut x: f32, mut y: f32, mut z: f32) -> f32 {
-    let xi = (x.floor() as usize) & 255;
-    let yi = (y.floor() as usize) & 255;
-    let zi = (z.floor() as usize) & 255;
+    let xi = (x.floor() as i32).rem_euclid(256) as usize;
+    let yi = (y.floor() as i32).rem_euclid(256) as usize;
+    let zi = (z.floor() as i32).rem_euclid(256) as usize;
     x -= x.floor();
     y -= y.floor();
     z -= z.floor();
@@ -70,7 +70,7 @@ pub fn noise_3d(mut x: f32, mut y: f32, mut z: f32) -> f32 {
     let a = P[xi] + yi;
     let aa = P[a] + zi;
     let ab = P[a + 1] + zi;
-    let b = P[xi + 1] + yi;
+    let b = P[(xi + 1) & 255] + yi;
     let ba = P[b] + zi;
     let bb = P[b + 1] + zi;
     

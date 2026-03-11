@@ -1,7 +1,7 @@
 use crate::chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT};
 use crate::block::BlockType;
 use crate::renderer::{Mesh, Texture2D, Shader};
-use glam::Vec3;
+use glam::{Vec3, Mat4};
 
 pub const VIEW_DISTANCE: i32 = 12;
 pub const POOL_WIDTH: i32 = VIEW_DISTANCE * 2 + 1;
@@ -29,8 +29,8 @@ pub struct RaycastResult {
 pub struct World {
     pub chunks: Vec<Option<Box<Chunk>>>,
     pub atlas: Option<Texture2D>,
-    pub ps1_shader: Option<Shader>,
     pub cloud_model: Option<Mesh>,
+    pub star_model: Option<Mesh>,
     pub last_cloud_pos: Vec3,
     pub edits: Vec<WorldEdit>,
     pub suppress_edit_recording: bool,
@@ -48,8 +48,8 @@ impl World {
         Self {
             chunks,
             atlas: None,
-            ps1_shader: None,
             cloud_model: None,
+            star_model: None,
             last_cloud_pos: Vec3::new(-999999.0, -999999.0, -999999.0),
             edits: Vec::new(),
             suppress_edit_recording: false,
@@ -159,6 +159,21 @@ impl World {
         }
     }
 
+    pub fn get_light(&self, x: i32, y: i32, z: i32) -> u8 {
+        if y < 0 { return 0; }
+        if y >= CHUNK_HEIGHT as i32 { return 15; }
+        let cx = x.div_euclid(CHUNK_WIDTH as i32);
+        let cz = z.div_euclid(CHUNK_DEPTH as i32);
+        
+        if let Some(chunk) = self.get_chunk(cx, cz) {
+            let bx = x.rem_euclid(CHUNK_WIDTH as i32) as usize;
+            let bz = z.rem_euclid(CHUNK_DEPTH as i32) as usize;
+            chunk.light[bx][y as usize][bz]
+        } else {
+            15
+        }
+    }
+
     pub fn generate_atlas(&mut self) {
         let mut data = vec![0u8; 256 * 256 * 4];
         
@@ -184,12 +199,10 @@ impl World {
             }
         };
 
-        // Fill with some basic block textures
         draw_block(1, 0, 140, 140, 140); // Stone
         draw_block(2, 0, 130, 90, 60);   // Dirt
         draw_block(3, 0, 80, 160, 40);   // Grass Side
         draw_block(0, 0, 100, 180, 50);  // Grass Top
-        draw_block(2, 0, 120, 80, 50);   // Dirt
         draw_block(4, 0, 100, 70, 40);   // Log Side
         draw_block(5, 1, 110, 80, 50);   // Log Top
         draw_block(5, 0, 40, 120, 30);   // Leaves
@@ -289,7 +302,6 @@ impl World {
             self.last_pcz = pcz;
         }
 
-        // Build dirty meshes
         let mut builds_this_frame = 0;
         let mut indices_to_build = Vec::new();
         for i in 0..CHUNK_POOL_SIZE {
@@ -313,27 +325,19 @@ impl World {
         }
     }
 
-    pub fn render_opaque(&self) {
-        if let Some(atlas) = &self.atlas {
-            atlas.bind(0);
+    pub fn init_celestial(&mut self) {
+        let mut v = Vec::new();
+        let mut c = Vec::new();
+        for _ in 0..300 {
+            let x = (rand::random::<f32>() * 2.0 - 1.0) * 400.0;
+            let y = rand::random::<f32>() * 200.0 + 50.0;
+            let z = (rand::random::<f32>() * 2.0 - 1.0) * 400.0;
+            let q = 0.5;
+            v.extend_from_slice(&[x-q, y, z, x+q, y, z, x+q, y+q, z]);
+            v.extend_from_slice(&[x-q, y, z, x+q, y+q, z, x-q, y+q, z]);
+            for _ in 0..6 { c.extend_from_slice(&[255, 255, 255, 255]); }
         }
-        for chunk_opt in &self.chunks {
-            if let Some(chunk) = chunk_opt {
-                if let Some(mesh) = &chunk.mesh_opaque {
-                    mesh.draw();
-                }
-            }
-        }
-    }
-
-    pub fn render_transparent(&self) {
-        for chunk_opt in &self.chunks {
-            if let Some(chunk) = chunk_opt {
-                if let Some(mesh) = &chunk.mesh_transparent {
-                    mesh.draw();
-                }
-            }
-        }
+        self.star_model = Some(Mesh::new(&v, None, None, Some(&c)));
     }
 
     pub fn update_clouds(&mut self, player_pos: Vec3, time: f32) {
@@ -342,7 +346,7 @@ impl World {
             return;
         }
 
-        self.cloud_model = None; // Drop old mesh
+        self.cloud_model = None;
         self.last_cloud_pos = player_pos;
 
         let cloud_height = 200.0;
@@ -370,7 +374,6 @@ impl World {
                     let sy = 1.1;
                     let sz = cloud_size;
 
-                    // Cube vertices
                     let cube = [
                         px, py + sy, pz, px, py + sy, pz + sz, px + sx, py + sy, pz + sz,
                         px, py + sy, pz, px + sx, py + sy, pz + sz, px + sx, py + sy, pz,
@@ -385,7 +388,7 @@ impl World {
                     v.extend_from_slice(&cube);
                     for _ in 0..36 {
                         c.extend_from_slice(&cloud_color);
-                        n.extend_from_slice(&[0.0, 1.0, 0.0]); // Simple normal
+                        n.extend_from_slice(&[0.0, 1.0, 0.0]);
                     }
                 }
             }
@@ -396,10 +399,34 @@ impl World {
         }
     }
 
+    pub fn render_opaque(&self) {
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
+        for chunk_opt in &self.chunks {
+            if let Some(chunk) = chunk_opt {
+                if let Some(mesh) = &chunk.mesh_opaque {
+                    mesh.draw();
+                }
+            }
+        }
+    }
+
+    pub fn render_transparent(&self) {
+        for chunk_opt in &self.chunks {
+            if let Some(chunk) = chunk_opt {
+                if let Some(mesh) = &chunk.mesh_transparent {
+                    mesh.draw();
+                }
+            }
+        }
+    }
+
     pub fn render_clouds(&self) {
         if let Some(mesh) = &self.cloud_model {
             unsafe {
                 gl::Disable(gl::CULL_FACE);
+                gl::Enable(gl::BLEND);
                 gl::DepthMask(gl::FALSE);
                 mesh.draw();
                 gl::DepthMask(gl::TRUE);
@@ -408,4 +435,24 @@ impl World {
         }
     }
 
+    pub fn render_stars(&self, player_pos: Vec3, time: f32, shader: &Shader, mvp: &Mat4) {
+        let angle = (time / 1200.0) * 2.0 * std::f32::consts::PI;
+        let sun_y = angle.sin();
+        if sun_y > -0.3 { return; }
+
+        let star_intensity = (1.0 - ((sun_y + 0.3) / 0.3)).clamp(0.0, 1.0);
+        let star_alpha = (200.0 * star_intensity) as u8;
+        if star_alpha < 30 { return; }
+
+        if let Some(mesh) = &self.star_model {
+            shader.bind();
+            let star_mvp = *mvp * Mat4::from_translation(player_pos);
+            shader.set_mat4(shader.get_uniform_location("uMVP"), &star_mvp);
+            unsafe {
+                gl::Disable(gl::DEPTH_TEST);
+                mesh.draw();
+                gl::Enable(gl::DEPTH_TEST);
+            }
+        }
+    }
 }
