@@ -39,11 +39,8 @@ void main() {
     
     vec4 pos = uMVP * vec4(vertexPosition, 1.0);
     if (pos.w > 0.0) {
-        vec2 snappedPos = pos.xy / pos.w;
-        if (pos.w > 0.1) {
-            snappedPos = floor(snappedPos * uPrecision + 0.5) / uPrecision;
-        }
-        pos.xy = snappedPos * pos.w;
+        float p = uPrecision;
+        pos.xy = floor(pos.xy / pos.w * p + 0.5) / p * pos.w;
     }
     gl_Position = pos;
 }
@@ -263,12 +260,73 @@ fn main() {
         if window.get_key(Key::A) == Action::Press { move_dir -= right; }
         if window.get_key(Key::D) == Action::Press { move_dir += right; }
 
+        if move_dir.length_squared() > 0.1 {
+            move_dir = move_dir.normalize();
+        }
+
         let is_sprinting = window.get_key(Key::LeftControl) == Action::Press;
+        
+        let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
+        let look_dir = Vec3::new(
+            camera_angle.y.cos() * camera_angle.x.sin(),
+            camera_angle.y.sin(),
+            camera_angle.y.cos() * camera_angle.x.cos(),
+        );
+
+        // Mouse interaction
+        if window.get_mouse_button(glfw::MouseButtonLeft) == Action::Press {
+            let res = world.raycast(eye_pos, look_dir, 8.0);
+            if res.hit {
+                world.set_block(res.x, res.y, res.z, BlockType::Air);
+            }
+        }
+        if window.get_mouse_button(glfw::MouseButtonRight) == Action::Press {
+            let res = world.raycast(eye_pos, look_dir, 8.0);
+            if res.hit {
+                let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+                if world.get_block(nx, ny, nz) == BlockType::Air {
+                    world.set_block(nx, ny, nz, BlockType::Stone); // Default to stone for now
+                }
+            }
+        }
+
         player.update(&world, move_dir, delta_time, is_sprinting);
         world.update(player.position, current_time as f32);
+        world.update_clouds(player.position, current_time as f32);
+
+        let sun_angle = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI;
+        let sun_y = sun_angle.sin();
+
+        let mut sky_c = glam::Vec4::new(0.5, 0.8, 0.9, 1.0); // Default skyblue
+        
+        if sun_y > 0.3 {
+            sky_c = glam::Vec4::new(135.0/255.0, 206.0/255.0, 235.0/255.0, 1.0);
+        } else if sun_y > -0.2 {
+            let mut t = (sun_y + 0.2) / 0.5;
+            t = t.clamp(0.0, 1.0);
+            
+            if t < 0.5 {
+                let u = t * 2.0;
+                sky_c.x = 255.0/255.0 * u + 135.0/255.0 * (1.0 - u);
+                sky_c.y = 160.0/255.0 * u + 100.0/255.0 * (1.0 - u);
+                sky_c.z = 180.0/255.0 * u + 150.0/255.0 * (1.0 - u);
+            } else {
+                let u = (t - 0.5) * 2.0;
+                sky_c.x = 135.0/255.0 * u + 255.0/255.0 * (1.0 - u);
+                sky_c.y = 206.0/255.0 * u + 160.0/255.0 * (1.0 - u);
+                sky_c.z = 235.0/255.0 * u + 180.0/255.0 * (1.0 - u);
+            }
+        } else if sun_y > -0.5 {
+            let t = (sun_y + 0.5) / 0.3;
+            sky_c.x = 30.0/255.0 * t + 10.0/255.0 * (1.0 - t);
+            sky_c.y = 30.0/255.0 * t + 10.0/255.0 * (1.0 - t);
+            sky_c.z = 80.0/255.0 * t + 50.0/255.0 * (1.0 - t);
+        } else {
+            sky_c = glam::Vec4::new(5.0/255.0, 5.0/255.0, 15.0/255.0, 1.0);
+        }
 
         unsafe {
-            gl::ClearColor(0.5, 0.8, 0.9, 1.0);
+            gl::ClearColor(sky_c.x, sky_c.y, sky_c.z, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
         }
 
@@ -276,18 +334,9 @@ fn main() {
         let (width, height) = window.get_framebuffer_size();
         let aspect = width as f32 / height.max(1) as f32;
         let projection = Mat4::perspective_rh_gl(75.0_f32.to_radians(), aspect, 0.01, 1000.0);
-        let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
-        let target = eye_pos + Vec3::new(
-            camera_angle.y.cos() * camera_angle.x.sin(),
-            camera_angle.y.sin(),
-            camera_angle.y.cos() * camera_angle.x.cos(),
-        );
-        let view = Mat4::look_at_rh(eye_pos, target, Vec3::Y);
+        let view = Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
         let mvp = projection * view;
         let model_mat = Mat4::IDENTITY;
-
-        let sun_angle = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI;
-        let sun_y = sun_angle.sin();
 
         shader.bind();
         let loc_mvp = shader.get_uniform_location("uMVP");
@@ -296,16 +345,25 @@ fn main() {
         let loc_sundir = shader.get_uniform_location("sunDir");
         let loc_col_diffuse = shader.get_uniform_location("colDiffuse");
         let loc_viewpos = shader.get_uniform_location("viewPos");
+        let loc_skycol = shader.get_uniform_location("skyCol");
 
         shader.set_mat4(loc_mvp, &mvp);
         shader.set_mat4(loc_model, &model_mat);
-        shader.set_float(loc_precision, 240.0);
+        shader.set_float(loc_precision, 960.0);
         shader.set_vec3(loc_sundir, glam::Vec3::new(0.0, sun_y, sun_angle.cos()));
         shader.set_vec4(loc_col_diffuse, glam::Vec4::new(1.0, 1.0, 1.0, 1.0));
         shader.set_vec3(loc_viewpos, eye_pos);
+        shader.set_vec4(loc_skycol, sky_c);
 
         // Render world here
-        world.render();
+        world.render_opaque();
+        
+        // Render clouds
+        Shader::unbind();
+        world.render_clouds();
+        
+        shader.bind();
+        world.render_transparent();
 
         window.swap_buffers();
     }

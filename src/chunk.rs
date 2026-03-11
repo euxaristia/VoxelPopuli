@@ -222,7 +222,7 @@ impl Chunk {
         let mut c_tr = Vec::new();
 
         let ts = 1.0 / 16.0;
-        let pad = 0.001;
+        let pad = 0.0001;
 
         let mut current_min_y = CHUNK_HEIGHT;
         let mut current_max_y = 0;

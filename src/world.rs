@@ -336,8 +336,77 @@ impl World {
         }
     }
 
-    pub fn render(&self) {
-        self.render_opaque();
-        self.render_transparent();
+    pub fn update_clouds(&mut self, player_pos: Vec3, time: f32) {
+        if let Some(pos) = self.last_cloud_pos.distance(player_pos).into() {
+            if pos < 32.0 && self.cloud_model.is_some() {
+                return;
+            }
+        }
+
+        self.cloud_model = None; // Drop old mesh
+        self.last_cloud_pos = player_pos;
+
+        let cloud_height = 200.0;
+        let cloud_size = 16.0;
+        let range = 64;
+        let start_x = (player_pos.x / cloud_size).floor() as i32 - range;
+        let start_z = (player_pos.z / cloud_size).floor() as i32 - range;
+
+        let mut v = Vec::new();
+        let mut c = Vec::new();
+        let mut n = Vec::new();
+
+        let cloud_color = [225, 233, 240, 150];
+
+        for x in start_x..(start_x + range * 2) {
+            for z in start_z..(start_z + range * 2) {
+                let base = crate::noise::perlin_2d(x as f32 * 0.18 + time * 0.003, z as f32 * 0.18 + 41.0, 0.5, 2);
+                let breakup = crate::noise::perlin_2d(x as f32 * 0.48 - time * 0.005, z as f32 * 0.48 + 7.0, 0.5, 1);
+
+                if base > 0.10 && breakup > -0.08 {
+                    let px = x as f32 * cloud_size;
+                    let py = cloud_height;
+                    let pz = z as f32 * cloud_size;
+                    let sx = cloud_size;
+                    let sy = 1.1;
+                    let sz = cloud_size;
+
+                    // Cube vertices
+                    let cube = [
+                        px, py + sy, pz, px, py + sy, pz + sz, px + sx, py + sy, pz + sz,
+                        px, py + sy, pz, px + sx, py + sy, pz + sz, px + sx, py + sy, pz,
+                        px, py, pz, px + sx, py, pz + sz, px, py, pz + sz, px, py, pz,
+                        px + sx, py, pz, px + sx, py, pz + sz,
+                        px, py, pz + sz, px + sx, py, pz + sz, px + sx, py + sy, pz + sz,
+                        px, py, pz + sz, px + sx, py + sy, pz + sz, px, py + sy, pz + sz,
+                        px + sx, py, pz, px, py, pz, px, py + sy, pz, px + sx, py, pz, px, py + sy, pz, px + sx, py + sy, pz,
+                        px + sx, py, pz + sz, px + sx, py, pz, px + sx, py + sy, pz, px + sx, py, pz + sz, px + sx, py + sy, pz, px + sx, py + sy, pz + sz,
+                        px, py, pz, px, py, pz + sz, px, py + sy, pz + sz, px, py, pz, px, py + sy, pz + sz, px, py + sy, pz,
+                    ];
+                    v.extend_from_slice(&cube);
+                    for _ in 0..36 {
+                        c.extend_from_slice(&cloud_color);
+                        n.extend_from_slice(&[0.0, 1.0, 0.0]); // Simple normal
+                    }
+                }
+            }
+        }
+
+        if !v.is_empty() {
+            self.cloud_model = Some(Mesh::new(&v, None, Some(&n), Some(&c)));
+        }
     }
+
+    pub fn render_clouds(&self) {
+        if let Some(mesh) = &self.cloud_model {
+            unsafe {
+                gl::Disable(gl::CULL_FACE);
+                gl::DepthMask(gl::FALSE);
+                mesh.draw();
+                gl::DepthMask(gl::TRUE);
+                gl::Enable(gl::CULL_FACE);
+            }
+        }
+    }
+
 }
