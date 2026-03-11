@@ -77,6 +77,7 @@ pub struct World {
     pub cloud_model: Option<Mesh>,
     pub star_model: Option<Mesh>,
     pub last_cloud_pos: Vec3,
+    pub last_cloud_update_time: f32,
     pub edits: Vec<WorldEdit>,
     pub suppress_edit_recording: bool,
     pub last_pcx: i32,
@@ -96,6 +97,7 @@ impl World {
             cloud_model: None,
             star_model: None,
             last_cloud_pos: Vec3::new(-999999.0, -999999.0, -999999.0),
+            last_cloud_update_time: -999.0,
             edits: Vec::new(),
             suppress_edit_recording: false,
             last_pcx: -999999,
@@ -312,8 +314,9 @@ impl World {
 
     pub fn update_clouds(&mut self, player_pos: Vec3, time: f32) {
         let dist = self.last_cloud_pos.distance(player_pos);
-        if dist < 32.0 && self.cloud_model.is_some() { return; }
-        self.cloud_model = None; self.last_cloud_pos = player_pos;
+        let time_passed = (time - self.last_cloud_update_time) > 0.5;
+        if dist < 32.0 && !time_passed && self.cloud_model.is_some() { return; }
+        self.cloud_model = None; self.last_cloud_pos = player_pos; self.last_cloud_update_time = time;
         let cloud_height = 200.0; let cloud_size = 16.0; let range = 64;
         let start_x = (player_pos.x / cloud_size).floor() as i32 - range;
         let start_z = (player_pos.z / cloud_size).floor() as i32 - range;

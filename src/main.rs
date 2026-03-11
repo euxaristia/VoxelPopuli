@@ -24,8 +24,7 @@ layout(location = 3) in vec4 vertexColor;
 
 uniform mat4 uMVP;
 uniform mat4 uModel;
-uniform mat4 uProjection;
-uniform mat4 uModelView;
+uniform vec2 uResolution;
 
 out vec4 fragColor;
 out vec2 fragTexCoord;
@@ -40,10 +39,9 @@ void main() {
     
     vec4 pos = uMVP * vec4(vertexPosition, 1.0);
     if (pos.w > 0.0) {
-        if (pos.w > 0.5) {
-            float p = 240.0; 
-            pos.xy = floor((pos.xy / pos.w) * p + 0.5) / p * pos.w;
-        }
+        // Snap projected XY to grid
+        float p = 240.0; 
+        pos.xy = floor((pos.xy / pos.w) * p + 0.5) / p * pos.w;
     }
     gl_Position = pos;
 }
@@ -143,6 +141,15 @@ void main() {
 }
 "#;
 
+const COLOR_FS: &str = r#"
+#version 330 core
+out vec4 finalColor;
+uniform vec4 uColor;
+void main() {
+    finalColor = uColor;
+}
+"#;
+
 fn draw_quad(texture: &Texture2D) {
     let v = [
         -1.0, -1.0, 0.0,  1.0, -1.0, 0.0,  1.0,  1.0, 0.0,
@@ -157,126 +164,92 @@ fn draw_quad(texture: &Texture2D) {
     mesh.draw();
 }
 
+fn draw_screen_quad(shader: &Shader, color: glam::Vec4) {
+    let v = [
+        -1.0, -1.0, 0.0,  1.0, -1.0, 0.0,  1.0,  1.0, 0.0,
+        -1.0, -1.0, 0.0,  1.0,  1.0, 0.0, -1.0,  1.0, 0.0,
+    ];
+    let mesh = renderer::Mesh::new(&v, None, None, None);
+    shader.bind();
+    shader.set_vec4(shader.get_uniform_location("uColor"), color);
+    unsafe {
+        gl::Disable(gl::DEPTH_TEST);
+        mesh.draw();
+        gl::Enable(gl::DEPTH_TEST);
+    }
+}
+
 fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
     let dist = 450.0;
     let size = 60.0;
     let angle = (time / 1200.0) * 2.0 * std::f32::consts::PI;
     let sun_y = angle.sin();
-    
     let sun_dir = Vec3::new(0.0, sun_y, angle.cos());
     let sun_pos = player_pos + sun_dir * dist;
-    
     let moon_angle = angle + std::f32::consts::PI;
     let moon_dir = Vec3::new(0.0, moon_angle.sin(), moon_angle.cos());
     let moon_pos = player_pos + moon_dir * dist;
-
     let sunrise_mult = if sun_y > -0.3 && sun_y < 0.3 { 0.6 } else { 1.0 };
     let sun_c = [ (255.0 * sunrise_mult) as u8, (200.0 * sunrise_mult) as u8, (150.0 * sunrise_mult) as u8, 255 ];
     let moon_c = [ 220, 225, 255, 255 ];
-
-    let mut v = Vec::new();
-    let mut c = Vec::new();
-    let mut t = Vec::new();
-
+    let mut v = Vec::new(); let mut c = Vec::new(); let mut t = Vec::new();
     let mut add_quad = |pos: Vec3, color: [u8; 4], q_size: f32| {
         let look = (player_pos - pos).normalize();
         let r = look.cross(Vec3::Y).normalize();
         let u = r.cross(look).normalize();
-
         let v0 = pos + (r * -q_size) + (u * -q_size);
         let v1 = pos + (r * q_size) + (u * -q_size);
         let v2 = pos + (r * q_size) + (u * q_size);
         let v3 = pos + (r * -q_size) + (u * q_size);
-
         v.extend_from_slice(&[v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z]);
         v.extend_from_slice(&[v0.x, v0.y, v0.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z]);
         for _ in 0..6 { c.extend_from_slice(&color); }
         t.extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]);
     };
-
-    add_quad(sun_pos, sun_c, size);
-    add_quad(moon_pos, moon_c, size * 0.8);
-
+    add_quad(sun_pos, sun_c, size); add_quad(moon_pos, moon_c, size * 0.8);
     let mesh = renderer::Mesh::new(&v, Some(&t), None, Some(&c));
-    shader.bind();
-    shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+    shader.bind(); shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
     shader.set_int(shader.get_uniform_location("uIsCircle"), 1);
-    unsafe {
-        gl::Disable(gl::DEPTH_TEST);
-        gl::Disable(gl::CULL_FACE);
-        mesh.draw();
-        gl::Enable(gl::CULL_FACE);
-        gl::Enable(gl::DEPTH_TEST);
-    }
+    unsafe { gl::Disable(gl::DEPTH_TEST); gl::Disable(gl::CULL_FACE); mesh.draw(); gl::Enable(gl::CULL_FACE); gl::Enable(gl::DEPTH_TEST); }
 }
 
-struct Player {
-    position: Vec3,
-    velocity: Vec3,
-    grounded: bool,
-    air_seconds: f32,
-}
-
+struct Player { position: Vec3, velocity: Vec3, grounded: bool, air_seconds: f32 }
 impl Player {
     fn is_point_in_block(world: &World, p: Vec3) -> bool {
         let b = world.get_block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
         b != BlockType::Air && b != BlockType::Water
     }
-
     fn check_collision(world: &World, pos: Vec3) -> bool {
-        let w = 0.22;
-        let h = 1.75;
+        let w = 0.22; let h = 1.75;
         for x_off in [-w, w] {
             for z_off in [-w, w] {
                 for yi in 0..=2 {
                     let y = 0.1 + yi as f32 * ((h - 0.1) / 2.0);
-                    if Self::is_point_in_block(world, Vec3::new(pos.x + x_off, pos.y + y, pos.z + z_off)) {
-                        return true;
-                    }
+                    if Self::is_point_in_block(world, Vec3::new(pos.x + x_off, pos.y + y, pos.z + z_off)) { return true; }
                 }
             }
         }
         false
     }
-
     fn update(&mut self, world: &World, move_input: Vec3, dt: f32, is_sprinting: bool) {
         let waist_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 0.9).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
-        
         let mut mv = move_input;
         if mv.length_squared() > 0.1 {
-            mv = mv.normalize();
-            let speed = if waist_in_w { 3.5 } else if is_sprinting { 8.5 } else { 4.5 };
-            mv *= speed;
+            mv = mv.normalize(); let speed = if waist_in_w { 3.5 } else if is_sprinting { 8.5 } else { 4.5 }; mv *= speed;
         }
-
-        self.velocity.x = mv.x;
-        self.velocity.z = mv.z;
-        self.velocity.y -= (if waist_in_w { 14.0 } else { 28.0 }) * dt;
-
-        let dy = self.velocity.y * dt;
-        self.position.y += dy;
+        self.velocity.x = mv.x; self.velocity.z = mv.z; self.velocity.y -= (if waist_in_w { 14.0 } else { 28.0 }) * dt;
+        let dy = self.velocity.y * dt; self.position.y += dy;
         if Self::check_collision(world, self.position) {
             if self.velocity.y < 0.0 { self.grounded = true; }
-            self.position.y -= dy;
-            self.velocity.y = 0.0;
-        } else if self.velocity.y != 0.0 {
-            self.grounded = false;
-        }
-
-        let dx = self.velocity.x * dt;
-        self.position.x += dx;
+            self.position.y -= dy; self.velocity.y = 0.0;
+        } else if self.velocity.y != 0.0 { self.grounded = false; }
+        let dx = self.velocity.x * dt; self.position.x += dx;
         if Self::check_collision(world, self.position) { self.position.x -= dx; }
-
-        let dz = self.velocity.z * dt;
-        self.position.z += dz;
+        let dz = self.velocity.z * dt; self.position.z += dz;
         if Self::check_collision(world, self.position) { self.position.z -= dz; }
-
         let head_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 1.6).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
-        if head_in_w {
-            self.air_seconds = (self.air_seconds - dt).max(0.0);
-        } else {
-            self.air_seconds = (self.air_seconds + dt * 3.0).min(15.0);
-        }
+        if head_in_w { self.air_seconds = (self.air_seconds - dt).max(0.0); }
+        else { self.air_seconds = (self.air_seconds + dt * 3.0).min(15.0); }
     }
 }
 
@@ -286,57 +259,29 @@ fn main() {
     glfw.window_hint(glfw::WindowHint::OpenGlProfile(glfw::OpenGlProfileHint::Core));
     #[cfg(target_os = "macos")]
     glfw.window_hint(glfw::WindowHint::OpenGlForwardCompat(true));
-
-    let (mut window, events) = glfw.create_window(WINDOW_WIDTH, WINDOW_HEIGHT, "VoxelPopuli Rust", glfw::WindowMode::Windowed)
-        .expect("Failed to create GLFW window.");
-
-    window.make_current();
-    window.set_key_polling(true);
-    window.set_cursor_pos_polling(true);
-    window.set_size_polling(true);
-    window.set_cursor_mode(glfw::CursorMode::Disabled);
-
+    let (mut window, events) = glfw.create_window(WINDOW_WIDTH, WINDOW_HEIGHT, "VoxelPopuli Rust", glfw::WindowMode::Windowed).expect("Failed to create GLFW window.");
+    window.make_current(); window.set_key_polling(true); window.set_cursor_pos_polling(true); window.set_size_polling(true); window.set_cursor_mode(glfw::CursorMode::Disabled);
     gl::load_with(|s| window.get_proc_address(s).map_or(std::ptr::null(), |p| p as *const _));
-
     unsafe {
-        gl::Enable(gl::DEPTH_TEST); 
-        gl::DepthFunc(gl::LEQUAL);
-        gl::Enable(gl::CULL_FACE); 
-        gl::CullFace(gl::BACK);
-        gl::Enable(gl::BLEND); 
-        gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+        gl::Enable(gl::DEPTH_TEST); gl::DepthFunc(gl::LEQUAL);
+        gl::Enable(gl::CULL_FACE); gl::CullFace(gl::BACK);
+        gl::Enable(gl::BLEND); gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
     }
-
-    let mut world = World::new();
-    world.generate_atlas();
-    world.init_celestial();
-
+    let mut world = World::new(); world.generate_atlas(); world.init_celestial();
     let shader = Shader::new(PS1_VS, PS1_FS).expect("Failed to compile PS1 shader");
     let flat_shader = Shader::new(FLAT_VS, FLAT_FS).expect("Failed to compile FLAT shader");
     let ui_shader = Shader::new(UI_VS, UI_FS).expect("Failed to compile UI shader");
-
+    let color_shader = Shader::new(UI_VS, COLOR_FS).expect("Failed to compile COLOR shader");
     let target = RenderTexture2D::new(RENDER_WIDTH, RENDER_HEIGHT);
-
-    // Find safe spawn
     let mut spawn_y = 150.0;
     world.update(Vec3::new(32.5, 0.0, 32.5), 0.0); 
-    for y in (0..255).rev() {
-        if world.get_block(32, y, 32) != BlockType::Air {
-            spawn_y = y as f32 + 2.0;
-            break;
-        }
-    }
-
+    for y in (0..255).rev() { if world.get_block(32, y, 32) != BlockType::Air { spawn_y = y as f32 + 2.0; break; } }
     let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0 };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
     let mut last_time = glfw.get_time();
-
     while !window.should_close() {
-        let current_time = glfw.get_time();
-        let delta_time = (current_time - last_time) as f32;
-        last_time = current_time;
-
+        let current_time = glfw.get_time(); let delta_time = (current_time - last_time) as f32; last_time = current_time;
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
             match event {
@@ -350,16 +295,13 @@ fn main() {
                     else if feet_in_w { player.velocity.y = 5.0; }
                 }
                 glfw::WindowEvent::CursorPos(x, y) => {
-                    let dx = (x - last_cursor_pos.0) as f32;
-                    let dy = (y - last_cursor_pos.1) as f32;
-                    last_cursor_pos = (x, y);
-                    camera_angle.x -= dx * 0.003; camera_angle.y -= dy * 0.003;
+                    let dx = (x - last_cursor_pos.0) as f32; let dy = (y - last_cursor_pos.1) as f32;
+                    last_cursor_pos = (x, y); camera_angle.x -= dx * 0.003; camera_angle.y -= dy * 0.003;
                     camera_angle.y = camera_angle.y.clamp(-1.56, 1.56);
                 }
                 _ => {}
             }
         }
-
         let forward = Vec3::new(camera_angle.x.sin(), 0.0, camera_angle.x.cos());
         let right = forward.cross(Vec3::Y);
         let mut move_dir = Vec3::ZERO;
@@ -368,13 +310,10 @@ fn main() {
         if window.get_key(Key::A) == Action::Press { move_dir -= right; }
         if window.get_key(Key::D) == Action::Press { move_dir += right; }
         let is_sprinting = window.get_key(Key::LeftControl) == Action::Press;
-        
         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
-
         if window.get_mouse_button(glfw::MouseButtonLeft) == Action::Press {
-            let res = world.raycast(eye_pos, look_dir, 8.0);
-            if res.hit { world.set_block(res.x, res.y, res.z, BlockType::Air); }
+            let res = world.raycast(eye_pos, look_dir, 8.0); if res.hit { world.set_block(res.x, res.y, res.z, BlockType::Air); }
         }
         if window.get_mouse_button(glfw::MouseButtonRight) == Action::Press {
             let res = world.raycast(eye_pos, look_dir, 8.0);
@@ -383,75 +322,45 @@ fn main() {
                 if world.get_block(nx, ny, nz) == BlockType::Air { world.set_block(nx, ny, nz, BlockType::Stone); }
             }
         }
-
         player.update(&world, move_dir, delta_time, is_sprinting);
         world.update(player.position, current_time as f32);
         world.update_clouds(player.position, current_time as f32);
-
-        let sun_angle = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI;
-        let sun_y = sun_angle.sin();
+        let (sun_angle, sun_y) = { let a = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI; (a, a.sin()) };
         let sun_dir = glam::Vec3::new(0.0, sun_y, sun_angle.cos());
-
         let sky_c = {
             if sun_y > 0.3 { glam::Vec4::new(135.0/255.0, 206.0/255.0, 235.0/255.0, 1.0) }
             else if sun_y > -0.2 {
                 let t = ((sun_y + 0.2) / 0.5).clamp(0.0, 1.0);
-                if t < 0.5 {
-                    let u = t * 2.0;
-                    glam::Vec4::new((255.0*u + 135.0*(1.0-u))/255.0, (160.0*u + 100.0*(1.0-u))/255.0, (180.0*u + 150.0*(1.0-u))/255.0, 1.0)
-                } else {
-                    let u = (t-0.5)*2.0;
-                    glam::Vec4::new((135.0*u + 255.0*(1.0-u))/255.0, (206.0*u + 160.0*(1.0-u))/255.0, (235.0*u + 180.0*(1.0-u))/255.0, 1.0)
-                }
-            } else if sun_y > -0.5 {
-                let t = (sun_y+0.5)/0.3;
-                glam::Vec4::new((30.0*t + 10.0*(1.0-t))/255.0, (30.0*t + 10.0*(1.0-t))/255.0, (80.0*t + 50.0*(1.0-t))/255.0, 1.0)
-            } else { glam::Vec4::new(5.0/255.0, 5.0/255.0, 15.0/255.0, 1.0) }
+                if t < 0.5 { let u = t * 2.0; glam::Vec4::new((255.0*u+135.0*(1.0-u))/255.0, (160.0*u+100.0*(1.0-u))/255.0, (180.0*u+150.0*(1.0-u))/255.0, 1.0) }
+                else { let u = (t-0.5)*2.0; glam::Vec4::new((135.0*u+255.0*(1.0-u))/255.0, (206.0*u+160.0*(1.0-u))/255.0, (235.0*u+180.0*(1.0-u))/255.0, 1.0) }
+            } else if sun_y > -0.5 { let t = (sun_y+0.5)/0.3; glam::Vec4::new((30.0*t+10.0*(1.0-t))/255.0, (30.0*t+10.0*(1.0-t))/255.0, (80.0*t+50.0*(1.0-t))/255.0, 1.0) }
+            else { glam::Vec4::new(5.0/255.0, 5.0/255.0, 15.0/255.0, 1.0) }
         };
-
         target.bind();
-        unsafe {
-            gl::ClearColor(sky_c.x, sky_c.y, sky_c.z, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
-        }
-
+        unsafe { gl::ClearColor(sky_c.x, sky_c.y, sky_c.z, 1.0); gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT); }
         let aspect = RENDER_WIDTH as f32 / RENDER_HEIGHT as f32;
         let projection = Mat4::perspective_rh_gl(75.0_f32.to_radians(), aspect, 0.1, 1000.0);
         let view = Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
         let mvp = projection * view;
-
         world.render_stars(player.position, current_time as f32, &flat_shader, &mvp);
         draw_sun_moon(&flat_shader, player.position, current_time as f32, mvp);
-
         shader.bind();
         shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
         shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
-        shader.set_mat4(shader.get_uniform_location("uProjection"), &projection);
-        shader.set_mat4(shader.get_uniform_location("uModelView"), &view);
-        shader.set_float(shader.get_uniform_location("uPrecision"), 240.0);
         shader.set_vec2(shader.get_uniform_location("uResolution"), glam::Vec2::new(RENDER_WIDTH as f32, RENDER_HEIGHT as f32));
         shader.set_vec3(shader.get_uniform_location("sunDir"), sun_dir);
         shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
         shader.set_vec3(shader.get_uniform_location("viewPos"), eye_pos);
         shader.set_vec4(shader.get_uniform_location("skyCol"), sky_c);
-
         let frustum = world::Frustum::from_matrix(&mvp);
-        world.render_opaque(&frustum);
-        world.render_clouds(&flat_shader, &mvp);
-        shader.bind();
-        world.render_transparent(&frustum);
-
+        world.render_opaque(&frustum); world.render_clouds(&flat_shader, &mvp);
+        shader.bind(); world.render_transparent(&frustum);
         RenderTexture2D::unbind();
-
         let (win_width, win_height) = window.get_framebuffer_size();
-        unsafe {
-            gl::Viewport(0, 0, win_width, win_height);
-            gl::ClearColor(0.0, 0.0, 0.0, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
-        }
-
-        ui_shader.bind();
-        draw_quad(&target.texture);
+        unsafe { gl::Viewport(0, 0, win_width, win_height); gl::ClearColor(0.0, 0.0, 0.0, 1.0); gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT); }
+        ui_shader.bind(); draw_quad(&target.texture);
+        let cam_block = world.get_block(eye_pos.x.floor() as i32, eye_pos.y.floor() as i32, eye_pos.z.floor() as i32);
+        if cam_block == BlockType::Water { draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.47, 0.95, 0.6)); }
         window.swap_buffers();
     }
 }
