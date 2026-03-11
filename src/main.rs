@@ -39,8 +39,9 @@ void main() {
     
     vec4 pos = uMVP * vec4(vertexPosition, 1.0);
     if (pos.w > 0.0) {
-        float p = uPrecision;
-        pos.xy = floor(pos.xy / pos.w * p + 0.5) / p * pos.w;
+        // Snap to pixel centers to prevent gaps
+        vec2 res = vec2(1280.0, 720.0); // Assume fixed for snapping, or pass as uniform
+        pos.xy = floor((pos.xy / pos.w) * (res * 0.5) + 0.5) / (res * 0.5) * pos.w;
     }
     gl_Position = pos;
 }
@@ -88,6 +89,80 @@ void main() {
     finalColor = c;
 }
 "#;
+
+const FLAT_VS: &str = r#"
+#version 330 core
+layout(location = 0) in vec3 vertexPosition;
+layout(location = 3) in vec4 vertexColor;
+uniform mat4 uMVP;
+out vec4 fragColor;
+void main() {
+    fragColor = vertexColor;
+    gl_Position = uMVP * vec4(vertexPosition, 1.0);
+}
+"#;
+
+const FLAT_FS: &str = r#"
+#version 330 core
+in vec4 fragColor;
+out vec4 finalColor;
+void main() {
+    finalColor = fragColor;
+}
+"#;
+
+fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
+    let dist = 450.0;
+    let size = 60.0;
+    let angle = (time / 1200.0) * 2.0 * std::f32::consts::PI;
+    let sun_y = angle.sin();
+    
+    let sun_dir = Vec3::new(0.0, sun_y, angle.cos());
+    let sun_pos = player_pos + sun_dir * dist;
+    
+    let moon_angle = angle + std::f32::consts::PI;
+    let moon_dir = Vec3::new(0.0, moon_angle.sin(), moon_angle.cos());
+    let moon_pos = player_pos + moon_dir * dist;
+
+    let sunrise_mult = if sun_y > -0.3 && sun_y < 0.3 { 0.6 } else { 1.0 };
+    let sun_c = [ (255.0 * sunrise_mult) as u8, (200.0 * sunrise_mult) as u8, (150.0 * sunrise_mult) as u8, 255 ];
+    let moon_c = [ 220, 225, 255, 255 ];
+
+    let mut v = Vec::new();
+    let mut c = Vec::new();
+
+    let mut add_quad = |pos: Vec3, color: [u8; 4], q_size: f32| {
+        // Billboard quad
+        let right = Vec3::new(1.0, 0.0, 0.0); // Simplified billboarding for zenith-aligned orbit
+        let up = Vec3::new(0.0, 1.0, 0.0);
+        
+        // Face player
+        let look = (player_pos - pos).normalize();
+        let r = look.cross(Vec3::Y).normalize();
+        let u = r.cross(look).normalize();
+
+        let v0 = pos + (r * -q_size) + (u * -q_size);
+        let v1 = pos + (r * q_size) + (u * -q_size);
+        let v2 = pos + (r * q_size) + (u * q_size);
+        let v3 = pos + (r * -q_size) + (u * q_size);
+
+        v.extend_from_slice(&[v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z]);
+        v.extend_from_slice(&[v0.x, v0.y, v0.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z]);
+        for _ in 0..6 { c.extend_from_slice(&color); }
+    };
+
+    add_quad(sun_pos, sun_c, size);
+    add_quad(moon_pos, moon_c, size * 0.8);
+
+    let mesh = renderer::Mesh::new(&v, None, None, Some(&c));
+    shader.bind();
+    shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+    unsafe {
+        gl::Disable(gl::DEPTH_TEST);
+        mesh.draw();
+        gl::Enable(gl::DEPTH_TEST);
+    }
+}
 
 struct Player {
     position: Vec3,
@@ -200,6 +275,7 @@ fn main() {
     world.generate_atlas();
 
     let shader = Shader::new(PS1_VS, PS1_FS).expect("Failed to compile PS1 shader");
+    let flat_shader = Shader::new(FLAT_VS, FLAT_FS).expect("Failed to compile FLAT shader");
 
     let mut player = Player {
         position: Vec3::new(32.5, 164.0, 32.5),
@@ -355,7 +431,11 @@ fn main() {
         shader.set_vec3(loc_viewpos, eye_pos);
         shader.set_vec4(loc_skycol, sky_c);
 
+        // Render celestial
+        draw_sun_moon(&flat_shader, player.position, current_time as f32, mvp);
+
         // Render world here
+        shader.bind();
         world.render_opaque();
         
         // Render clouds

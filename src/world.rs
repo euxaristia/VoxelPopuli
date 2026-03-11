@@ -337,10 +337,9 @@ impl World {
     }
 
     pub fn update_clouds(&mut self, player_pos: Vec3, time: f32) {
-        if let Some(pos) = self.last_cloud_pos.distance(player_pos).into() {
-            if pos < 32.0 && self.cloud_model.is_some() {
-                return;
-            }
+        let dist = self.last_cloud_pos.distance(player_pos);
+        if dist < 32.0 && self.cloud_model.is_some() {
+            return;
         }
 
         self.cloud_model = None; // Drop old mesh
