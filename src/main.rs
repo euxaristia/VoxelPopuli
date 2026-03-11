@@ -13,7 +13,7 @@ use glam::{Vec2, Vec3, Mat4};
 const WINDOW_WIDTH: u32 = 1280;
 const WINDOW_HEIGHT: u32 = 720;
 const RENDER_WIDTH: i32 = 640;
-const RENDER_HEIGHT: i32 = 480;
+const RENDER_HEIGHT: i32 = 360;
 
 const PS1_VS: &str = r#"
 #version 330 core
@@ -24,8 +24,8 @@ layout(location = 3) in vec4 vertexColor;
 
 uniform mat4 uMVP;
 uniform mat4 uModel;
-uniform float uPrecision;
-uniform vec2 uResolution;
+uniform mat4 uProjection;
+uniform mat4 uModelView;
 
 out vec4 fragColor;
 out vec2 fragTexCoord;
@@ -40,10 +40,10 @@ void main() {
     
     vec4 pos = uMVP * vec4(vertexPosition, 1.0);
     if (pos.w > 0.0) {
-        // Snap to grid in projected space
-        float p = uPrecision;
-        vec2 grid = (pos.xy / pos.w) * (uResolution * 0.5);
-        pos.xy = (floor(grid + 0.5) / (uResolution * 0.5)) * pos.w;
+        if (pos.w > 0.5) {
+            float p = 240.0; 
+            pos.xy = floor((pos.xy / pos.w) * p + 0.5) / p * pos.w;
+        }
     }
     gl_Position = pos;
 }
@@ -215,7 +215,6 @@ struct Player {
     velocity: Vec3,
     grounded: bool,
     air_seconds: f32,
-    health: i32,
 }
 
 impl Player {
@@ -300,8 +299,12 @@ fn main() {
     gl::load_with(|s| window.get_proc_address(s).map_or(std::ptr::null(), |p| p as *const _));
 
     unsafe {
-        gl::Enable(gl::DEPTH_TEST); gl::Enable(gl::CULL_FACE); gl::CullFace(gl::BACK);
-        gl::Enable(gl::BLEND); gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+        gl::Enable(gl::DEPTH_TEST); 
+        gl::DepthFunc(gl::LEQUAL);
+        gl::Enable(gl::CULL_FACE); 
+        gl::CullFace(gl::BACK);
+        gl::Enable(gl::BLEND); 
+        gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
     }
 
     let mut world = World::new();
@@ -316,7 +319,7 @@ fn main() {
 
     // Find safe spawn
     let mut spawn_y = 150.0;
-    world.update(Vec3::new(32.5, 0.0, 32.5), 0.0); // Pre-generate spawn area
+    world.update(Vec3::new(32.5, 0.0, 32.5), 0.0); 
     for y in (0..255).rev() {
         if world.get_block(32, y, 32) != BlockType::Air {
             spawn_y = y as f32 + 2.0;
@@ -324,7 +327,7 @@ fn main() {
         }
     }
 
-    let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0, health: 20 };
+    let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0 };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
     let mut last_time = glfw.get_time();
@@ -385,9 +388,11 @@ fn main() {
         world.update(player.position, current_time as f32);
         world.update_clouds(player.position, current_time as f32);
 
+        let sun_angle = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI;
+        let sun_y = sun_angle.sin();
+        let sun_dir = glam::Vec3::new(0.0, sun_y, sun_angle.cos());
+
         let sky_c = {
-            let sun_angle = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI;
-            let sun_y = sun_angle.sin();
             if sun_y > 0.3 { glam::Vec4::new(135.0/255.0, 206.0/255.0, 235.0/255.0, 1.0) }
             else if sun_y > -0.2 {
                 let t = ((sun_y + 0.2) / 0.5).clamp(0.0, 1.0);
@@ -421,9 +426,11 @@ fn main() {
         shader.bind();
         shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
         shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+        shader.set_mat4(shader.get_uniform_location("uProjection"), &projection);
+        shader.set_mat4(shader.get_uniform_location("uModelView"), &view);
         shader.set_float(shader.get_uniform_location("uPrecision"), 240.0);
         shader.set_vec2(shader.get_uniform_location("uResolution"), glam::Vec2::new(RENDER_WIDTH as f32, RENDER_HEIGHT as f32));
-        shader.set_vec3(shader.get_uniform_location("sunDir"), glam::Vec3::new(0.0, (current_time as f32 / 1200.0).sin(), (current_time as f32 / 1200.0).cos()));
+        shader.set_vec3(shader.get_uniform_location("sunDir"), sun_dir);
         shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
         shader.set_vec3(shader.get_uniform_location("viewPos"), eye_pos);
         shader.set_vec4(shader.get_uniform_location("skyCol"), sky_c);
