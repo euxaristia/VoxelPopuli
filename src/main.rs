@@ -105,9 +105,19 @@ void main() {
 const FLAT_FS: &str = r#"
 #version 330 core
 in vec4 fragColor;
+in vec2 fragTexCoord;
 out vec4 finalColor;
+uniform bool uIsCircle;
 void main() {
-    finalColor = fragColor;
+    if (uIsCircle) {
+        vec2 uv = fragTexCoord * 2.0 - 1.0;
+        float d = dot(uv, uv);
+        if (d > 1.0) discard;
+        float falloff = 1.0 - smoothstep(0.8, 1.0, d);
+        finalColor = vec4(fragColor.rgb, fragColor.a * falloff);
+    } else {
+        finalColor = fragColor;
+    }
 }
 "#;
 
@@ -130,6 +140,7 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
 
     let mut v = Vec::new();
     let mut c = Vec::new();
+    let mut t = Vec::new();
 
     let mut add_quad = |pos: Vec3, color: [u8; 4], q_size: f32| {
         let look = (player_pos - pos).normalize();
@@ -144,14 +155,16 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
         v.extend_from_slice(&[v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z]);
         v.extend_from_slice(&[v0.x, v0.y, v0.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z]);
         for _ in 0..6 { c.extend_from_slice(&color); }
+        t.extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]);
     };
 
     add_quad(sun_pos, sun_c, size);
     add_quad(moon_pos, moon_c, size * 0.8);
 
-    let mesh = renderer::Mesh::new(&v, None, None, Some(&c));
+    let mesh = renderer::Mesh::new(&v, Some(&t), None, Some(&c));
     shader.bind();
     shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+    shader.set_int(shader.get_uniform_location("uIsCircle"), 1);
     unsafe {
         gl::Disable(gl::DEPTH_TEST);
         gl::Disable(gl::CULL_FACE);
@@ -438,9 +451,7 @@ fn main() {
         world.render_opaque();
         
         // Render clouds
-        flat_shader.bind();
-        flat_shader.set_mat4(flat_shader.get_uniform_location("uMVP"), &mvp);
-        world.render_clouds();
+        world.render_clouds(&flat_shader, &mvp);
         
         shader.bind();
         world.render_transparent();

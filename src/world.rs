@@ -422,8 +422,11 @@ impl World {
         }
     }
 
-    pub fn render_clouds(&self) {
+    pub fn render_clouds(&self, shader: &Shader, mvp: &Mat4) {
         if let Some(mesh) = &self.cloud_model {
+            shader.bind();
+            shader.set_mat4(shader.get_uniform_location("uMVP"), mvp);
+            shader.set_int(shader.get_uniform_location("uIsCircle"), 0);
             unsafe {
                 gl::Disable(gl::CULL_FACE);
                 gl::Enable(gl::BLEND);
@@ -446,6 +449,7 @@ impl World {
 
         if let Some(mesh) = &self.star_model {
             shader.bind();
+            shader.set_int(shader.get_uniform_location("uIsCircle"), 0);
             let star_mvp = *mvp * Mat4::from_translation(player_pos);
             shader.set_mat4(shader.get_uniform_location("uMVP"), &star_mvp);
             unsafe {
