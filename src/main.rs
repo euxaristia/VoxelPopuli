@@ -63,19 +63,16 @@ void main() {
     vec4 texelColor = texture(texture0, fragTexCoord);
     if (texelColor.a < 0.1) discard;
     
-    float diff = max(0.0, dot(fragNormal, sunDir));
-    float ambient = max(0.05, 0.4 * sunDir.y + 0.1);
-    float light = ambient + diff * max(0.0, sunDir.y * 0.9);
+    // Global ambient based on sun position (time of day)
+    float sunY = max(0.0, sunDir.y);
+    float timeLight = 0.15 + (sunY * 0.85); // 0.15 at night, 1.0 at noon
     
     vec3 baseColor = texelColor.rgb * fragColor.rgb * colDiffuse.rgb;
-    vec3 color = baseColor * light;
+    vec3 color = baseColor * timeLight;
     
-    float sunY = max(0.0, sunDir.y);
-    color *= mix(vec3(1.2, 0.8, 0.6), vec3(1.0, 1.0, 1.05), sunY);
+    color *= mix(vec3(1.0, 0.9, 0.8), vec3(1.0, 1.0, 1.05), sunY); // slight tinting
     
-    float gray = dot(color, vec3(0.299, 0.587, 0.114));
-    color = mix(vec3(gray), color, 1.25);
-    
+    // Retro ps1 style color banding
     vec4 c = vec4(color, texelColor.a * fragColor.a * colDiffuse.a);
     c.rgb = floor(c.rgb * 31.0 + 0.5) / 31.0;
     finalColor = c;
