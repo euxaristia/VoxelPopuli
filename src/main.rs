@@ -39,10 +39,6 @@ void main() {
     fragNormal = normalize((uModel * vec4(vertexNormal, 0.0)).xyz);
     
     vec4 pos = uMVP * vec4(vertexPosition, 1.0);
-    if (pos.w > 0.0) {
-        vec2 p = vec2(640.0, 360.0);
-        pos.xy = floor((pos.xy / pos.w) * p + 0.5) / p * pos.w;
-    }
     gl_Position = pos;
 }
 "#;
