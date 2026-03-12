@@ -108,7 +108,7 @@ impl Texture2D {
         unsafe {
             gl::GenTextures(1, &mut id);
             gl::BindTexture(gl::TEXTURE_2D, id);
-            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST_MIPMAP_LINEAR as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::REPEAT as i32);
             gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::REPEAT as i32);
@@ -124,6 +124,11 @@ impl Texture2D {
                 gl::UNSIGNED_BYTE,
                 data.as_ptr() as *const _,
             );
+            gl::GenerateMipmap(gl::TEXTURE_2D);
+            if gl::GetError() != gl::NO_ERROR {
+                // Just in case, fall back to NEAREST if mipmaps fail
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+            }
         }
         Self { id, width, height }
     }

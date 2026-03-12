@@ -72,9 +72,8 @@ void main() {
     
     color *= mix(vec3(1.0, 0.9, 0.8), vec3(1.0, 1.0, 1.05), sunY); // slight tinting
     
-    // Retro ps1 style color banding
+    // Final color output without artificial quantization
     vec4 c = vec4(color, texelColor.a * fragColor.a * colDiffuse.a);
-    c.rgb = floor(c.rgb * 31.0 + 0.5) / 31.0;
     finalColor = c;
 }
 "#;
