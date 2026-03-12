@@ -276,48 +276,77 @@ impl Player {
     }
     fn update(&mut self, world: &World, move_input: Vec3, dt: f32, is_sprinting: bool, is_jumping: bool) {
         if self.inventory_open { return; }
+        
         let waist_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 0.9).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
         let feet_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 0.1).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
+        let head_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 1.6).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
+        let in_water = waist_in_w || feet_in_w;
+
+        // Apply movement input
         let mut mv = move_input;
         if mv.length_squared() > 0.1 {
-            mv = mv.normalize(); let speed = if waist_in_w || feet_in_w { 3.5 } else if is_sprinting { 8.5 } else { 4.5 }; mv *= speed;
-        }
-        self.velocity.x = mv.x; self.velocity.z = mv.z; 
-        
-        if waist_in_w || feet_in_w {
-            if is_jumping {
-                self.velocity.y += 24.0 * dt;
-                if self.velocity.y > 6.0 { self.velocity.y = 6.0; }
+            mv = mv.normalize();
+            let speed = if in_water {
+                2.2 // Swimming speed
+            } else if is_sprinting {
+                5.612 // MC sprint
             } else {
-                if waist_in_w {
-                    self.velocity.y -= 10.0 * dt;
-                    if self.velocity.y < -3.5 { self.velocity.y = -3.5; }
-                } else {
-                    self.velocity.y -= 28.0 * dt;
-                }
+                4.317 // MC walk
+            };
+            mv *= speed;
+        }
+
+        // Horizontal velocity (simplified drag vs acceleration per tick)
+        // MC uses base acceleration then 0.91 (air) or ~0.546 (ground) multiplier per tick.
+        // We do a simple assignment for now, given time-based dt vs tick-based delta
+        let friction_multiplier = if in_water { 0.8 } else if !self.grounded { 0.98 } else { 0.6 };
+        self.velocity.x = self.velocity.x * (1.0 - friction_multiplier * dt * 20.0) + mv.x * friction_multiplier * dt * 20.0;
+        self.velocity.z = self.velocity.z * (1.0 - friction_multiplier * dt * 20.0) + mv.z * friction_multiplier * dt * 20.0;
+
+        // Vertical velocity and gravity (MC 1.0 physics)
+        // Jump is 0.42 blocks/tick out of water, gravity is -0.08 v/tick with 0.98 drag/tick
+        if in_water {
+            if is_jumping {
+                self.velocity.y += 0.04 * 20.0; // Water upwards buoyancy equivalent
+                if self.velocity.y > 2.0 { self.velocity.y = 2.0; }
+            } else {
+                // Sinking
+                self.velocity.y -= 0.02 * 20.0;
+                if self.velocity.y < -2.0 { self.velocity.y = -2.0; }
             }
         } else {
-            self.velocity.y -= 28.0 * dt;
+            // Apply gravity (-0.08 blocks/tick * 20 ticks/sec = -1.6 blocks/sec per tick) -> -32.0 m/s^2 
+            self.velocity.y -= 32.0 * dt;
+
+            // Apply drag (0.98 per tick -> 0.98^20 per sec ≈ 0.667)
+            let fall_drag = 0.98f32.powf(dt * 20.0);
+            self.velocity.y *= fall_drag;
+
+            // Terminal velocity is reached when gravity matches drag (~ -3.92 blocks/tick or ~ -78.4 m/s)
+            
             if is_jumping && self.grounded {
-                self.velocity.y = 9.0;
+                self.velocity.y = 8.4; // 0.42 blocks/tick * 20 ticks/sec = 8.4 blocks/sec
                 self.grounded = false;
             }
         }
 
         let dy = self.velocity.y * dt; self.position.y += dy;
         if Self::check_collision(world, self.position) {
-            if self.velocity.y < 0.0 { self.grounded = true; }
+            if self.velocity.y <= 0.0 { self.grounded = true; }
             self.position.y -= dy; self.velocity.y = 0.0;
         } else if self.velocity.y != 0.0 {
             self.grounded = false;
         }
+        
         let dx = self.velocity.x * dt; self.position.x += dx;
         if Self::check_collision(world, self.position) { self.position.x -= dx; }
+        
         let dz = self.velocity.z * dt; self.position.z += dz;
         if Self::check_collision(world, self.position) { self.position.z -= dz; }
-        let head_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 1.6).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
+
         if head_in_w { self.air_seconds = (self.air_seconds - dt).max(0.0); }
         else { self.air_seconds = (self.air_seconds + dt * 3.0).min(15.0); }
+
         if self.air_seconds <= 0.0 {
             // Drowning damage (not fully implemented, just draining health for now)
             // real implementation would need a timer
