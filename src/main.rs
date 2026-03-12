@@ -366,12 +366,28 @@ fn main() {
                         camera_angle.y = camera_angle.y.clamp(-1.56, 1.56);
                     }
                 }
-                glfw::WindowEvent::MouseButton(glfw::MouseButtonLeft, Action::Press, _) => {
+                glfw::WindowEvent::MouseButton(button, Action::Press, _) => {
                     if player.inventory_open {
-                        let (mx, my) = window.get_cursor_pos(); let (sw, sh) = (WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32);
-                        for i in 0..inventory_blocks.len() {
-                            let rx = (sw / 2.0 - 175.0) + (i % 5) as f32 * 70.0; let ry = (sh / 2.0 - 70.0) + (i / 5) as f32 * 70.0;
-                            if mx >= rx as f64 && mx <= (rx + 60.0) as f64 && my >= ry as f64 && my <= (ry + 60.0) as f64 { hotbar[player.selected_slot] = inventory_blocks[i]; }
+                        if button == glfw::MouseButtonLeft {
+                            let (mx, my) = window.get_cursor_pos(); let (sw, sh) = (WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32);
+                            for i in 0..inventory_blocks.len() {
+                                let rx = (sw / 2.0 - 175.0) + (i % 5) as f32 * 70.0; let ry = (sh / 2.0 - 70.0) + (i / 5) as f32 * 70.0;
+                                if mx >= rx as f64 && mx <= (rx + 60.0) as f64 && my >= ry as f64 && my <= (ry + 60.0) as f64 { hotbar[player.selected_slot] = inventory_blocks[i]; }
+                            }
+                        }
+                    } else {
+                        let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
+                        let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
+                        if button == glfw::MouseButtonLeft {
+                            let res = world.raycast(eye_pos, look_dir, 8.0); if res.hit { world.set_block(res.x, res.y, res.z, BlockType::Air); }
+                        } else if button == glfw::MouseButtonRight {
+                            let res = world.raycast(eye_pos, look_dir, 8.0);
+                            if res.hit {
+                                let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+                                if world.get_block(nx, ny, nz) == BlockType::Air {
+                                    let b = hotbar[player.selected_slot]; if b != BlockType::Air { world.set_block(nx, ny, nz, b); }
+                                }
+                            }
                         }
                     }
                 }
@@ -390,20 +406,6 @@ fn main() {
         let is_sprinting = window.get_key(Key::LeftControl) == Action::Press;
         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
-        if !player.inventory_open {
-            if window.get_mouse_button(glfw::MouseButtonLeft) == Action::Press {
-                let res = world.raycast(eye_pos, look_dir, 8.0); if res.hit { world.set_block(res.x, res.y, res.z, BlockType::Air); }
-            }
-            if window.get_mouse_button(glfw::MouseButtonRight) == Action::Press {
-                let res = world.raycast(eye_pos, look_dir, 8.0);
-                if res.hit {
-                    let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                    if world.get_block(nx, ny, nz) == BlockType::Air {
-                        let b = hotbar[player.selected_slot]; if b != BlockType::Air { world.set_block(nx, ny, nz, b); }
-                    }
-                }
-            }
-        }
         player.update(&world, move_dir, delta_time, is_sprinting);
         world.update(player.position, current_time as f32);
         world.update_clouds(player.position, current_time as f32);
