@@ -428,9 +428,9 @@ fn main() {
                     if !player.inventory_open {
                         let waist_in_w = world.get_block(player.position.x.floor() as i32, (player.position.y + 0.9).floor() as i32, player.position.z.floor() as i32) == BlockType::Water;
                         let feet_in_w = world.get_block(player.position.x.floor() as i32, (player.position.y + 0.1).floor() as i32, player.position.z.floor() as i32) == BlockType::Water;
-                        if waist_in_w { player.velocity.y = 4.0; }
+                        if waist_in_w { player.velocity.y = 6.0; }
                         else if player.grounded { player.velocity.y = 9.0; player.grounded = false; }
-                        else if feet_in_w { player.velocity.y = 5.0; }
+                        else if feet_in_w { player.velocity.y = 7.0; }
                     }
                 }
                 glfw::WindowEvent::CursorPos(x, y) => {
