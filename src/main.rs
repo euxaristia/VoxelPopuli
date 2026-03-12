@@ -260,7 +260,7 @@ fn get_block_ui_color(block: BlockType) -> [u8; 4] {
     }
 }
 
-struct Player { position: Vec3, velocity: Vec3, grounded: bool, air_seconds: f32, inventory_open: bool, selected_slot: usize }
+struct Player { position: Vec3, velocity: Vec3, grounded: bool, air_seconds: f32, inventory_open: bool, selected_slot: usize, health: i32 }
 impl Player {
     fn is_point_in_block(world: &World, p: Vec3) -> bool {
         let b = world.get_block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
@@ -300,6 +300,80 @@ impl Player {
         let head_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 1.6).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
         if head_in_w { self.air_seconds = (self.air_seconds - dt).max(0.0); }
         else { self.air_seconds = (self.air_seconds + dt * 3.0).min(15.0); }
+        if self.air_seconds <= 0.0 {
+            // Drowning damage (not fully implemented, just draining health for now)
+            // real implementation would need a timer
+        }
+    }
+}
+
+fn draw_heart(shader: &Shader, x: f32, y: f32, size: f32, screen_width: f32, screen_height: f32, empty: bool) {
+    let mut v: Vec<f32> = Vec::new();
+    let mut c: Vec<u8> = Vec::new();
+    
+    // Simple blocky heart shape (10x9 grid roughly)
+    // 01100110
+    // 11111111
+    // 11111111
+    // 01111110
+    // 00111100
+    // 00011000
+    
+    let color = if empty { [40, 40, 40, 200] } else { [220, 20, 20, 255] };
+    let border = [20, 20, 20, 255];
+    
+    // Draw background/border
+    for px in 0..9 {
+        for py in 0..9 {
+            let fill = match (px, py) {
+                (1..=3, 0) | (5..=7, 0) => true,
+                (0..=8, 1..=3) => true,
+                (1..=7, 4) => true,
+                (2..=6, 5) => true,
+                (3..=5, 6) => true,
+                (4..=4, 7) => true,
+                _ => false
+            };
+            if fill {
+                let bx = x + (px as f32 / 9.0) * size;
+                let by = y + (py as f32 / 9.0) * size;
+                let bw = size / 9.0;
+                
+                let is_border = match (px, py) {
+                    (1..=3, 0) | (5..=7, 0) => py == 0,
+                    (0, 1..=3) | (8, 1..=3) => true,
+                    (1, 4) | (7, 4) => true,
+                    (2, 5) | (6, 5) => true,
+                    (3, 6) | (5, 6) => true,
+                    (4, 7) => true,
+                    _ => false
+                };
+                
+                let p_color = if is_border { border } else { color };
+                draw_rect(shader, bx, by, bw, bw, p_color, screen_width, screen_height);
+            }
+        }
+    }
+}
+
+fn draw_bubble(shader: &Shader, x: f32, y: f32, size: f32, screen_width: f32, screen_height: f32, empty: bool) {
+    let color = if empty { [20, 20, 40, 150] } else { [60, 150, 255, 200] };
+    let border = [20, 20, 40, 255];
+    
+    for px in 0..8 {
+        for py in 0..8 {
+            let dist_sq = (px as f32 - 3.5).powi(2) + (py as f32 - 3.5).powi(2);
+            if dist_sq <= 16.0 {
+                let bx = x + (px as f32 / 8.0) * size;
+                let by = y + (py as f32 / 8.0) * size;
+                let bw = size / 8.0;
+                
+                let is_border = dist_sq > 9.0;
+                let p_color = if is_border { border } else if px == 2 && py == 2 && !empty { [255, 255, 255, 255] } else { color };
+                
+                draw_rect(shader, bx, by, bw, bw, p_color, screen_width, screen_height);
+            }
+        }
     }
 }
 
@@ -322,7 +396,7 @@ fn main() {
     let flat_shader = Shader::new(FLAT_VS, FLAT_FS).expect("Failed to compile FLAT shader");
     let ui_shader = Shader::new(UI_VS, UI_FS).expect("Failed to compile UI shader");
     let texture_shader = Shader::new(TEXTURE_VS, TEXTURE_FS).expect("Failed to compile TEXTURE shader");
-    let color_shader = Shader::new(UI_VS, COLOR_FS).expect("Failed to compile COLOR shader");
+    let color_shader = Shader::new(TEXTURE_VS, COLOR_FS).expect("Failed to compile COLOR shader");
     let target = RenderTexture2D::new(RENDER_WIDTH, RENDER_HEIGHT);
     let mut spawn_y = 150.0;
     world.update(Vec3::new(32.5, 0.0, 32.5), 0.0); 
@@ -334,7 +408,7 @@ fn main() {
     ];
     let mut hotbar = [BlockType::Air; 10];
     for i in 0..inventory_blocks.len().min(10) { hotbar[i] = inventory_blocks[i]; }
-    let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0, inventory_open: false, selected_slot: 0 };
+    let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0, inventory_open: false, selected_slot: 0, health: 20 };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
     let mut last_time = glfw.get_time();
@@ -466,8 +540,45 @@ fn main() {
                 draw_rect(&ui_shader, rx + 12.0, ry + 12.0, 36.0, 36.0, get_block_ui_color(inventory_blocks[i]), sw, sh);
             }
         } else { draw_rect(&ui_shader, sw/2.0 - 2.0, sh/2.0 - 2.0, 4.0, 4.4, [255, 255, 255, 255], sw, sh); }
+
+        // Draw Health and Oxygen
+        if !player.inventory_open {
+            let heart_size = 24.0;
+            let bubble_size = 20.0;
+            let spacing = 4.0;
+            let w_off = (10.0 * (heart_size + spacing)) / 2.0;
+            
+            // Health (left side of center)
+            let hx_start = sw / 2.0 - w_off - 80.0;
+            let hy = sh - 80.0;
+            for i in 0..10 {
+                let rx = hx_start + i as f32 * (heart_size + spacing);
+                let heart_val = (player.health - i * 2).clamp(0, 2);
+                // Currently only drawing full or empty hearts
+                draw_heart(&ui_shader, rx, hy, heart_size, sw, sh, heart_val == 0);
+            }
+            
+            // Oxygen bubbles (right side of center)
+            let head_in_w = world.get_block(eye_pos.x.floor() as i32, eye_pos.y.floor() as i32, eye_pos.z.floor() as i32) == BlockType::Water;
+            if head_in_w || player.air_seconds < 15.0 {
+                let ox_start = sw / 2.0 + 80.0;
+                let oy = sh - 78.0;
+                let bubbles_left = (player.air_seconds / 1.5).ceil() as i32;
+                
+                for i in 0..10 {
+                    let rx = ox_start + i as f32 * (bubble_size + spacing);
+                    let empty = i >= bubbles_left;
+                    draw_bubble(&ui_shader, rx, oy, bubble_size, sw, sh, empty);
+                }
+            }
+        }
+
         let cam_block = world.get_block(eye_pos.x.floor() as i32, eye_pos.y.floor() as i32, eye_pos.z.floor() as i32);
-        if cam_block == BlockType::Water { draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.47, 0.95, 0.6)); }
+        if cam_block == BlockType::Water {
+            unsafe { gl::Enable(gl::BLEND); gl::Disable(gl::DEPTH_TEST); }
+            draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.47, 0.95, 0.6));
+            unsafe { gl::Enable(gl::DEPTH_TEST); }
+        }
         unsafe { gl::Enable(gl::DEPTH_TEST); gl::Enable(gl::CULL_FACE); }
         window.swap_buffers();
     }
