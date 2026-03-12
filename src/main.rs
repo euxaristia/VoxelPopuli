@@ -10,10 +10,10 @@ use world::World;
 use renderer::{Shader, Texture2D, RenderTexture2D};
 use glam::{Vec2, Vec3, Mat4};
 
-const WINDOW_WIDTH: u32 = 1280;
-const WINDOW_HEIGHT: u32 = 720;
-const RENDER_WIDTH: i32 = 640;
-const RENDER_HEIGHT: i32 = 360;
+const WINDOW_WIDTH: u32 = 1920;
+const WINDOW_HEIGHT: u32 = 1080;
+const RENDER_WIDTH: i32 = 960;
+const RENDER_HEIGHT: i32 = 540;
 
 const PS1_VS: &str = r#"
 #version 330 core
