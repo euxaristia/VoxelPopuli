@@ -551,6 +551,15 @@ fn main() {
         let (win_width, win_height) = window.get_framebuffer_size();
         unsafe { gl::Viewport(0, 0, win_width, win_height); gl::ClearColor(0.0, 0.0, 0.0, 1.0); gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT); }
         texture_shader.bind(); draw_texture_quad(&target.texture);
+
+        // Underwater blue screen overlay (below HUD)
+        let cam_block = world.get_block(eye_pos.x.floor() as i32, eye_pos.y.floor() as i32, eye_pos.z.floor() as i32);
+        if cam_block == BlockType::Water {
+            unsafe { gl::Enable(gl::BLEND); gl::Disable(gl::DEPTH_TEST); }
+            draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.47, 0.95, 0.6));
+            unsafe { gl::Enable(gl::DEPTH_TEST); }
+        }
+
         unsafe { gl::Disable(gl::DEPTH_TEST); gl::Enable(gl::BLEND); gl::Disable(gl::CULL_FACE); }
         ui_shader.bind(); ui_shader.set_vec2(ui_shader.get_uniform_location("uScreenSize"), glam::Vec2::new(win_width as f32, win_height as f32));
         let (sw, sh) = (win_width as f32, win_height as f32); let hbx = (sw - 400.0) / 2.0;
@@ -594,7 +603,7 @@ fn main() {
             let head_in_w = world.get_block(eye_pos.x.floor() as i32, eye_pos.y.floor() as i32, eye_pos.z.floor() as i32) == BlockType::Water;
             if head_in_w || player.air_seconds < 15.0 {
                 let ox_start = sw / 2.0 + 80.0;
-                let oy = sh - 78.0;
+                let oy = hy;
                 let bubbles_left = (player.air_seconds / 1.5).ceil() as i32;
                 
                 for i in 0..10 {
@@ -605,12 +614,6 @@ fn main() {
             }
         }
 
-        let cam_block = world.get_block(eye_pos.x.floor() as i32, eye_pos.y.floor() as i32, eye_pos.z.floor() as i32);
-        if cam_block == BlockType::Water {
-            unsafe { gl::Enable(gl::BLEND); gl::Disable(gl::DEPTH_TEST); }
-            draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.47, 0.95, 0.6));
-            unsafe { gl::Enable(gl::DEPTH_TEST); }
-        }
         unsafe { gl::Enable(gl::DEPTH_TEST); gl::Enable(gl::CULL_FACE); }
         window.swap_buffers();
     }
