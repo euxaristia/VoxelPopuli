@@ -243,6 +243,15 @@ impl Mesh {
     }
 }
 
+impl Drop for Mesh {
+    fn drop(&mut self) {
+        unsafe {
+            gl::DeleteBuffers(4, self.vbo.as_ptr());
+            gl::DeleteVertexArrays(1, &self.vao);
+        }
+    }
+}
+
 pub struct RenderTexture2D {
     pub fbo: GLuint,
     pub texture: Texture2D,

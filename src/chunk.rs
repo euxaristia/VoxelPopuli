@@ -329,7 +329,7 @@ impl Chunk {
                     if should_draw_face(block, neighbor_zp) {
                         v.extend_from_slice(&[fx, fy, fz + 1.0, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + 1.0 - w_off, fz + 1.0, fx, fy, fz + 1.0, fx + 1.0, fy + 1.0 - w_off, fz + 1.0, fx, fy + 1.0 - w_off, fz + 1.0]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
-                        let light = if z < CHUNK_DEPTH - 1 { self.light[x][y][z + 1] } else { 15 };
+                        let light = if z < CHUNK_DEPTH - 1 { self.light[x][y][z + 1] } else { 0 };
                         let mut light_f = light as f32 / 15.0;
                         if block == BlockType::Water && light_f < 0.7 { light_f = 0.7; }
                         if light_f < 0.05 { light_f = 0.05; }
@@ -344,7 +344,7 @@ impl Chunk {
                     if should_draw_face(block, neighbor_zn) {
                         v.extend_from_slice(&[fx + 1.0, fy, fz, fx, fy, fz, fx, fy + 1.0 - w_off, fz, fx + 1.0, fy, fz, fx, fy + 1.0 - w_off, fz, fx + 1.0, fy + 1.0 - w_off, fz]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
-                        let light = if z > 0 { self.light[x][y][z - 1] } else { 15 };
+                        let light = if z > 0 { self.light[x][y][z - 1] } else { 0 };
                         let mut light_f = light as f32 / 15.0;
                         if block == BlockType::Water && light_f < 0.7 { light_f = 0.7; }
                         if light_f < 0.05 { light_f = 0.05; }
@@ -359,7 +359,7 @@ impl Chunk {
                     if should_draw_face(block, neighbor_xp) {
                         v.extend_from_slice(&[fx + 1.0, fy, fz + 1.0, fx + 1.0, fy, fz, fx + 1.0, fy + 1.0 - w_off, fz, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + 1.0 - w_off, fz, fx + 1.0, fy + 1.0 - w_off, fz + 1.0]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
-                        let light = if x < CHUNK_WIDTH - 1 { self.light[x + 1][y][z] } else { 15 };
+                        let light = if x < CHUNK_WIDTH - 1 { self.light[x + 1][y][z] } else { 0 };
                         let mut light_f = light as f32 / 15.0;
                         if block == BlockType::Water && light_f < 0.7 { light_f = 0.7; }
                         if light_f < 0.05 { light_f = 0.05; }
@@ -374,7 +374,7 @@ impl Chunk {
                     if should_draw_face(block, neighbor_xn) {
                         v.extend_from_slice(&[fx, fy, fz, fx, fy, fz + 1.0, fx, fy + 1.0 - w_off, fz + 1.0, fx, fy, fz, fx, fy + 1.0 - w_off, fz + 1.0, fx, fy + 1.0 - w_off, fz]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
-                        let light = if x > 0 { self.light[x - 1][y][z] } else { 15 };
+                        let light = if x > 0 { self.light[x - 1][y][z] } else { 0 };
                         let mut light_f = light as f32 / 15.0;
                         if block == BlockType::Water && light_f < 0.7 { light_f = 0.7; }
                         if light_f < 0.05 { light_f = 0.05; }

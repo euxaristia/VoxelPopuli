@@ -40,7 +40,7 @@ void main() {
     
     vec4 pos = uMVP * vec4(vertexPosition, 1.0);
     if (pos.w > 0.0) {
-        float p = 240.0; 
+        vec2 p = vec2(640.0, 360.0);
         pos.xy = floor((pos.xy / pos.w) * p + 0.5) / p * pos.w;
     }
     gl_Position = pos;
@@ -172,7 +172,7 @@ void main() {
 }
 "#;
 
-fn draw_rect(_shader: &Shader, x: f32, y: f32, w: f32, h: f32, color: [u8; 4]) {
+fn draw_rect(shader: &Shader, x: f32, y: f32, w: f32, h: f32, color: [u8; 4], screen_width: f32, screen_height: f32) {
     let v = [
         x, y, 0.0,  x + w, y, 0.0,  x + w, y + h, 0.0,
         x, y, 0.0,  x + w, y + h, 0.0,  x, y + h, 0.0,
@@ -180,6 +180,8 @@ fn draw_rect(_shader: &Shader, x: f32, y: f32, w: f32, h: f32, color: [u8; 4]) {
     let mut c = Vec::new();
     for _ in 0..6 { c.extend_from_slice(&color); }
     let mesh = renderer::Mesh::new(&v, None, None, Some(&c));
+    shader.bind();
+    shader.set_vec2(shader.get_uniform_location("uScreenSize"), glam::Vec2::new(screen_width, screen_height));
     mesh.draw();
 }
 
@@ -445,26 +447,30 @@ fn main() {
         let (win_width, win_height) = window.get_framebuffer_size();
         unsafe { gl::Viewport(0, 0, win_width, win_height); gl::ClearColor(0.0, 0.0, 0.0, 1.0); gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT); }
         texture_shader.bind(); draw_texture_quad(&target.texture);
-        unsafe { gl::Disable(gl::DEPTH_TEST); gl::Enable(gl::BLEND); }
+        unsafe { gl::Disable(gl::DEPTH_TEST); gl::Enable(gl::BLEND); gl::Disable(gl::CULL_FACE); }
         ui_shader.bind(); ui_shader.set_vec2(ui_shader.get_uniform_location("uScreenSize"), glam::Vec2::new(win_width as f32, win_height as f32));
         let (sw, sh) = (win_width as f32, win_height as f32); let hbx = (sw - 400.0) / 2.0;
         for i in 0..10 {
             let rx = hbx + i as f32 * 40.0; let ry = sh - 45.0;
-            let color = if player.selected_slot == i { [255, 255, 255, 180] } else { [0, 0, 0, 150] };
-            draw_rect(&ui_shader, rx, ry, 35.0, 35.0, color);
-            let b = hotbar[i]; if b != BlockType::Air { draw_rect(&ui_shader, rx + 5.0, ry + 5.0, 25.0, 25.0, get_block_ui_color(b)); }
+            let color = if player.selected_slot == i { [255, 255, 255, 255] } else { [100, 100, 100, 255] };
+            draw_rect(&ui_shader, rx, ry, 35.0, 35.0, color, sw, sh);
+            let b = hotbar[i]; if b != BlockType::Air { 
+                let mut block_color = get_block_ui_color(b);
+                block_color[3] = 255; // Force maximum opacity
+                draw_rect(&ui_shader, rx + 5.0, ry + 5.0, 25.0, 25.0, block_color, sw, sh); 
+            }
         }
         if player.inventory_open {
-            draw_rect(&ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 180]);
+            draw_rect(&ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 180], sw, sh);
             for i in 0..inventory_blocks.len() {
                 let rx = (sw / 2.0 - 175.0) + (i % 5) as f32 * 70.0; let ry = (sh / 2.0 - 70.0) + (i / 5) as f32 * 70.0;
-                draw_rect(&ui_shader, rx, ry, 60.0, 60.0, [255, 255, 255, 80]);
-                draw_rect(&ui_shader, rx + 12.0, ry + 12.0, 36.0, 36.0, get_block_ui_color(inventory_blocks[i]));
+                draw_rect(&ui_shader, rx, ry, 60.0, 60.0, [255, 255, 255, 80], sw, sh);
+                draw_rect(&ui_shader, rx + 12.0, ry + 12.0, 36.0, 36.0, get_block_ui_color(inventory_blocks[i]), sw, sh);
             }
-        } else { draw_rect(&ui_shader, sw/2.0 - 2.0, sh/2.0 - 2.0, 4.0, 4.0, [255, 255, 255, 255]); }
+        } else { draw_rect(&ui_shader, sw/2.0 - 2.0, sh/2.0 - 2.0, 4.0, 4.4, [255, 255, 255, 255], sw, sh); }
         let cam_block = world.get_block(eye_pos.x.floor() as i32, eye_pos.y.floor() as i32, eye_pos.z.floor() as i32);
         if cam_block == BlockType::Water { draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.47, 0.95, 0.6)); }
-        unsafe { gl::Enable(gl::DEPTH_TEST); }
+        unsafe { gl::Enable(gl::DEPTH_TEST); gl::Enable(gl::CULL_FACE); }
         window.swap_buffers();
     }
 }
