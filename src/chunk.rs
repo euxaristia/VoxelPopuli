@@ -237,7 +237,7 @@ impl Chunk {
 
                     // 10% chance of a massive tunnel starting
                     if cave_rng(cave_seed.wrapping_add(6)) < 0.10 {
-                        radius *= (cave_rng(cave_seed.wrapping_add(7)) * 2.0 + 1.0); 
+                        radius *= cave_rng(cave_seed.wrapping_add(7)) * 2.0 + 1.0; 
                     }
 
                     let mut current_x = start_x;

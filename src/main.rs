@@ -98,14 +98,28 @@ const FLAT_FS: &str = r#"
 in vec4 fragColor;
 in vec2 fragTexCoord;
 out vec4 finalColor;
-uniform bool uIsCircle;
+uniform int uBodyType; // 0=flat, 1=sun, 2=moon
 void main() {
-    if (uIsCircle) {
-        vec2 uv = fragTexCoord * 2.0 - 1.0;
-        float d = dot(uv, uv);
-        if (d > 1.0) discard;
-        float falloff = 1.0 - smoothstep(0.8, 1.0, d);
-        finalColor = vec4(fragColor.rgb, fragColor.a * falloff);
+    if (uBodyType > 0) {
+        vec2 uv = fragTexCoord * 8.0;
+        ivec2 iuv = ivec2(floor(uv));
+        if (iuv.x < 0 || iuv.x > 7 || iuv.y < 0 || iuv.y > 7) discard;
+        
+        int shape[8] = int[](60, 126, 255, 255, 255, 255, 126, 60);
+        int rowMask = shape[7 - iuv.y];
+        if ((rowMask & (1 << (7 - iuv.x))) == 0) discard;
+        
+        vec4 color = fragColor;
+        if (uBodyType == 2) {
+            // Craters on the moon
+            // 0, 0, 10, 4, 24, 24, 68, 0 roughly mapping to darker craters on MC moon
+            int craters[8] = int[](0, 20, 36, 64, 8, 16, 2, 0); 
+            int craterMask = craters[7 - iuv.y];
+            if ((craterMask & (1 << (7 - iuv.x))) != 0) {
+                color.rgb *= 0.65;
+            }
+        }
+        finalColor = color;
     } else {
         finalColor = fragColor;
     }
@@ -219,8 +233,9 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
     let sunrise_mult = if sun_y > -0.3 && sun_y < 0.3 { 0.6 } else { 1.0 };
     let sun_c = [ (255.0 * sunrise_mult) as u8, (200.0 * sunrise_mult) as u8, (150.0 * sunrise_mult) as u8, 255 ];
     let moon_c = [ 220, 225, 255, 255 ];
-    let mut v = Vec::new(); let mut c = Vec::new(); let mut t = Vec::new();
-    let mut add_quad = |pos: Vec3, color: [u8; 4], q_size: f32| {
+
+    let create_mesh = |pos: Vec3, color: [u8; 4], q_size: f32| -> renderer::Mesh {
+        let mut v = Vec::new(); let mut c = Vec::new(); let mut t = Vec::new();
         let look = (player_pos - pos).normalize();
         let r = look.cross(Vec3::Y).normalize();
         let u = r.cross(look).normalize();
@@ -232,12 +247,25 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
         v.extend_from_slice(&[v0.x, v0.y, v0.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z]);
         for _ in 0..6 { c.extend_from_slice(&color); }
         t.extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]);
+        renderer::Mesh::new(&v, Some(&t), None, Some(&c))
     };
-    add_quad(sun_pos, sun_c, size); add_quad(moon_pos, moon_c, size * 0.8);
-    let mesh = renderer::Mesh::new(&v, Some(&t), None, Some(&c));
-    shader.bind(); shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
-    shader.set_int(shader.get_uniform_location("uIsCircle"), 1);
-    unsafe { gl::Disable(gl::DEPTH_TEST); gl::Disable(gl::CULL_FACE); mesh.draw(); gl::Enable(gl::CULL_FACE); gl::Enable(gl::DEPTH_TEST); }
+
+    let sun_mesh = create_mesh(sun_pos, sun_c, size);
+    let moon_mesh = create_mesh(moon_pos, moon_c, size * 0.8);
+
+    shader.bind(); 
+    shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+    
+    unsafe { gl::Disable(gl::DEPTH_TEST); gl::Disable(gl::CULL_FACE); }
+
+    shader.set_int(shader.get_uniform_location("uBodyType"), 1); // 1 = Sun
+    sun_mesh.draw();
+    
+    shader.set_int(shader.get_uniform_location("uBodyType"), 2); // 2 = Moon
+    moon_mesh.draw();
+
+    shader.set_int(shader.get_uniform_location("uBodyType"), 0); // Reset
+    unsafe { gl::Enable(gl::CULL_FACE); gl::Enable(gl::DEPTH_TEST); }
 }
 
 fn get_block_ui_color(block: BlockType) -> [u8; 4] {
@@ -355,9 +383,6 @@ impl Player {
 }
 
 fn draw_heart(shader: &Shader, x: f32, y: f32, size: f32, screen_width: f32, screen_height: f32, empty: bool) {
-    let mut v: Vec<f32> = Vec::new();
-    let mut c: Vec<u8> = Vec::new();
-    
     // Simple blocky heart shape (10x9 grid roughly)
     // 01100110
     // 11111111
@@ -462,7 +487,6 @@ fn main() {
     let mut last_time = glfw.get_time();
     let mut fps_last_time = last_time;
     let mut fps_frames: u32 = 0;
-    let mut fps: f32 = 0.0;
     while !window.should_close() {
         let current_time = glfw.get_time(); 
         let delta_time = (current_time - last_time) as f32; 
@@ -471,7 +495,7 @@ fn main() {
         fps_frames += 1;
         let fps_elapsed = current_time - fps_last_time;
         if fps_elapsed >= 1.0 {
-            fps = (fps_frames as f64 / fps_elapsed) as f32;
+            let fps = (fps_frames as f64 / fps_elapsed) as f32;
             fps_frames = 0;
             fps_last_time = current_time;
             window.set_title(&format!("VoxelPopuli Rust - {:.0} FPS", fps));
