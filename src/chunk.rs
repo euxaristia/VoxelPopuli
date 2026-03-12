@@ -194,45 +194,109 @@ impl Chunk {
             }
         }
 
-        // PASS 5: Caves — sparse 3D Perlin (sample every 3 voxels, carve 3×3×3) for fast startup
-        const CAVE_STEP: usize = 3;
-        const Y_CAVE_MIN: i32 = 8;
-        const Y_CAVE_MAX: i32 = 220;
-        for x in (0..CHUNK_WIDTH).step_by(CAVE_STEP) {
-            for z in (0..CHUNK_DEPTH).step_by(CAVE_STEP) {
-                let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
-                let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
-                let continental = perlin_2d(world_x, world_z, 0.005, 3);
-                let base_h = continental * 40.0 + 128.0;
-                let detail = perlin_2d(world_x, world_z, 0.03, 4);
-                let hill_f = if continental > 0.2 { (continental - 0.2) * 2.0 } else { 0.0 };
-                let surface_height = (base_h + detail * 15.0 * (1.0 + hill_f)) as i32;
+        // PASS 5: Caves — Authentic Minecraft 1.0 "Perlin Worm" carvers
+        // A simple deterministic PRNG based on chunk coords and an arbitrary seed
+        let world_seed: i32 = 42; // Ideally would come from World struct, but hardcoded for now
+        
+        let mut cave_rng = |mut seed: u64| -> f32 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            ((seed % 10000) as f32) / 10000.0
+        };
 
-                let mut y = Y_CAVE_MIN;
-                while y < Y_CAVE_MAX {
-                    let n3d = crate::noise::perlin_3d(world_x, y as f32, world_z, 0.035, 1);
-                    let threshold = if y > surface_height - 8 { 0.58 } else { 0.55 };
-                    if n3d > threshold {
-                        for dx in 0..CAVE_STEP.min(CHUNK_WIDTH - x) {
-                            for dz in 0..CAVE_STEP.min(CHUNK_DEPTH - z) {
-                                for dy in 0..CAVE_STEP.min((Y_CAVE_MAX - y) as usize) {
-                                    let bx = x + dx;
-                                    let by = y as usize + dy;
-                                    let bz = z + dz;
-                                    if by >= CHUNK_HEIGHT {
-                                        continue;
-                                    }
-                                    let current = self.blocks[bx][by][bz];
-                                    if matches!(current, BlockType::Stone | BlockType::Dirt | BlockType::Gravel | BlockType::Sand | BlockType::Grass) {
-                                        if (by as i32) < surface_height || n3d > 0.62 {
-                                            self.blocks[bx][by][bz] = BlockType::Air;
+        // Carve caves coming from neighboring chunks to ensure seamless tunnels
+        for cx in -1i32..=1 {
+            for cz in -1i32..=1 {
+                let neighbor_x = self.x + cx;
+                let neighbor_z = self.z + cz;
+                
+                // Deterministic seed for this chunk
+                let base_seed = (world_seed as i64) 
+                                .wrapping_mul(341873128712) 
+                                .wrapping_add((neighbor_x as i64).wrapping_mul(132897987541))
+                                .wrapping_add((neighbor_z as i64).wrapping_mul(341873128712)) as u64;
+
+                let num_caves = ((cave_rng(base_seed) * 15.0) as i32).max(0);
+                
+                for i in 0..num_caves {
+                    let cave_seed = base_seed.wrapping_add((i * 9283711) as u64);
+                    
+                    let start_x = (neighbor_x * CHUNK_WIDTH as i32) as f32 + cave_rng(cave_seed) * 16.0;
+                    let start_y = cave_rng(cave_seed.wrapping_add(1)) * 120.0 + 8.0;
+                    let start_z = (neighbor_z * CHUNK_DEPTH as i32) as f32 + cave_rng(cave_seed.wrapping_add(2)) * 16.0;
+                    
+                    let mut length = cave_rng(cave_seed.wrapping_add(3)) * 100.0 + 10.0; // 10 to 110 steps
+                    let mut radius = cave_rng(cave_seed.wrapping_add(4)) * 2.0 + 1.5;    // 1.5 to 3.5 base radius
+                    
+                    // 25% chance of a spherical room
+                    if cave_rng(cave_seed.wrapping_add(5)) < 0.25 {
+                        radius *= 2.0; 
+                        length = 0.0; // Rooms don't immediately worm
+                    }
+
+                    // 10% chance of a massive tunnel starting
+                    if cave_rng(cave_seed.wrapping_add(6)) < 0.10 {
+                        radius *= (cave_rng(cave_seed.wrapping_add(7)) * 2.0 + 1.0); 
+                    }
+
+                    let mut current_x = start_x;
+                    let mut current_y = start_y;
+                    let mut current_z = start_z;
+                    
+                    let mut yaw = cave_rng(cave_seed.wrapping_add(8)) * std::f32::consts::PI * 2.0;
+                    let mut pitch = (cave_rng(cave_seed.wrapping_add(9)) - 0.5) * std::f32::consts::PI * 0.5;
+                    
+                    let mut step = 0.0;
+                    let mut s = cave_seed.wrapping_add(10);
+                    
+                    while step < length || length == 0.0 {
+                        let rad = radius * (1.0 + (step / length.max(1.0)).sin());
+
+                        // Carve the sphere at the current point
+                        let min_cx = ((current_x - rad).floor() as i32) - (self.x * CHUNK_WIDTH as i32);
+                        let max_cx = ((current_x + rad).ceil() as i32) - (self.x * CHUNK_WIDTH as i32);
+                        let min_cy = (current_y - rad).floor() as i32;
+                        let max_cy = (current_y + rad).ceil() as i32;
+                        let min_cz = ((current_z - rad).floor() as i32) - (self.z * CHUNK_DEPTH as i32);
+                        let max_cz = ((current_z + rad).ceil() as i32) - (self.z * CHUNK_DEPTH as i32);
+
+                        for bx in min_cx.max(0)..=max_cx.min(CHUNK_WIDTH as i32 - 1) {
+                            for by in min_cy.max(0)..=max_cy.min(CHUNK_HEIGHT as i32 - 1) {
+                                for bz in min_cz.max(0)..=max_cz.min(CHUNK_DEPTH as i32 - 1) {
+                                    let global_x = (self.x * CHUNK_WIDTH as i32 + bx) as f32;
+                                    let global_y = by as f32;
+                                    let global_z = (self.z * CHUNK_DEPTH as i32 + bz) as f32;
+                                    
+                                    let dist_sq = (global_x - current_x).powi(2) + 
+                                                  ((global_y - current_y) * 1.5).powi(2) + 
+                                                  (global_z - current_z).powi(2);
+                                                  
+                                    if dist_sq <= rad * rad {
+                                        let current_block = self.blocks[bx as usize][by as usize][bz as usize];
+                                        if matches!(current_block, BlockType::Stone | BlockType::Dirt | BlockType::Gravel | BlockType::Grass) {
+                                            self.blocks[bx as usize][by as usize][bz as usize] = BlockType::Air;
                                         }
                                     }
                                 }
                             }
                         }
+
+                        if length == 0.0 { break; } // It was just a room
+
+                        // Step the worm forward
+                        current_x += yaw.cos() * pitch.cos();
+                        current_y += pitch.sin();
+                        current_z += yaw.sin() * pitch.cos();
+                        
+                        s = s.wrapping_add(1);
+                        yaw += (cave_rng(s) - 0.5) * 0.4;
+                        s = s.wrapping_add(1);
+                        pitch += (cave_rng(s) - 0.5) * 0.4;
+                        pitch = pitch.clamp(-std::f32::consts::PI * 0.4, std::f32::consts::PI * 0.4);
+
+                        step += 1.0;
                     }
-                    y += CAVE_STEP as i32;
                 }
             }
         }
