@@ -5,13 +5,16 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch",
+            "name": "Debug VoxelPopuli (Rust)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/voxelpopuli",
+            "program": "${workspaceFolder}/target/debug/VoxelPopuli",
             "args": [],
             "cwd": "${workspaceFolder}",
-            "preLaunchTask": "build"
+            "preLaunchTask": "cargo build",
+            "sourceLanguages": [
+                "rust"
+            ]
         }
     ]
 }

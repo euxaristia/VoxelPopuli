@@ -358,7 +358,8 @@ fn draw_heart(shader: &Shader, x: f32, y: f32, size: f32, screen_width: f32, scr
                 let bw = size / 9.0;
                 
                 let is_border = match (px, py) {
-                    (1..=3, 0) | (5..=7, 0) => py == 0,
+                    (1..=3, 0) | (5..=7, 0) => true,
+                    (4, 1) => true,
                     (0, 1..=3) | (8, 1..=3) => true,
                     (1, 4) | (7, 4) => true,
                     (2, 5) | (6, 5) => true,
@@ -367,7 +368,12 @@ fn draw_heart(shader: &Shader, x: f32, y: f32, size: f32, screen_width: f32, scr
                     _ => false
                 };
                 
-                let p_color = if is_border { border } else { color };
+                let is_highlight = match (px, py) {
+                    (1, 1) | (2, 1) | (1, 2) => !empty,
+                    _ => false
+                };
+                
+                let p_color = if is_border { border } else if is_highlight { [255, 255, 255, 255] } else { color };
                 draw_rect(shader, bx, by, bw, bw, p_color, screen_width, screen_height);
             }
         }
@@ -430,8 +436,23 @@ fn main() {
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
     let mut last_time = glfw.get_time();
+    let mut fps_last_time = last_time;
+    let mut fps_frames: u32 = 0;
+    let mut fps: f32 = 0.0;
     while !window.should_close() {
-        let current_time = glfw.get_time(); let delta_time = (current_time - last_time) as f32; last_time = current_time;
+        let current_time = glfw.get_time(); 
+        let delta_time = (current_time - last_time) as f32; 
+        last_time = current_time;
+
+        fps_frames += 1;
+        let fps_elapsed = current_time - fps_last_time;
+        if fps_elapsed >= 1.0 {
+            fps = (fps_frames as f64 / fps_elapsed) as f32;
+            fps_frames = 0;
+            fps_last_time = current_time;
+            window.set_title(&format!("VoxelPopuli Rust - {:.0} FPS", fps));
+            println!("FPS: {:.0}", fps);
+        }
         glfw.poll_events();
         for (_, event) in glfw::flush_messages(&events) {
             match event {

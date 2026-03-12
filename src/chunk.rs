@@ -193,6 +193,26 @@ impl Chunk {
                 }
             }
         }
+
+        // PASS 5: Simple skylight (top-down sunlight)
+        for x in 0..CHUNK_WIDTH {
+            for z in 0..CHUNK_DEPTH {
+                let mut sunlight: u8 = 15;
+                for y in (0..CHUNK_HEIGHT).rev() {
+                    let b = self.blocks[x][y][z];
+                    match b {
+                        BlockType::Air | BlockType::Water | BlockType::OakLeaves => {
+                            self.light[x][y][z] = sunlight;
+                        }
+                        _ => {
+                            // Slightly light the top surface, then stop light below
+                            self.light[x][y][z] = sunlight.saturating_sub(1);
+                            sunlight = 0;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn set_block(&mut self, x: usize, y: usize, z: usize, block: BlockType) {

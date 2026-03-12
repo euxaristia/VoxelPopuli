@@ -2,18 +2,33 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "build",
+            "label": "cargo build",
             "type": "shell",
-            "command": "make",
+            "command": "cargo",
             "args": [
-                "CC=clang"
+                "build"
             ],
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
             "problemMatcher": [
-                "$gcc"
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo run",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "run"
+            ],
+            "group": {
+                "kind": "test",
+                "isDefault": false
+            },
+            "problemMatcher": [
+                "$rustc"
             ]
         }
     ]
