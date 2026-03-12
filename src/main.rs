@@ -24,8 +24,7 @@ layout(location = 3) in vec4 vertexColor;
 
 uniform mat4 uMVP;
 uniform mat4 uModel;
-uniform mat4 uProjection;
-uniform mat4 uModelView;
+uniform float uTime;
 
 out vec4 fragColor;
 out vec2 fragTexCoord;
@@ -35,11 +34,17 @@ out vec3 fragNormal;
 void main() {
     fragColor = vertexColor;
     fragTexCoord = vertexTexCoord;
-    fragPos = (uModel * vec4(vertexPosition, 1.0)).xyz;
+    
+    vec3 pos = vertexPosition;
+    // Simple wave animation for water (alpha 240/255 ~= 0.94)
+    if (vertexColor.a > 0.940 && vertexColor.a < 0.942) {
+        pos.y += sin(uTime * 1.5 + vertexPosition.x * 0.8 + vertexPosition.z * 0.8) * 0.08 - 0.05;
+    }
+    
+    fragPos = (uModel * vec4(pos, 1.0)).xyz;
     fragNormal = normalize((uModel * vec4(vertexNormal, 0.0)).xyz);
     
-    vec4 pos = uMVP * vec4(vertexPosition, 1.0);
-    gl_Position = pos;
+    gl_Position = uMVP * vec4(pos, 1.0);
 }
 "#;
 
@@ -640,8 +645,7 @@ fn main() {
         shader.bind();
         shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
         shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
-        shader.set_mat4(shader.get_uniform_location("uProjection"), &projection);
-        shader.set_mat4(shader.get_uniform_location("uModelView"), &view);
+        shader.set_float(shader.get_uniform_location("uTime"), current_time as f32);
         shader.set_vec2(shader.get_uniform_location("uResolution"), glam::Vec2::new(RENDER_WIDTH as f32, RENDER_HEIGHT as f32));
         shader.set_vec3(shader.get_uniform_location("sunDir"), sun_dir);
         shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);

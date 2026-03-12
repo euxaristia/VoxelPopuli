@@ -35,19 +35,23 @@ impl Shader {
     }
 
     unsafe fn compile_shader(shader_type: GLenum, source: &str) -> Result<GLuint, String> {
-        let shader = gl::CreateShader(shader_type);
+        let shader = unsafe { gl::CreateShader(shader_type) };
         let c_str = CString::new(source.as_bytes()).unwrap();
-        gl::ShaderSource(shader, 1, &c_str.as_ptr(), ptr::null());
-        gl::CompileShader(shader);
+        unsafe {
+            gl::ShaderSource(shader, 1, &c_str.as_ptr(), ptr::null());
+            gl::CompileShader(shader);
+        }
 
         let mut success = gl::FALSE as GLint;
-        gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success);
+        unsafe { gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success); }
         if success == gl::FALSE as GLint {
             let mut len = 0;
-            gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut len);
-            let mut buf = vec![0; len as usize];
-            gl::GetShaderInfoLog(shader, len, ptr::null_mut(), buf.as_mut_ptr() as *mut GLchar);
-            return Err(String::from_utf8_lossy(&buf).into_owned());
+            unsafe {
+                gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut len);
+                let mut buf = vec![0; len as usize];
+                gl::GetShaderInfoLog(shader, len, ptr::null_mut(), buf.as_mut_ptr() as *mut GLchar);
+                return Err(String::from_utf8_lossy(&buf).into_owned());
+            }
         }
         Ok(shader)
     }

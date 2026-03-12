@@ -103,105 +103,115 @@ impl Chunk {
         }
 
         // PASS 2: Trees
-        for x in 0..CHUNK_WIDTH {
-            for z in 0..CHUNK_DEPTH {
-                let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
-                let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
+        let mut tree_positions: Vec<(usize, usize)> = Vec::new();
 
-                let continental = perlin_2d(world_x, world_z, 0.005, 3);
-                let base_h = continental * 40.0 + 128.0;
-                let detail = perlin_2d(world_x, world_z, 0.03, 4);
-                let hill_f = if continental > 0.2 { (continental - 0.2) * 2.0 } else { 0.0 };
-                let height = (base_h + detail * 15.0 * (1.0 + hill_f)) as usize;
+        let (tree_attempts, min_dist) = match get_biome((self.x * CHUNK_WIDTH as i32 + 8) as f32, (self.z * CHUNK_DEPTH as i32 + 8) as f32) {
+            Biome::Plains => (2, 4),
+            Biome::SnowyTaiga => (8, 5), // Reduced attempts and increased distance to prevent bunching
+            _ => (0, 0),
+        };
 
-                let biome = get_biome(world_x, world_z);
+        for i in 0..tree_attempts {
+            let x = rng.gen_range(4..CHUNK_WIDTH - 4);
+            let z = rng.gen_range(4..CHUNK_DEPTH - 4);
 
-                if height >= 126 && x > 2 && x < CHUNK_WIDTH - 3 && z > 2 && z < CHUNK_DEPTH - 3 {
-                    let seed = (world_x * 73.1 + world_z * 91.7) as i32;
-                    let tree_chance = match biome {
-                        Biome::Plains => 85,
-                        Biome::SnowyTaiga => 55, // Denser spruce forests
-                        Biome::SnowyTundra | Biome::Desert => 0, // No trees
-                    };
-                    if tree_chance > 0 && seed % tree_chance == 0 {
-                        match biome {
-                            Biome::Plains => {
-                                // Oak tree (existing logic)
-                                let tree_h = 4 + seed.rem_euclid(3) as usize;
-                                if self.blocks[x][height][z] == BlockType::Grass {
-                                    for h in 1..=tree_h {
-                                        if height + h < CHUNK_HEIGHT {
-                                            self.blocks[x][height + h][z] = BlockType::OakLog;
-                                        }
-                                    }
-                                    for ly in -2_i32..=1 {
-                                        let rad = if ly < 0 { 2 } else { 1 };
-                                        for lx in (-rad..=rad).map(|x| x as i32) {
-                                            for lz in (-rad..=rad).map(|x| x as i32) {
-                                                if ly < 0 && lx.abs() == rad && lz.abs() == rad && (seed + lx + lz) % 3 == 0 {
-                                                    continue;
-                                                }
-                                                if ly == 1 && (lx.abs() + lz.abs() > 1) {
-                                                    continue;
-                                                }
-                                                let ly_idx = height as i32 + tree_h as i32 + ly + 1;
-                                                let bx = (x as i32 + lx) as usize;
-                                                let bz = (z as i32 + lz) as usize;
-                                                if ly_idx >= 0 && ly_idx < CHUNK_HEIGHT as i32 && bx < CHUNK_WIDTH && bz < CHUNK_DEPTH {
-                                                    if self.blocks[bx][ly_idx as usize][bz] == BlockType::Air {
-                                                        self.blocks[bx][ly_idx as usize][bz] = BlockType::OakLeaves;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+            // Distance check to prevent bunching
+            let mut too_close = false;
+            for &(tx, tz) in &tree_positions {
+                let dx = x as i32 - tx as i32;
+                let dz = z as i32 - tz as i32;
+                if dx * dx + dz * dz < min_dist * min_dist {
+                    too_close = true;
+                    break;
+                }
+            }
+            if too_close { continue; }
+
+            let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
+            let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
+            let biome = get_biome(world_x, world_z);
+            let seed = (world_x * 73.1 + world_z * 91.7 + i as f32 * 111.1) as i32;
+
+            // Find surface
+            let mut surface_y = 0;
+            for y in (60..CHUNK_HEIGHT - 32).rev() {
+                let b = self.blocks[x][y][z];
+                if b == BlockType::Grass || b == BlockType::SnowyGrass {
+                    surface_y = y;
+                    break;
+                } else if b != BlockType::Air && b != BlockType::Water && b != BlockType::SnowLayer {
+                    // Not valid ground
+                    break;
+                }
+            }
+
+            if surface_y > 0 {
+                match biome {
+                    Biome::Plains => {
+                        // Oak tree
+                        let tree_h = 4 + seed.rem_euclid(3) as usize;
+                        for h in 1..=tree_h {
+                            if surface_y + h < CHUNK_HEIGHT {
+                                self.blocks[x][surface_y + h][z] = BlockType::OakLog;
                             }
-                            Biome::SnowyTaiga => {
-                                // Spruce tree: tall, narrow cone shape
-                                let tree_h = 6 + seed.rem_euclid(4) as usize;
-                                if self.blocks[x][height][z] == BlockType::SnowyGrass {
-                                    for h in 1..=tree_h {
-                                        if height + h < CHUNK_HEIGHT {
-                                            self.blocks[x][height + h][z] = BlockType::SpruceLog;
-                                        }
-                                    }
-                                    // Conical leaf layers from bottom to top
-                                    for layer in 0..(tree_h - 1) {
-                                        let ly = height + 2 + layer;
-                                        if ly >= CHUNK_HEIGHT { break; }
-                                        // Radius shrinks from 2 at bottom to 0 at top
-                                        let progress = layer as f32 / (tree_h - 2) as f32;
-                                        let rad = if progress < 0.3 { 2 }
-                                                  else if progress < 0.7 { 1 }
-                                                  else { 0 };
-                                        // Skip every other layer for the wider rings to create the stepped look
-                                        if rad == 2 && layer % 2 != 0 { continue; }
-                                        for lx in -(rad as i32)..=(rad as i32) {
-                                            for lz in -(rad as i32)..=(rad as i32) {
-                                                if lx == 0 && lz == 0 { continue; } // trunk spot
-                                                // Skip corners for rounder shape
-                                                if lx.abs() == rad as i32 && lz.abs() == rad as i32 { continue; }
-                                                let bx = (x as i32 + lx) as usize;
-                                                let bz = (z as i32 + lz) as usize;
-                                                if bx < CHUNK_WIDTH && bz < CHUNK_DEPTH && ly < CHUNK_HEIGHT {
-                                                    if self.blocks[bx][ly][bz] == BlockType::Air {
-                                                        self.blocks[bx][ly][bz] = BlockType::SpruceLeaves;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // Top crown
-                                    let top = height + tree_h + 1;
-                                    if top < CHUNK_HEIGHT {
-                                        self.blocks[x][top][z] = BlockType::SpruceLeaves;
-                                    }
-                                }
-                            }
-                            _ => {} // No trees for Desert/Tundra
                         }
+                        for ly in -2_i32..=1 {
+                            let rad = if ly < 0 { 2 } else { 1 };
+                            for lx in (-rad..=rad).map(|x| x as i32) {
+                                for lz in (-rad..=rad).map(|x| x as i32) {
+                                    if ly < 0 && lx.abs() == rad && lz.abs() == rad && (seed + lx + lz) % 3 == 0 {
+                                        continue;
+                                    }
+                                    if ly == 1 && (lx.abs() + lz.abs() > 1) {
+                                        continue;
+                                    }
+                                    let ly_idx = surface_y as i32 + tree_h as i32 + ly + 1;
+                                    let bx = (x as i32 + lx) as usize;
+                                    let bz = (z as i32 + lz) as usize;
+                                    if ly_idx >= 0 && ly_idx < CHUNK_HEIGHT as i32 && bx < CHUNK_WIDTH && bz < CHUNK_DEPTH {
+                                        if self.blocks[bx][ly_idx as usize][bz] == BlockType::Air {
+                                            self.blocks[bx][ly_idx as usize][bz] = BlockType::OakLeaves;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        tree_positions.push((x, z));
                     }
+                    Biome::SnowyTaiga => {
+                        // 1:1 Authentic Minecraft 1.0 spruce tree pattern
+                        let tree_h = 7 + seed.rem_euclid(4) as usize;
+                        // Trunk
+                        for h in 1..=tree_h {
+                            if surface_y + h < CHUNK_HEIGHT {
+                                self.blocks[x][surface_y + h][z] = BlockType::SpruceLog;
+                            }
+                        }
+                        // Leaves
+                        for y_off in 0..=tree_h {
+                            let ly = surface_y + tree_h + 1 - y_off;
+                            if ly >= CHUNK_HEIGHT || ly <= surface_y + 1 { continue; }
+                            let rad: i32 = match y_off {
+                                0 => 0, 1 => 1, 2 => 0, 3 => 1, 4 => 2, 5 => 1, 6 => 2, 7 => 2, _ => 2,
+                            };
+                            for lx in -rad..=rad {
+                                for lz in -rad..=rad {
+                                    if rad > 0 && lx.abs() == rad && lz.abs() == rad { continue; }
+                                    let bx = x as i32 + lx;
+                                    let bz = z as i32 + lz;
+                                    if bx >= 0 && bx < CHUNK_WIDTH as i32 && bz >= 0 && bz < CHUNK_DEPTH as i32 {
+                                        let bx = bx as usize;
+                                        let bz = bz as usize;
+                                        if self.blocks[bx][ly][bz] == BlockType::Air {
+                                            self.blocks[bx][ly][bz] = BlockType::SpruceLeaves;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        tree_positions.push((x, z));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -283,7 +293,7 @@ impl Chunk {
         // A simple deterministic PRNG based on chunk coords and an arbitrary seed
         let world_seed: i32 = 42; // Ideally would come from World struct, but hardcoded for now
         
-        let mut cave_rng = |mut seed: u64| -> f32 {
+        let cave_rng = |mut seed: u64| -> f32 {
             seed ^= seed << 13;
             seed ^= seed >> 17;
             seed ^= seed << 5;
@@ -530,8 +540,8 @@ impl Chunk {
             if wy < 0 || wy >= CHUNK_HEIGHT as i32 { return BlockType::Air; }
             
             // Local chunk coordinates
-            let mut cx = wx - (self.x * CHUNK_WIDTH as i32);
-            let mut cz = wz - (self.z * CHUNK_DEPTH as i32);
+            let cx = wx - (self.x * CHUNK_WIDTH as i32);
+            let cz = wz - (self.z * CHUNK_DEPTH as i32);
             
             if cx >= 0 && cx < CHUNK_WIDTH as i32 && cz >= 0 && cz < CHUNK_DEPTH as i32 {
                 return self.blocks[cx as usize][wy as usize][cz as usize];
@@ -570,8 +580,8 @@ impl Chunk {
             if wy < 0 || wy >= CHUNK_HEIGHT as i32 { return 15; }
             
             // Local chunk coordinates
-            let mut cx = wx - (self.x * CHUNK_WIDTH as i32);
-            let mut cz = wz - (self.z * CHUNK_DEPTH as i32);
+            let cx = wx - (self.x * CHUNK_WIDTH as i32);
+            let cz = wz - (self.z * CHUNK_DEPTH as i32);
             
             if cx >= 0 && cx < CHUNK_WIDTH as i32 && cz >= 0 && cz < CHUNK_DEPTH as i32 {
                 return self.light[cx as usize][wy as usize][cz as usize];
