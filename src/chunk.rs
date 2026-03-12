@@ -284,8 +284,8 @@ impl Chunk {
         let mut n_tr = Vec::new();
         let mut c_tr = Vec::new();
 
-        let ts = 1.0 / 16.0;
-        let pad = 0.0001;
+
+
 
         let mut current_min_y = CHUNK_HEIGHT;
         let mut current_max_y = 0;
@@ -363,7 +363,7 @@ impl Chunk {
                     let fy = y as f32;
                     let fz = (z as i32 + self.z * CHUNK_DEPTH as i32) as f32;
                     let ts = 1.0 / 16.0;
-                    let pad = 0.0;
+                    let pad = 0.5 / 256.0; // Half a pixel padding to prevent mipmap/texture bleeding
                                 let (tx, ty) = match block {
                                     BlockType::Stone => (1, 0),
                                     BlockType::Dirt => (2, 0),

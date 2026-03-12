@@ -425,13 +425,8 @@ fn main() {
     let mut spawn_y = 150.0;
     world.update(Vec3::new(32.5, 0.0, 32.5), 0.0); 
     for y in (0..255).rev() { if world.get_block(32, y, 32) != BlockType::Air { spawn_y = y as f32 + 2.0; break; } }
-    let inventory_blocks = [
-        BlockType::Stone, BlockType::Dirt, BlockType::Grass, BlockType::OakLog, 
-        BlockType::OakLeaves, BlockType::Sand, BlockType::Gravel, BlockType::CoalOre,
-        BlockType::Water, BlockType::Bedrock
-    ];
     let mut hotbar = [BlockType::Air; 10];
-    for i in 0..inventory_blocks.len().min(10) { hotbar[i] = inventory_blocks[i]; }
+    let mut hotbar_counts = [0u32; 10];
     let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0, inventory_open: false, selected_slot: 0, health: 20 };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
@@ -458,11 +453,7 @@ fn main() {
             match event {
                 glfw::WindowEvent::Size(width, height) => { unsafe { gl::Viewport(0, 0, width, height); } }
                 glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => { window.set_should_close(true) }
-                glfw::WindowEvent::Key(Key::E, _, Action::Press, _) => {
-                    player.inventory_open = !player.inventory_open;
-                    if player.inventory_open { window.set_cursor_mode(glfw::CursorMode::Normal); }
-                    else { window.set_cursor_mode(glfw::CursorMode::Disabled); last_cursor_pos = window.get_cursor_pos(); }
-                }
+                glfw::WindowEvent::Key(Key::E, _, Action::Press, _) => {}
 
                 glfw::WindowEvent::CursorPos(x, y) => {
                     if !player.inventory_open {
@@ -472,25 +463,49 @@ fn main() {
                     }
                 }
                 glfw::WindowEvent::MouseButton(button, Action::Press, _) => {
-                    if player.inventory_open {
-                        if button == glfw::MouseButtonLeft {
-                            let (mx, my) = window.get_cursor_pos(); let (sw, sh) = (WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32);
-                            for i in 0..inventory_blocks.len() {
-                                let rx = (sw / 2.0 - 175.0) + (i % 5) as f32 * 70.0; let ry = (sh / 2.0 - 70.0) + (i / 5) as f32 * 70.0;
-                                if mx >= rx as f64 && mx <= (rx + 60.0) as f64 && my >= ry as f64 && my <= (ry + 60.0) as f64 { hotbar[player.selected_slot] = inventory_blocks[i]; }
-                            }
-                        }
-                    } else {
+                    if !player.inventory_open {
                         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
                         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
                         if button == glfw::MouseButtonLeft {
-                            let res = world.raycast(eye_pos, look_dir, 8.0); if res.hit { world.set_block(res.x, res.y, res.z, BlockType::Air); }
+                            let res = world.raycast(eye_pos, look_dir, 8.0);
+                            if res.hit {
+                                let broken_block = world.get_block(res.x, res.y, res.z);
+                                if broken_block != BlockType::Air && broken_block != BlockType::Water {
+                                    // Add block to hotbar (simple stacking)
+                                    let mut added = false;
+                                    for i in 0..10 {
+                                        if hotbar[i] == broken_block && hotbar_counts[i] > 0 {
+                                            hotbar_counts[i] += 1;
+                                            added = true;
+                                            break;
+                                        }
+                                    }
+                                    if !added {
+                                        for i in 0..10 {
+                                            if hotbar_counts[i] == 0 {
+                                                hotbar[i] = broken_block;
+                                                hotbar_counts[i] = 1;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                world.set_block(res.x, res.y, res.z, BlockType::Air);
+                            }
                         } else if button == glfw::MouseButtonRight {
                             let res = world.raycast(eye_pos, look_dir, 8.0);
                             if res.hit {
                                 let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
                                 if world.get_block(nx, ny, nz) == BlockType::Air {
-                                    let b = hotbar[player.selected_slot]; if b != BlockType::Air { world.set_block(nx, ny, nz, b); }
+                                    let slot = player.selected_slot;
+                                    let b = hotbar[slot];
+                                    if b != BlockType::Air && hotbar_counts[slot] > 0 {
+                                        world.set_block(nx, ny, nz, b);
+                                        hotbar_counts[slot] -= 1;
+                                        if hotbar_counts[slot] == 0 {
+                                            hotbar[slot] = BlockType::Air;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -573,14 +588,8 @@ fn main() {
                 draw_rect(&ui_shader, rx + 5.0, ry + 5.0, 25.0, 25.0, block_color, sw, sh); 
             }
         }
-        if player.inventory_open {
-            draw_rect(&ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 180], sw, sh);
-            for i in 0..inventory_blocks.len() {
-                let rx = (sw / 2.0 - 175.0) + (i % 5) as f32 * 70.0; let ry = (sh / 2.0 - 70.0) + (i / 5) as f32 * 70.0;
-                draw_rect(&ui_shader, rx, ry, 60.0, 60.0, [255, 255, 255, 80], sw, sh);
-                draw_rect(&ui_shader, rx + 12.0, ry + 12.0, 36.0, 36.0, get_block_ui_color(inventory_blocks[i]), sw, sh);
-            }
-        } else { draw_rect(&ui_shader, sw/2.0 - 2.0, sh/2.0 - 2.0, 4.0, 4.4, [255, 255, 255, 255], sw, sh); }
+        // Always draw crosshair; no creative inventory screen
+        draw_rect(&ui_shader, sw/2.0 - 2.0, sh/2.0 - 2.0, 4.0, 4.4, [255, 255, 255, 255], sw, sh);
 
         // Draw Health and Oxygen
         if !player.inventory_open {
