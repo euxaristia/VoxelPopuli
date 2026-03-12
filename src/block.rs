@@ -12,10 +12,15 @@ pub enum BlockType {
     Sand,
     Gravel,
     CoalOre,
+    PowderedSnow,
+    SnowyGrass,
+    SpruceLog,
+    SpruceLeaves,
+    SnowLayer,
 }
 
 impl BlockType {
-    pub const COUNT: usize = 11;
+    pub const COUNT: usize = 16;
     
     pub fn from_u8(value: u8) -> Self {
         match value {
@@ -30,6 +35,11 @@ impl BlockType {
             8 => BlockType::Sand,
             9 => BlockType::Gravel,
             10 => BlockType::CoalOre,
+            11 => BlockType::PowderedSnow,
+            12 => BlockType::SnowyGrass,
+            13 => BlockType::SpruceLog,
+            14 => BlockType::SpruceLeaves,
+            15 => BlockType::SnowLayer,
             _ => BlockType::Air,
         }
     }

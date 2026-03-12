@@ -213,23 +213,45 @@ impl World {
                 data[idx] = r; data[idx+1] = g; data[idx+2] = b; data[idx+3] = a;
             }
         };
-        let mut draw_block = |tx: i32, ty: i32, r: u8, g: u8, b: u8| {
-            for x in 0..16 {
-                for y in 0..16 {
-                    let noise = (crate::noise::noise_2d(x as f32 * 0.5, y as f32 * 0.5) * 20.0) as i32;
-                    let nr = (r as i32 + noise).clamp(0, 255) as u8;
-                    let ng = (g as i32 + noise).clamp(0, 255) as u8;
-                    let nb = (b as i32 + noise).clamp(0, 255) as u8;
-                    draw_pixel(tx * 16 + x, ty * 16 + y, nr, ng, nb, 255);
+        {
+            let mut draw_block = |tx: i32, ty: i32, r: u8, g: u8, b: u8| {
+                for x in 0..16 {
+                    for y in 0..16 {
+                        let noise = (crate::noise::noise_2d(x as f32 * 0.5, y as f32 * 0.5) * 20.0) as i32;
+                        let nr = (r as i32 + noise).clamp(0, 255) as u8;
+                        let ng = (g as i32 + noise).clamp(0, 255) as u8;
+                        let nb = (b as i32 + noise).clamp(0, 255) as u8;
+                        draw_pixel(tx * 16 + x, ty * 16 + y, nr, ng, nb, 255);
+                    }
                 }
+            };
+            draw_block(1, 0, 140, 140, 140); draw_block(2, 0, 130, 90, 60);
+            draw_block(3, 0, 80, 160, 40); draw_block(0, 0, 100, 180, 50);
+            draw_block(4, 0, 100, 70, 40); draw_block(5, 1, 110, 80, 50);
+            draw_block(5, 0, 40, 120, 30);
+            draw_block(7, 0, 120, 120, 130); draw_block(1, 1, 60, 60, 60);
+            draw_block(2, 1, 140, 140, 140); draw_block(13, 12, 40, 80, 200);
+            draw_block(8, 0, 240, 245, 250); // Snow
+            draw_block(9, 0, 240, 245, 250); // SnowyGrass top (same as snow)
+            draw_block(11, 0, 60, 40, 25);  // SpruceLog
+            draw_block(12, 0, 30, 80, 30);  // SpruceLeaves
+        }
+        // SnowyGrass side: dirt with white snow strip on top rows
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                let noise = (crate::noise::noise_2d(x as f32 * 0.5, y as f32 * 0.5) * 20.0) as i32;
+                let (r, g, b) = if y < 3 {
+                    ((240i32 + noise).clamp(0, 255) as u8,
+                     (245i32 + noise).clamp(0, 255) as u8,
+                     (250i32 + noise).clamp(0, 255) as u8)
+                } else {
+                    ((130i32 + noise).clamp(0, 255) as u8,
+                     (90i32 + noise).clamp(0, 255) as u8,
+                     (60i32 + noise).clamp(0, 255) as u8)
+                };
+                draw_pixel(10 * 16 + x, 0 * 16 + y, r, g, b, 255);
             }
-        };
-        draw_block(1, 0, 140, 140, 140); draw_block(2, 0, 130, 90, 60);
-        draw_block(3, 0, 80, 160, 40); draw_block(0, 0, 100, 180, 50);
-        draw_block(4, 0, 100, 70, 40); draw_block(5, 1, 110, 80, 50);
-        draw_block(5, 0, 40, 120, 30);
-        draw_block(7, 0, 120, 120, 130); draw_block(1, 1, 60, 60, 60);
-        draw_block(2, 1, 140, 140, 140); draw_block(13, 12, 40, 80, 200);
+        }
 
         let sand_pixels: [(u8, u8, u8); 256] = [
             (200, 190, 141), (227, 216, 170), (227, 217, 168), (221, 212, 158), (231, 220, 173), (221, 212, 156), (212, 203, 147), (221, 212, 156), (231, 219, 177), (221, 211, 160), (211, 205, 157), (222, 214, 162), (218, 211, 159), (252, 245, 204), (202, 196, 146), (218, 211, 157), 

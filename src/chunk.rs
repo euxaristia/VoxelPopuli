@@ -3,6 +3,27 @@ use crate::noise::perlin_2d;
 use crate::renderer::Mesh;
 use rand::Rng;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Biome {
+    Plains,
+    Desert,
+    SnowyTundra,
+    SnowyTaiga,
+}
+
+pub fn get_biome(world_x: f32, world_z: f32) -> Biome {
+    let temperature = perlin_2d(world_x + 5000.0, world_z + 5000.0, 0.002, 2);
+    let humidity = perlin_2d(world_x + 10000.0, world_z + 10000.0, 0.002, 2);
+
+    if temperature < -0.15 {
+        if humidity > 0.0 { Biome::SnowyTaiga } else { Biome::SnowyTundra }
+    } else if temperature > 0.15 {
+        Biome::Desert
+    } else {
+        Biome::Plains
+    }
+}
+
 pub const CHUNK_WIDTH: usize = 16;
 pub const CHUNK_HEIGHT: usize = 256;
 pub const CHUNK_DEPTH: usize = 16;
@@ -38,11 +59,12 @@ impl Chunk {
     pub fn generate(&mut self) {
         let mut rng = rand::thread_rng();
 
-        // PASS 1: Terrain
+        // PASS 1: Terrain (biome-aware)
         for x in 0..CHUNK_WIDTH {
             for z in 0..CHUNK_DEPTH {
                 let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
                 let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
+                let biome = get_biome(world_x, world_z);
                 let continental = perlin_2d(world_x, world_z, 0.005, 3);
                 let base_h = continental * 40.0 + 128.0;
                 let detail = perlin_2d(world_x, world_z, 0.03, 4);
@@ -56,9 +78,20 @@ impl Chunk {
                     } else if y < height.saturating_sub(4) {
                         BlockType::Stone
                     } else if y < height {
-                        if height < 126 { BlockType::Sand } else { BlockType::Dirt }
+                        match biome {
+                            Biome::Desert => if height < 126 { BlockType::Sand } else { BlockType::Sand },
+                            _ => if height < 126 { BlockType::Sand } else { BlockType::Dirt },
+                        }
                     } else if y == height {
-                        if height < 126 { BlockType::Sand } else { BlockType::Grass }
+                        if height < 126 {
+                            BlockType::Sand
+                        } else {
+                            match biome {
+                                Biome::Desert => BlockType::Sand,
+                                Biome::SnowyTundra | Biome::SnowyTaiga => BlockType::SnowyGrass,
+                                Biome::Plains => BlockType::Grass,
+                            }
+                        }
                     } else if y < 124 {
                         BlockType::Water
                     } else {
@@ -81,40 +114,92 @@ impl Chunk {
                 let hill_f = if continental > 0.2 { (continental - 0.2) * 2.0 } else { 0.0 };
                 let height = (base_h + detail * 15.0 * (1.0 + hill_f)) as usize;
 
+                let biome = get_biome(world_x, world_z);
+
                 if height >= 126 && x > 2 && x < CHUNK_WIDTH - 3 && z > 2 && z < CHUNK_DEPTH - 3 {
                     let seed = (world_x * 73.1 + world_z * 91.7) as i32;
-                    if seed % 85 == 0 {
-                        let tree_h = 4 + seed.rem_euclid(3) as usize;
-
-                        if self.blocks[x][height][z] == BlockType::Grass {
-                            for h in 1..=tree_h {
-                                if height + h < CHUNK_HEIGHT {
-                                    self.blocks[x][height + h][z] = BlockType::OakLog;
-                                }
-                            }
-                            for ly in -2_i32..=1 {
-                                let rad = if ly < 0 { 2 } else { 1 };
-                                for lx in (-rad..=rad).map(|x| x as i32) {
-                                    for lz in (-rad..=rad).map(|x| x as i32) {
-                                        if ly < 0 && lx.abs() == rad && lz.abs() == rad && (seed + lx + lz) % 3 == 0 {
-                                            continue;
+                    let tree_chance = match biome {
+                        Biome::Plains => 85,
+                        Biome::SnowyTaiga => 55, // Denser spruce forests
+                        Biome::SnowyTundra | Biome::Desert => 0, // No trees
+                    };
+                    if tree_chance > 0 && seed % tree_chance == 0 {
+                        match biome {
+                            Biome::Plains => {
+                                // Oak tree (existing logic)
+                                let tree_h = 4 + seed.rem_euclid(3) as usize;
+                                if self.blocks[x][height][z] == BlockType::Grass {
+                                    for h in 1..=tree_h {
+                                        if height + h < CHUNK_HEIGHT {
+                                            self.blocks[x][height + h][z] = BlockType::OakLog;
                                         }
-                                        if ly == 1 && (lx.abs() + lz.abs() > 1) {
-                                            continue;
-                                        }
-
-                                        let ly_idx = height as i32 + tree_h as i32 + ly + 1;
-                                        let bx = (x as i32 + lx) as usize;
-                                        let bz = (z as i32 + lz) as usize;
-
-                                        if ly_idx >= 0 && ly_idx < CHUNK_HEIGHT as i32 && bx < CHUNK_WIDTH && bz < CHUNK_DEPTH {
-                                            if self.blocks[bx][ly_idx as usize][bz] == BlockType::Air {
-                                                self.blocks[bx][ly_idx as usize][bz] = BlockType::OakLeaves;
+                                    }
+                                    for ly in -2_i32..=1 {
+                                        let rad = if ly < 0 { 2 } else { 1 };
+                                        for lx in (-rad..=rad).map(|x| x as i32) {
+                                            for lz in (-rad..=rad).map(|x| x as i32) {
+                                                if ly < 0 && lx.abs() == rad && lz.abs() == rad && (seed + lx + lz) % 3 == 0 {
+                                                    continue;
+                                                }
+                                                if ly == 1 && (lx.abs() + lz.abs() > 1) {
+                                                    continue;
+                                                }
+                                                let ly_idx = height as i32 + tree_h as i32 + ly + 1;
+                                                let bx = (x as i32 + lx) as usize;
+                                                let bz = (z as i32 + lz) as usize;
+                                                if ly_idx >= 0 && ly_idx < CHUNK_HEIGHT as i32 && bx < CHUNK_WIDTH && bz < CHUNK_DEPTH {
+                                                    if self.blocks[bx][ly_idx as usize][bz] == BlockType::Air {
+                                                        self.blocks[bx][ly_idx as usize][bz] = BlockType::OakLeaves;
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
+                            Biome::SnowyTaiga => {
+                                // Spruce tree: tall, narrow cone shape
+                                let tree_h = 6 + seed.rem_euclid(4) as usize;
+                                if self.blocks[x][height][z] == BlockType::SnowyGrass {
+                                    for h in 1..=tree_h {
+                                        if height + h < CHUNK_HEIGHT {
+                                            self.blocks[x][height + h][z] = BlockType::SpruceLog;
+                                        }
+                                    }
+                                    // Conical leaf layers from bottom to top
+                                    for layer in 0..(tree_h - 1) {
+                                        let ly = height + 2 + layer;
+                                        if ly >= CHUNK_HEIGHT { break; }
+                                        // Radius shrinks from 2 at bottom to 0 at top
+                                        let progress = layer as f32 / (tree_h - 2) as f32;
+                                        let rad = if progress < 0.3 { 2 }
+                                                  else if progress < 0.7 { 1 }
+                                                  else { 0 };
+                                        // Skip every other layer for the wider rings to create the stepped look
+                                        if rad == 2 && layer % 2 != 0 { continue; }
+                                        for lx in -(rad as i32)..=(rad as i32) {
+                                            for lz in -(rad as i32)..=(rad as i32) {
+                                                if lx == 0 && lz == 0 { continue; } // trunk spot
+                                                // Skip corners for rounder shape
+                                                if lx.abs() == rad as i32 && lz.abs() == rad as i32 { continue; }
+                                                let bx = (x as i32 + lx) as usize;
+                                                let bz = (z as i32 + lz) as usize;
+                                                if bx < CHUNK_WIDTH && bz < CHUNK_DEPTH && ly < CHUNK_HEIGHT {
+                                                    if self.blocks[bx][ly][bz] == BlockType::Air {
+                                                        self.blocks[bx][ly][bz] = BlockType::SpruceLeaves;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Top crown
+                                    let top = height + tree_h + 1;
+                                    if top < CHUNK_HEIGHT {
+                                        self.blocks[x][top][z] = BlockType::SpruceLeaves;
+                                    }
+                                }
+                            }
+                            _ => {} // No trees for Desert/Tundra
                         }
                     }
                 }
@@ -274,7 +359,7 @@ impl Chunk {
                                                   
                                     if dist_sq <= rad * rad {
                                         let current_block = self.blocks[bx as usize][by as usize][bz as usize];
-                                        if matches!(current_block, BlockType::Stone | BlockType::Dirt | BlockType::Gravel | BlockType::Grass) {
+                                        if matches!(current_block, BlockType::Stone | BlockType::Dirt | BlockType::Gravel | BlockType::Grass | BlockType::SnowyGrass | BlockType::PowderedSnow | BlockType::SnowLayer) {
                                             self.blocks[bx as usize][by as usize][bz as usize] = BlockType::Air;
                                         }
                                     }
@@ -301,14 +386,39 @@ impl Chunk {
             }
         }
 
-        // PASS 6: Simple skylight (top-down sunlight)
+        // PASS 6: Snow layer for snowy biomes
+        for x in 0..CHUNK_WIDTH {
+            for z in 0..CHUNK_DEPTH {
+                let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
+                let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
+                let biome = get_biome(world_x, world_z);
+                if biome == Biome::SnowyTundra || biome == Biome::SnowyTaiga {
+                    // Find topmost solid block and place snow on top
+                    for y in (1..CHUNK_HEIGHT - 1).rev() {
+                        let b = self.blocks[x][y][z];
+                        if b != BlockType::Air && b != BlockType::Water && b != BlockType::SnowLayer {
+                            let above = self.blocks[x][y + 1][z];
+                            if above == BlockType::Air {
+                                // Don't place snow on logs, leaves, or snowy grass (already snow-topped)
+                                if b != BlockType::OakLog && b != BlockType::SpruceLog && b != BlockType::SnowyGrass {
+                                    self.blocks[x][y + 1][z] = BlockType::SnowLayer;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // PASS 7: Simple skylight (top-down sunlight)
         for x in 0..CHUNK_WIDTH {
             for z in 0..CHUNK_DEPTH {
                 let mut sunlight: u8 = 15;
                 for y in (0..CHUNK_HEIGHT).rev() {
                     let b = self.blocks[x][y][z];
                     match b {
-                        BlockType::Air | BlockType::Water | BlockType::OakLeaves => {
+                        BlockType::Air | BlockType::Water | BlockType::OakLeaves | BlockType::SpruceLeaves => {
                             self.light[x][y][z] = sunlight;
                         }
                         _ => {
@@ -351,7 +461,7 @@ impl Chunk {
                         for (nx, ny, nz) in neighbors {
                             if nx >= 0 && nx < CHUNK_WIDTH as i32 && ny >= 0 && ny < CHUNK_HEIGHT as i32 && nz >= 0 && nz < CHUNK_DEPTH as i32 {
                                 let occluding = match self.blocks[nx as usize][ny as usize][nz as usize] {
-                                    BlockType::Air | BlockType::Water | BlockType::OakLeaves => false,
+                                    BlockType::Air | BlockType::Water | BlockType::OakLeaves | BlockType::SpruceLeaves => false,
                                     _ => true,
                                 };
 
@@ -411,6 +521,8 @@ impl Chunk {
             if neighbor == BlockType::Air { return true; }
             if neighbor == BlockType::Water && current != BlockType::Water { return true; }
             if neighbor == BlockType::OakLeaves && current != BlockType::OakLeaves { return true; }
+            if neighbor == BlockType::SpruceLeaves && current != BlockType::SpruceLeaves { return true; }
+            if neighbor == BlockType::SnowLayer && current != BlockType::SnowLayer { return true; }
             false
         };
 
@@ -522,6 +634,11 @@ impl Chunk {
                                     BlockType::Sand => (6, 0),
                                     BlockType::Gravel => (7, 0),
                                     BlockType::CoalOre => (2, 1),
+                                    BlockType::PowderedSnow => (8, 0),
+                                    BlockType::SnowLayer => (8, 0),
+                                    BlockType::SnowyGrass => (10, 0),
+                                    BlockType::SpruceLog => (11, 0),
+                                    BlockType::SpruceLeaves => (12, 0),
                                     _ => (0, 0),
                                 };
 
@@ -530,13 +647,14 @@ impl Chunk {
                                 let u1 = (tx + 1) as f32 * ts - pad;
                                 let v1 = (ty + 1) as f32 * ts - pad;
 
-                    let w_off = -0.005;
+                    let w_off = if block == BlockType::Water { -0.005 } else { 0.0 };
+                    let block_top = if block == BlockType::SnowLayer { 0.125 } else { 1.0 };
                     let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
                     let wy = y as i32;
                     let wz = z as i32 + self.z * CHUNK_DEPTH as i32;
 
                     let is_solid = |b: BlockType| match b {
-                        BlockType::Air | BlockType::Water | BlockType::OakLeaves => false,
+                        BlockType::Air | BlockType::Water | BlockType::OakLeaves | BlockType::SpruceLeaves | BlockType::SnowLayer => false,
                         _ => true,
                     };
 
@@ -546,7 +664,9 @@ impl Chunk {
                         let (mut tu0, mut tv0, mut tu1, mut tv1) = (u0, v0, u1, v1);
                         if block == BlockType::Grass {
                             tu0 = 0.0; tv0 = 0.0; tu1 = ts - pad; tv1 = ts - pad;
-                        } else if block == BlockType::OakLog {
+                        } else if block == BlockType::SnowyGrass {
+                            tu0 = 9.0 * ts + pad; tv0 = pad; tu1 = 10.0 * ts - pad; tv1 = ts - pad;
+                        } else if block == BlockType::OakLog || block == BlockType::SpruceLog {
                             tu0 = 5.0 * ts + pad; tv0 = ts + pad; tu1 = 6.0 * ts - pad; tv1 = 2.0 * ts - pad;
                         }
 
@@ -564,7 +684,7 @@ impl Chunk {
                         let ao01 = calc_ao(l_01, l_12, l_02); // 0,1 (-x, +z)
                         let ao11 = calc_ao(l_21, l_12, l_22); // 1,1 (+x, +z)
 
-                        v.extend_from_slice(&[fx, fy + 1.0 - w_off, fz, fx, fy + 1.0 - w_off, fz + 1.0, fx + 1.0, fy + 1.0 - w_off, fz + 1.0, fx, fy + 1.0 - w_off, fz, fx + 1.0, fy + 1.0 - w_off, fz + 1.0, fx + 1.0, fy + 1.0 - w_off, fz]);
+                        v.extend_from_slice(&[fx, fy + block_top - w_off, fz, fx, fy + block_top - w_off, fz + 1.0, fx + 1.0, fy + block_top - w_off, fz + 1.0, fx, fy + block_top - w_off, fz, fx + 1.0, fy + block_top - w_off, fz + 1.0, fx + 1.0, fy + block_top - w_off, fz]);
                         t.extend_from_slice(&[tu0, tv0, tu0, tv1, tu1, tv1, tu0, tv0, tu1, tv1, tu1, tv0]);
                         
                         let l_b = get_light_safe(wx, wy + 1, wz);
@@ -597,9 +717,9 @@ impl Chunk {
                     let neighbor_bottom = if y > 0 { self.blocks[x][y - 1][z] } else { BlockType::Bedrock };
                     if should_draw_face(block, neighbor_bottom) {
                         let (mut tu0, mut tv0, mut tu1, mut tv1) = (u0, v0, u1, v1);
-                        if block == BlockType::Grass {
+                        if block == BlockType::Grass || block == BlockType::SnowyGrass {
                             tu0 = 2.0 * ts + pad; tv0 = 0.0; tu1 = 3.0 * ts - pad; tv1 = ts - pad;
-                        } else if block == BlockType::OakLog {
+                        } else if block == BlockType::OakLog || block == BlockType::SpruceLog {
                             tu0 = 5.0 * ts + pad; tv0 = ts + pad; tu1 = 6.0 * ts - pad; tv1 = 2.0 * ts - pad;
                         }
 
@@ -664,7 +784,7 @@ impl Chunk {
                         let ao01 = calc_ao(l_01, l_12, l_02);
                         let ao11 = calc_ao(l_21, l_12, l_22);
 
-                        v.extend_from_slice(&[fx, fy, fz + 1.0, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + 1.0 - w_off, fz + 1.0, fx, fy, fz + 1.0, fx + 1.0, fy + 1.0 - w_off, fz + 1.0, fx, fy + 1.0 - w_off, fz + 1.0]);
+                        v.extend_from_slice(&[fx, fy, fz + 1.0, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + block_top - w_off, fz + 1.0, fx, fy, fz + 1.0, fx + 1.0, fy + block_top - w_off, fz + 1.0, fx, fy + block_top - w_off, fz + 1.0]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
                         
                         let l_b = get_light_safe(wx, wy, wz + 1);
@@ -709,7 +829,7 @@ impl Chunk {
                         let ao01 = calc_ao(l_01, l_12, l_02);
                         let ao11 = calc_ao(l_21, l_12, l_22);
 
-                        v.extend_from_slice(&[fx + 1.0, fy, fz, fx, fy, fz, fx, fy + 1.0 - w_off, fz, fx + 1.0, fy, fz, fx, fy + 1.0 - w_off, fz, fx + 1.0, fy + 1.0 - w_off, fz]);
+                        v.extend_from_slice(&[fx + 1.0, fy, fz, fx, fy, fz, fx, fy + block_top - w_off, fz, fx + 1.0, fy, fz, fx, fy + block_top - w_off, fz, fx + 1.0, fy + block_top - w_off, fz]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
                         
                         let l_b = get_light_safe(wx, wy, wz - 1);
@@ -754,7 +874,7 @@ impl Chunk {
                         let ao01 = calc_ao(l_01, l_12, l_02);
                         let ao11 = calc_ao(l_21, l_12, l_22);
 
-                        v.extend_from_slice(&[fx + 1.0, fy, fz + 1.0, fx + 1.0, fy, fz, fx + 1.0, fy + 1.0 - w_off, fz, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + 1.0 - w_off, fz, fx + 1.0, fy + 1.0 - w_off, fz + 1.0]);
+                        v.extend_from_slice(&[fx + 1.0, fy, fz + 1.0, fx + 1.0, fy, fz, fx + 1.0, fy + block_top - w_off, fz, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + block_top - w_off, fz, fx + 1.0, fy + block_top - w_off, fz + 1.0]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
                         
                         let l_b = get_light_safe(wx + 1, wy, wz);
@@ -799,7 +919,7 @@ impl Chunk {
                         let ao01 = calc_ao(l_01, l_12, l_02);
                         let ao11 = calc_ao(l_21, l_12, l_22);
 
-                        v.extend_from_slice(&[fx, fy, fz, fx, fy, fz + 1.0, fx, fy + 1.0 - w_off, fz + 1.0, fx, fy, fz, fx, fy + 1.0 - w_off, fz + 1.0, fx, fy + 1.0 - w_off, fz]);
+                        v.extend_from_slice(&[fx, fy, fz, fx, fy, fz + 1.0, fx, fy + block_top - w_off, fz + 1.0, fx, fy, fz, fx, fy + block_top - w_off, fz + 1.0, fx, fy + block_top - w_off, fz]);
                         t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
                         
                         let l_b = get_light_safe(wx - 1, wy, wz);

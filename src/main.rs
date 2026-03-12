@@ -280,11 +280,16 @@ fn get_block_ui_color(block: BlockType) -> [u8; 4] {
         BlockType::Sand => [220, 210, 160, 255],
         BlockType::Gravel => [120, 120, 130, 255],
         BlockType::CoalOre => [100, 100, 100, 255],
+        BlockType::PowderedSnow => [240, 245, 250, 255],
+        BlockType::SnowLayer => [240, 245, 250, 255],
+        BlockType::SnowyGrass => [240, 245, 250, 255],
+        BlockType::SpruceLog => [60, 40, 25, 255],
+        BlockType::SpruceLeaves => [30, 80, 30, 255],
         _ => [0, 0, 0, 0],
     }
 }
 
-struct Player { position: Vec3, velocity: Vec3, grounded: bool, air_seconds: f32, inventory_open: bool, selected_slot: usize, health: i32 }
+struct Player { position: Vec3, velocity: Vec3, grounded: bool, air_seconds: f32, inventory_open: bool, selected_slot: usize, health: i32, flying: bool, last_space_release: f64, space_was_pressed: bool }
 impl Player {
     fn is_point_in_block(world: &World, p: Vec3) -> bool {
         let b = world.get_block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
@@ -302,8 +307,28 @@ impl Player {
         }
         false
     }
-    fn update(&mut self, world: &World, move_input: Vec3, dt: f32, is_sprinting: bool, is_jumping: bool) {
+    fn update(&mut self, world: &World, move_input: Vec3, dt: f32, is_sprinting: bool, is_jumping: bool, is_sneaking: bool, current_time: f64) {
         if self.inventory_open { return; }
+
+        // Double-tap space detection for toggling flight
+        let space_just_pressed = is_jumping && !self.space_was_pressed;
+        if space_just_pressed && !self.grounded {
+            let time_since_last = current_time - self.last_space_release;
+            if time_since_last < 0.35 {
+                self.flying = !self.flying;
+                self.velocity.y = 0.0;
+            }
+        }
+        if !is_jumping && self.space_was_pressed {
+            // Space was just released
+            self.last_space_release = current_time;
+        }
+        self.space_was_pressed = is_jumping;
+
+        // Landing disables flying
+        if self.grounded && self.flying {
+            self.flying = false;
+        }
         
         let waist_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 0.9).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
         let feet_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 0.1).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
@@ -314,47 +339,56 @@ impl Player {
         let mut mv = move_input;
         if mv.length_squared() > 0.1 {
             mv = mv.normalize();
-            let speed = if in_water {
-                2.2 // Swimming speed
+            let speed = if self.flying {
+                10.92 // MC creative fly speed
+            } else if in_water {
+                2.2
             } else if is_sprinting {
-                5.612 // MC sprint
+                5.612
             } else {
-                4.317 // MC walk
+                4.317
             };
             mv *= speed;
         }
 
-        // Horizontal velocity (simplified drag vs acceleration per tick)
-        // MC uses base acceleration then 0.91 (air) or ~0.546 (ground) multiplier per tick.
-        // We do a simple assignment for now, given time-based dt vs tick-based delta
-        let friction_multiplier = if in_water { 0.8 } else if !self.grounded { 0.98 } else { 0.6 };
-        self.velocity.x = self.velocity.x * (1.0 - friction_multiplier * dt * 20.0) + mv.x * friction_multiplier * dt * 20.0;
-        self.velocity.z = self.velocity.z * (1.0 - friction_multiplier * dt * 20.0) + mv.z * friction_multiplier * dt * 20.0;
+        if self.flying {
+            // Flying physics: direct control, high drag, no gravity
+            let fly_drag = 0.09f32.powf(dt);
+            self.velocity.x = self.velocity.x * (1.0 - fly_drag) + mv.x * fly_drag;
+            self.velocity.z = self.velocity.z * (1.0 - fly_drag) + mv.z * fly_drag;
 
-        // Vertical velocity and gravity (MC 1.0 physics)
-        // Jump is 0.42 blocks/tick out of water, gravity is -0.08 v/tick with 0.98 drag/tick
-        if in_water {
+            // Vertical: space up, shift down, else hover
+            let fly_speed = 7.8;
             if is_jumping {
-                self.velocity.y += 0.04 * 20.0; // Water upwards buoyancy equivalent
-                if self.velocity.y > 2.0 { self.velocity.y = 2.0; }
+                self.velocity.y = fly_speed;
+            } else if is_sneaking {
+                self.velocity.y = -fly_speed;
             } else {
-                // Sinking
-                self.velocity.y -= 0.02 * 20.0;
-                if self.velocity.y < -2.0 { self.velocity.y = -2.0; }
+                self.velocity.y *= 0.6f32.powf(dt * 20.0); // Smooth stop
             }
         } else {
-            // Apply gravity (-0.08 blocks/tick * 20 ticks/sec = -1.6 blocks/sec per tick) -> -32.0 m/s^2 
-            self.velocity.y -= 32.0 * dt;
+            // Normal horizontal velocity
+            let friction_multiplier = if in_water { 0.8 } else if !self.grounded { 0.98 } else { 0.6 };
+            self.velocity.x = self.velocity.x * (1.0 - friction_multiplier * dt * 20.0) + mv.x * friction_multiplier * dt * 20.0;
+            self.velocity.z = self.velocity.z * (1.0 - friction_multiplier * dt * 20.0) + mv.z * friction_multiplier * dt * 20.0;
 
-            // Apply drag (0.98 per tick -> 0.98^20 per sec ≈ 0.667)
-            let fall_drag = 0.98f32.powf(dt * 20.0);
-            self.velocity.y *= fall_drag;
-
-            // Terminal velocity is reached when gravity matches drag (~ -3.92 blocks/tick or ~ -78.4 m/s)
-            
-            if is_jumping && self.grounded {
-                self.velocity.y = 8.4; // 0.42 blocks/tick * 20 ticks/sec = 8.4 blocks/sec
-                self.grounded = false;
+            // Vertical velocity and gravity (MC 1.0 physics)
+            if in_water {
+                if is_jumping {
+                    self.velocity.y += 0.04 * 20.0;
+                    if self.velocity.y > 2.0 { self.velocity.y = 2.0; }
+                } else {
+                    self.velocity.y -= 0.02 * 20.0;
+                    if self.velocity.y < -2.0 { self.velocity.y = -2.0; }
+                }
+            } else {
+                self.velocity.y -= 32.0 * dt;
+                let fall_drag = 0.98f32.powf(dt * 20.0);
+                self.velocity.y *= fall_drag;
+                if is_jumping && self.grounded {
+                    self.velocity.y = 8.4;
+                    self.grounded = false;
+                }
             }
         }
 
@@ -481,7 +515,7 @@ fn main() {
     for y in (0..255).rev() { if world.get_block(32, y, 32) != BlockType::Air { spawn_y = y as f32 + 2.0; break; } }
     let mut hotbar = [BlockType::Air; 10];
     let mut hotbar_counts = [0u32; 10];
-    let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0, inventory_open: false, selected_slot: 0, health: 20 };
+    let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0, inventory_open: false, selected_slot: 0, health: 20, flying: false, last_space_release: 0.0, space_was_pressed: false };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
     let mut last_time = glfw.get_time();
@@ -578,9 +612,10 @@ fn main() {
         }
         let is_sprinting = window.get_key(Key::LeftControl) == Action::Press;
         let is_jumping = window.get_key(Key::Space) == Action::Press;
+        let is_sneaking = window.get_key(Key::LeftShift) == Action::Press;
         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
-        player.update(&world, move_dir, delta_time, is_sprinting, is_jumping);
+        player.update(&world, move_dir, delta_time, is_sprinting, is_jumping, is_sneaking, current_time);
         world.update(player.position, current_time as f32);
         world.update_clouds(player.position, current_time as f32);
         let (sun_angle, sun_y) = { let a = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI; (a, a.sin()) };
