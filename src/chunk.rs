@@ -194,7 +194,50 @@ impl Chunk {
             }
         }
 
-        // PASS 5: Simple skylight (top-down sunlight)
+        // PASS 5: Caves — sparse 3D Perlin (sample every 3 voxels, carve 3×3×3) for fast startup
+        const CAVE_STEP: usize = 3;
+        const Y_CAVE_MIN: i32 = 8;
+        const Y_CAVE_MAX: i32 = 220;
+        for x in (0..CHUNK_WIDTH).step_by(CAVE_STEP) {
+            for z in (0..CHUNK_DEPTH).step_by(CAVE_STEP) {
+                let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
+                let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
+                let continental = perlin_2d(world_x, world_z, 0.005, 3);
+                let base_h = continental * 40.0 + 128.0;
+                let detail = perlin_2d(world_x, world_z, 0.03, 4);
+                let hill_f = if continental > 0.2 { (continental - 0.2) * 2.0 } else { 0.0 };
+                let surface_height = (base_h + detail * 15.0 * (1.0 + hill_f)) as i32;
+
+                let mut y = Y_CAVE_MIN;
+                while y < Y_CAVE_MAX {
+                    let n3d = crate::noise::perlin_3d(world_x, y as f32, world_z, 0.035, 1);
+                    let threshold = if y > surface_height - 8 { 0.58 } else { 0.55 };
+                    if n3d > threshold {
+                        for dx in 0..CAVE_STEP.min(CHUNK_WIDTH - x) {
+                            for dz in 0..CAVE_STEP.min(CHUNK_DEPTH - z) {
+                                for dy in 0..CAVE_STEP.min((Y_CAVE_MAX - y) as usize) {
+                                    let bx = x + dx;
+                                    let by = y as usize + dy;
+                                    let bz = z + dz;
+                                    if by >= CHUNK_HEIGHT {
+                                        continue;
+                                    }
+                                    let current = self.blocks[bx][by][bz];
+                                    if matches!(current, BlockType::Stone | BlockType::Dirt | BlockType::Gravel | BlockType::Sand | BlockType::Grass) {
+                                        if (by as i32) < surface_height || n3d > 0.62 {
+                                            self.blocks[bx][by][bz] = BlockType::Air;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    y += CAVE_STEP as i32;
+                }
+            }
+        }
+
+        // PASS 6: Simple skylight (top-down sunlight)
         for x in 0..CHUNK_WIDTH {
             for z in 0..CHUNK_DEPTH {
                 let mut sunlight: u8 = 15;
