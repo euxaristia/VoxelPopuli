@@ -278,14 +278,36 @@ impl Player {
         }
         false
     }
-    fn update(&mut self, world: &World, move_input: Vec3, dt: f32, is_sprinting: bool) {
+    fn update(&mut self, world: &World, move_input: Vec3, dt: f32, is_sprinting: bool, is_jumping: bool) {
         if self.inventory_open { return; }
         let waist_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 0.9).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
+        let feet_in_w = world.get_block(self.position.x.floor() as i32, (self.position.y + 0.1).floor() as i32, self.position.z.floor() as i32) == BlockType::Water;
         let mut mv = move_input;
         if mv.length_squared() > 0.1 {
-            mv = mv.normalize(); let speed = if waist_in_w { 3.5 } else if is_sprinting { 8.5 } else { 4.5 }; mv *= speed;
+            mv = mv.normalize(); let speed = if waist_in_w || feet_in_w { 3.5 } else if is_sprinting { 8.5 } else { 4.5 }; mv *= speed;
         }
-        self.velocity.x = mv.x; self.velocity.z = mv.z; self.velocity.y -= (if waist_in_w { 14.0 } else { 28.0 }) * dt;
+        self.velocity.x = mv.x; self.velocity.z = mv.z; 
+        
+        if waist_in_w || feet_in_w {
+            if is_jumping {
+                self.velocity.y += 24.0 * dt;
+                if self.velocity.y > 6.0 { self.velocity.y = 6.0; }
+            } else {
+                if waist_in_w {
+                    self.velocity.y -= 10.0 * dt;
+                    if self.velocity.y < -3.5 { self.velocity.y = -3.5; }
+                } else {
+                    self.velocity.y -= 28.0 * dt;
+                }
+            }
+        } else {
+            self.velocity.y -= 28.0 * dt;
+            if is_jumping && self.grounded {
+                self.velocity.y = 9.0;
+                self.grounded = false;
+            }
+        }
+
         let dy = self.velocity.y * dt; self.position.y += dy;
         if Self::check_collision(world, self.position) {
             if self.velocity.y < 0.0 { self.grounded = true; }
@@ -424,15 +446,7 @@ fn main() {
                     if player.inventory_open { window.set_cursor_mode(glfw::CursorMode::Normal); }
                     else { window.set_cursor_mode(glfw::CursorMode::Disabled); last_cursor_pos = window.get_cursor_pos(); }
                 }
-                glfw::WindowEvent::Key(Key::Space, _, Action::Press, _) => {
-                    if !player.inventory_open {
-                        let waist_in_w = world.get_block(player.position.x.floor() as i32, (player.position.y + 0.9).floor() as i32, player.position.z.floor() as i32) == BlockType::Water;
-                        let feet_in_w = world.get_block(player.position.x.floor() as i32, (player.position.y + 0.1).floor() as i32, player.position.z.floor() as i32) == BlockType::Water;
-                        if waist_in_w { player.velocity.y = 6.0; }
-                        else if player.grounded { player.velocity.y = 9.0; player.grounded = false; }
-                        else if feet_in_w { player.velocity.y = 7.0; }
-                    }
-                }
+
                 glfw::WindowEvent::CursorPos(x, y) => {
                     if !player.inventory_open {
                         let dx = (x - last_cursor_pos.0) as f32; let dy = (y - last_cursor_pos.1) as f32;
@@ -478,9 +492,10 @@ fn main() {
             if window.get_key(Key::D) == Action::Press { move_dir += right; }
         }
         let is_sprinting = window.get_key(Key::LeftControl) == Action::Press;
+        let is_jumping = window.get_key(Key::Space) == Action::Press;
         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
-        player.update(&world, move_dir, delta_time, is_sprinting);
+        player.update(&world, move_dir, delta_time, is_sprinting, is_jumping);
         world.update(player.position, current_time as f32);
         world.update_clouds(player.position, current_time as f32);
         let (sun_angle, sun_y) = { let a = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI; (a, a.sin()) };
