@@ -12,6 +12,7 @@ pub enum BlockType {
     Sand,
     Gravel,
     CoalOre,
+    #[allow(dead_code)]
     PowderedSnow,
     SnowyGrass,
     SpruceLog,
@@ -19,6 +20,7 @@ pub enum BlockType {
     SnowLayer,
 }
 
+#[allow(dead_code)]
 impl BlockType {
     pub const COUNT: usize = 16;
     

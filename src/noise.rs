@@ -55,6 +55,7 @@ pub fn noise_2d(mut x: f32, mut y: f32) -> f32 {
                     grad(P[bb], x - 1.0, y - 1.0, 0.0)))
 }
 
+#[allow(dead_code)]
 pub fn noise_3d(mut x: f32, mut y: f32, mut z: f32) -> f32 {
     let xi = (x.floor() as i32).rem_euclid(256) as usize;
     let yi = (y.floor() as i32).rem_euclid(256) as usize;
@@ -99,6 +100,7 @@ pub fn perlin_2d(x: f32, y: f32, mut frequency: f32, octaves: usize) -> f32 {
     total / max_amplitude
 }
 
+#[allow(dead_code)]
 pub fn perlin_3d(x: f32, y: f32, z: f32, mut frequency: f32, octaves: usize) -> f32 {
     let mut total = 0.0;
     let mut amplitude = 1.0;

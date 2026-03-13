@@ -23,6 +23,7 @@ pub struct RaycastResult {
     pub nx: i32,
     pub ny: i32,
     pub nz: i32,
+    #[allow(dead_code)]
     pub block: BlockType,
 }
 

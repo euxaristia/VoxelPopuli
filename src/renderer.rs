@@ -60,6 +60,7 @@ impl Shader {
         unsafe { gl::UseProgram(self.id) }
     }
 
+    #[allow(dead_code)]
     pub fn unbind() {
         unsafe { gl::UseProgram(0) }
     }
@@ -137,6 +138,7 @@ impl Texture2D {
         Self { id, width, height }
     }
 
+    #[allow(dead_code)]
     pub fn update(&self, x: i32, y: i32, width: i32, height: i32, data: &[u8]) {
         unsafe {
             gl::BindTexture(gl::TEXTURE_2D, self.id);
