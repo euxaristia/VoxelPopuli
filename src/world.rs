@@ -688,6 +688,16 @@ impl World {
                 i += 1;
             }
         }
+    
+        // --- Process Detonations ---
+        let dets: Vec<(glam::Vec3, BlockType)> = std::mem::take(&mut self.detonations);
+        for (pos, btype) in dets {
+            let (radius, is_nuke) = match btype {
+                BlockType::Nuke => (20, true),
+                _ => (4, false),
+            };
+            crate::explosion::explode(self, pos.x as i32, pos.y as i32, pos.z as i32, radius, is_nuke);
+        }
 
         // --- Particle Ticking ---
         let mut i = 0;
@@ -738,7 +748,7 @@ impl World {
             }
             
             processed += 1;
-            if processed > 400 { 
+            if processed > 5000 { 
                 self.active_water.extend(to_process.into_iter().skip(processed));
                 break; 
             }
@@ -765,7 +775,7 @@ impl World {
             }
             
             processed += 1;
-            if processed > 400 {
+            if processed > 5000 {
                 self.active_falling.extend(to_process.into_iter().skip(processed));
                 break;
             }

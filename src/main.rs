@@ -1245,19 +1245,9 @@ fn main() { // Entry point
         
         if game_state == GameState::Playing {
             player.update(&world, move_dir, delta_time, is_sprinting, is_jumping, is_sneaking, current_time);
-            world.update(player.position, current_time as f32);
-            world.update_water();
+            world.update(player.position, delta_time as f32);
         }
         
-        // --- Process Detonations ---
-        let dets = std::mem::take(&mut world.detonations);
-        for (pos, btype) in dets {
-            let (radius, is_nuke) = match btype {
-                BlockType::Nuke => (20, true),
-                _ => (4, false),
-            };
-            explosion::explode(&mut world, pos.x as i32, pos.y as i32, pos.z as i32, radius, is_nuke);
-        }
 
         world.update_clouds(player.position, current_time as f32);
         let (sun_angle, sun_y) = { let a = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI; (a, a.sin()) };
