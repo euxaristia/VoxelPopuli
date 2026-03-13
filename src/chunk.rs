@@ -143,6 +143,9 @@ impl Chunk {
                         BlockType::Air
                     };
                     self.blocks[x][y][z] = b;
+                    if b == BlockType::Water {
+                        self.liquid_levels[x][y][z] = 64;
+                    }
                 }
             }
         }
@@ -568,10 +571,6 @@ impl Chunk {
         let mut t_tr = Vec::new();
         let mut n_tr = Vec::new();
         let mut c_tr = Vec::new();
-
-        let mut current_min_y = CHUNK_HEIGHT;
-        let mut current_max_y = 0;
-
         // Cache neighbor chunks
         let n_px = world.get_chunk_ptr(self.x + 1, self.z);
         let n_nx = world.get_chunk_ptr(self.x - 1, self.z);
@@ -664,15 +663,66 @@ impl Chunk {
                         let level = self.liquid_levels[x][y][z];
                         if level == 0 { continue; }
                         
-                        let sub_size = 0.25f32;
-                        let ts_sub = ts * 0.25; 
-                        let (tx, ty) = (13, 12);
-                        let u0 = tx as f32 * ts + pad;
-                        let v0 = ty as f32 * ts + pad;
-                        
                         let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
                         let wy = y as i32;
                         let wz = z as i32 + self.z * CHUNK_DEPTH as i32;
+                        let (tx, ty) = (13, 12);
+                        let u0 = tx as f32 * ts + pad;
+                        let v0 = ty as f32 * ts + pad;
+                        let u1 = (tx + 1) as f32 * ts - pad;
+                        let v1 = (ty + 1) as f32 * ts - pad;
+
+                        if level == 64 {
+                            // FAST PATH: Full block meshing
+                            // Top
+                            let neighbor_top = if y < CHUNK_HEIGHT - 1 { self.blocks[x][y + 1][z] } else { BlockType::Air };
+                            if neighbor_top != BlockType::Water {
+                                v_tr.extend_from_slice(&[fx, fy + 1.0, fz, fx, fy + 1.0, fz + 1.0, fx + 1.0, fy + 1.0, fz + 1.0, fx, fy + 1.0, fz, fx + 1.0, fy + 1.0, fz + 1.0, fx + 1.0, fy + 1.0, fz]);
+                                t_tr.extend_from_slice(&[u0, v0, u0, v1, u1, v1, u0, v0, u1, v1, u1, v0]);
+                                for _ in 0..6 { n_tr.extend_from_slice(&[0.0, 1.0, 0.0]); }
+                                let c_val = (255.0 * calc_light_f(get_light_safe(wx, wy + 1, wz))) as u8;
+                                for _ in 0..6 { c_tr.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
+                            }
+                            // Bottom
+                            let neighbor_bottom = if y > 0 { self.blocks[x][y - 1][z] } else { BlockType::Bedrock };
+                            if neighbor_bottom != BlockType::Water {
+                                v_tr.extend_from_slice(&[fx, fy, fz, fx + 1.0, fy, fz + 1.0, fx, fy, fz + 1.0, fx, fy, fz, fx + 1.0, fy, fz, fx + 1.0, fy, fz + 1.0]);
+                                t_tr.extend_from_slice(&[u0, v0, u1, v1, u0, v1, u0, v0, u1, v0, u1, v1]);
+                                for _ in 0..6 { n_tr.extend_from_slice(&[0.0, -1.0, 0.0]); }
+                                let shade = (255.0 * 0.5 * calc_light_f(get_light_safe(wx, wy - 1, wz))) as u8;
+                                for _ in 0..6 { c_tr.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]); }
+                            }
+                            // Sides
+                            let neighbors = [
+                                (if z < CHUNK_DEPTH - 1 { self.blocks[x][y][z + 1] } else { unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[x][y][0]) } }, [0.0, 0.0, 1.0], 0.6),
+                                (if z > 0 { self.blocks[x][y][z - 1] } else { unsafe { n_nz.map_or(BlockType::Air, |c| (*c).blocks[x][y][CHUNK_DEPTH - 1]) } }, [0.0, 0.0, -1.0], 0.6),
+                                (if x < CHUNK_WIDTH - 1 { self.blocks[x + 1][y][z] } else { unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[0][y][z]) } }, [1.0, 0.0, 0.0], 0.8),
+                                (if x > 0 { self.blocks[x - 1][y][z] } else { unsafe { n_nx.map_or(BlockType::Air, |c| (*c).blocks[CHUNK_WIDTH - 1][y][z]) } }, [-1.0, 0.0, 0.0], 0.8),
+                            ];
+                            for (neighbor, norm, s_mul) in neighbors {
+                                if neighbor != BlockType::Water {
+                                    let nx = wx + norm[0] as i32; let ny = wy; let nz = wz + norm[2] as i32;
+                                    if norm[2] > 0.5 { // Z+
+                                        v_tr.extend_from_slice(&[fx, fy, fz + 1.0, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + 1.0, fz + 1.0, fx, fy, fz + 1.0, fx + 1.0, fy + 1.0, fz + 1.0, fx, fy + 1.0, fz + 1.0]);
+                                    } else if norm[2] < -0.5 { // Z-
+                                        v_tr.extend_from_slice(&[fx + 1.0, fy, fz, fx, fy, fz, fx, fy + 1.0, fz, fx + 1.0, fy, fz, fx, fy + 1.0, fz, fx + 1.0, fy + 1.0, fz]);
+                                    } else if norm[0] > 0.5 { // X+
+                                        v_tr.extend_from_slice(&[fx + 1.0, fy, fz + 1.0, fx + 1.0, fy, fz, fx + 1.0, fy + 1.0, fz, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + 1.0, fz, fx + 1.0, fy + 1.0, fz + 1.0]);
+                                    } else { // X-
+                                        v_tr.extend_from_slice(&[fx, fy, fz, fx, fy, fz + 1.0, fx, fy + 1.0, fz + 1.0, fx, fy, fz, fx, fy + 1.0, fz + 1.0, fx, fy + 1.0, fz]);
+                                    }
+                                    t_tr.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
+                                    for _ in 0..6 { n_tr.extend_from_slice(&norm); }
+                                    let shade = (255.0 * s_mul * calc_light_f(get_light_safe(nx, ny, nz))) as u8;
+                                    for _ in 0..6 { c_tr.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]); }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // SLOW PATH: Sub-voxel meshing
+                        let sub_size = 0.25f32;
+                        let ts_sub = ts * 0.25; 
 
                         for sy in 0..4 {
                             for sx in 0..4 {
@@ -683,7 +733,7 @@ impl Chunk {
                                     let sfy = fy + sy as f32 * sub_size;
                                     let sfz = fz + sz as f32 * sub_size;
                                     
-                                    let mut draw_top = sy == 3 || (sub_idx + 16 >= level);
+                                    let draw_top = sy == 3 || (sub_idx + 16 >= level);
                                     if draw_top {
                                         v_tr.extend_from_slice(&[sfx, sfy + sub_size, sfz, sfx, sfy + sub_size, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz + sub_size, sfx, sfy + sub_size, sfz, sfx + sub_size, sfy + sub_size, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz]);
                                         t_tr.extend_from_slice(&[u0, v0, u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0, v0, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0]);

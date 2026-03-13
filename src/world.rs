@@ -808,7 +808,7 @@ impl World {
             }
             
             processed += 1;
-            if processed > 50000 { 
+            if processed > 1000 { 
                 self.active_water.extend(to_process.into_iter().skip(processed));
                 break; 
             }
