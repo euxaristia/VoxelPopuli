@@ -77,7 +77,6 @@ pub struct World {
     pub last_cloud_pos: Vec3,
     pub last_cloud_update_time: f32,
     pub edits: RwLock<HashMap<(i32, i32, i32), BlockType>>,
-    pub suppress_edit_recording: bool,
     pub last_pcx: i32,
     pub last_pcz: i32,
     pub dirty_count: i32,
@@ -106,7 +105,6 @@ impl World {
             last_cloud_pos: Vec3::new(-999999.0, -999999.0, -999999.0),
             last_cloud_update_time: -999.0,
             edits: RwLock::new(HashMap::new()),
-            suppress_edit_recording: false,
             last_pcx: -999999,
             last_pcz: -999999,
             dirty_count: 0,
@@ -205,33 +203,32 @@ impl World {
     }
 
     pub fn get_block(&self, x: i32, y: i32, z: i32) -> BlockType {
-        if y < 0 || y >= CHUNK_HEIGHT as i32 {
-            return BlockType::Air;
+        if y < 0 || y >= CHUNK_HEIGHT as i32 { return BlockType::Air; }
+        
+        // 1. Prioritize loaded chunk data (Actual World State)
+        let cx = x.div_euclid(CHUNK_WIDTH as i32);
+        let cz = z.div_euclid(CHUNK_DEPTH as i32);
+        if let Some(chunk) = self.get_chunk(cx, cz) {
+            let bx = x.rem_euclid(CHUNK_WIDTH as i32) as usize;
+            let bz = z.rem_euclid(CHUNK_DEPTH as i32) as usize;
+            return chunk.get_block(bx, y as usize, bz);
         }
+
+        // 2. Fallback to edits (Unloaded Changes)
         if let Ok(edits) = self.edits.read() {
             if let Some(b) = edits.get(&(x, y, z)) {
                 return *b;
             }
         }
-        let cx = x.div_euclid(CHUNK_WIDTH as i32);
-        let cz = z.div_euclid(CHUNK_DEPTH as i32);
         
-        if let Some(chunk) = self.get_chunk(cx, cz) {
-            let bx = x.rem_euclid(CHUNK_WIDTH as i32) as usize;
-            let bz = z.rem_euclid(CHUNK_DEPTH as i32) as usize;
-            chunk.get_block(bx, y as usize, bz)
-        } else {
-            BlockType::Air
-        }
+        BlockType::Air
     }
 
     pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
         if y < 0 || y >= CHUNK_HEIGHT as i32 { return; }
         
-        if !self.suppress_edit_recording {
-            if let Ok(mut edits) = self.edits.write() {
-                edits.insert((x, y, z), block);
-            }
+        if let Ok(mut edits) = self.edits.write() {
+            edits.insert((x, y, z), block);
         }
 
         let cx = x.div_euclid(CHUNK_WIDTH as i32);
@@ -291,12 +288,15 @@ impl World {
             return;
         };
 
-        for ((ex, ey, ez), block) in edits_clone {
-            if ex >= chunk_start_x && ex < chunk_end_x && 
-               ez >= chunk_start_z && ez < chunk_end_z {
-                self.suppress_edit_recording = true;
-                self.set_block(ex, ey, ez, block);
-                self.suppress_edit_recording = false;
+        if let Some(chunk) = self.get_chunk_mut(cx, cz) {
+            for ((ex, ey, ez), block) in edits_clone {
+                if ex >= chunk_start_x && ex < chunk_end_x && 
+                   ez >= chunk_start_z && ez < chunk_end_z {
+                    let bx = (ex - chunk_start_x) as usize;
+                    let bz = (ez - chunk_start_z) as usize;
+                    chunk.set_block(bx, ey as usize, bz, block);
+                    chunk.dirty = true;
+                }
             }
         }
     }
@@ -727,39 +727,30 @@ impl World {
             
             // 1. Flow down
             if y > 0 && self.get_block(x, y-1, z) == BlockType::Air {
-                self.suppress_edit_recording = true;
                 self.set_block(x, y, z, BlockType::Air);
                 self.set_block(x, y-1, z, BlockType::Water);
-                self.suppress_edit_recording = false;
             } else if y > 0 {
                 // 2. Spread sideways
-                // If it can't flow down, try to flow into any air or water gap that is lower
-                // Simple finite water: it just tries to find a lower spot.
                 let mut moved = false;
                 for (dx, dz) in [(1,0), (-1,0), (0,1), (0,-1)] {
                     if self.get_block(x+dx, y, z+dz) == BlockType::Air {
-                        // Priority 1: Hole found next to us
-                        if self.get_block(x+dx, y-1, z+dz) == BlockType::Air {
-                             self.suppress_edit_recording = true;
+                        let target_below = self.get_block(x+dx, y-1, z+dz);
+                        // Priority 1: Hole (Air or Water) found next to us
+                        if target_below == BlockType::Air || target_below == BlockType::Water {
                              self.set_block(x, y, z, BlockType::Air);
                              self.set_block(x+dx, y, z+dz, BlockType::Water);
-                             self.suppress_edit_recording = false;
                              moved = true;
                              break;
                         }
-                        // Priority 2: Level spread (only if we are atop a floor)
-                        // This makes large lakes flatten out better
-                        // But we limit it to keep it "finite"
                     }
                 }
                 
+                // Priority 2: Level spread (only if we are atop a floor)
                 if !moved && self.get_block(x, y-1, z).is_solid() {
                      for (dx, dz) in [(1,0), (-1,0), (0,1), (0,-1)] {
                         if self.get_block(x+dx, y, z+dz) == BlockType::Air {
-                             self.suppress_edit_recording = true;
                              self.set_block(x, y, z, BlockType::Air);
                              self.set_block(x+dx, y, z+dz, BlockType::Water);
-                             self.suppress_edit_recording = false;
                              break;
                         }
                     }
@@ -767,7 +758,7 @@ impl World {
             }
             
             processed += 1;
-            if processed > 20000 { 
+            if processed > 50000 { 
                 self.active_water.extend(to_process.into_iter().skip(processed));
                 break; 
             }
@@ -786,15 +777,13 @@ impl World {
             if y > 0 {
                 let target = self.get_block(x, y-1, z);
                 if target == BlockType::Air || target == BlockType::Water {
-                    self.suppress_edit_recording = true;
                     self.set_block(x, y, z, BlockType::Air);
                     self.set_block(x, y-1, z, b);
-                    self.suppress_edit_recording = false;
                 }
             }
             
             processed += 1;
-            if processed > 20000 {
+            if processed > 50000 {
                 self.active_falling.extend(to_process.into_iter().skip(processed));
                 break;
             }
