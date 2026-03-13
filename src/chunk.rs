@@ -35,7 +35,7 @@ pub fn get_biome(world_x: f32, world_z: f32) -> Biome {
 pub const CHUNK_WIDTH: usize = 16;
 pub const CHUNK_HEIGHT: usize = 256;
 pub const CHUNK_DEPTH: usize = 16;
-pub const WATER_VERTEX_ALPHA: u8 = 160;
+pub const WATER_VERTEX_ALPHA: u8 = 120;
 
 pub struct MeshData {
     pub v: Vec<f32>,
@@ -573,6 +573,10 @@ impl Chunk {
 
         let should_draw_face = |current: BlockType, neighbor: BlockType| -> bool {
             if neighbor == BlockType::Air { return true; }
+            if current == BlockType::Water {
+                // Liquid shell: Only draw face if neighbor is NOT water
+                return neighbor != BlockType::Water;
+            }
             if neighbor == BlockType::Water && current != BlockType::Water { return true; }
             if neighbor == BlockType::OakLeaves && current != BlockType::OakLeaves { return true; }
             if neighbor == BlockType::SpruceLeaves && current != BlockType::SpruceLeaves { return true; }
@@ -581,27 +585,8 @@ impl Chunk {
         };
 
         let get_block_safe = |wx: i32, wy: i32, wz: i32| -> BlockType {
-            if wy < 0 || wy >= CHUNK_HEIGHT as i32 { return BlockType::Air; }
-            
-            // Local chunk coordinates
-            let cx = wx - (self.x * CHUNK_WIDTH as i32);
-            let cz = wz - (self.z * CHUNK_DEPTH as i32);
-            
-            if cx >= 0 && cx < CHUNK_WIDTH as i32 && cz >= 0 && cz < CHUNK_DEPTH as i32 {
-                return self.blocks[cx as usize][wy as usize][cz as usize];
-            }
-            
-            // Check neighbor chunks if out of bounds
-            if cx < 0 {
-                return unsafe { n_nx.map_or(BlockType::Air, |c| (*c).blocks[(CHUNK_WIDTH as i32 + cx) as usize][wy as usize][if cz >= 0 && cz < CHUNK_DEPTH as i32 {cz as usize} else {0}]) };
-            } else if cx >= CHUNK_WIDTH as i32 {
-                return unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[(cx - CHUNK_WIDTH as i32) as usize][wy as usize][if cz >= 0 && cz < CHUNK_DEPTH as i32 {cz as usize} else {0}]) };
-            } else if cz < 0 {
-                return unsafe { n_nz.map_or(BlockType::Air, |c| (*c).blocks[cx as usize][wy as usize][(CHUNK_DEPTH as i32 + cz) as usize]) };
-            } else if cz >= CHUNK_DEPTH as i32 {
-                return unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[cx as usize][wy as usize][(cz - CHUNK_DEPTH as i32) as usize]) };
-            }
-            BlockType::Air
+             // Use the world pointer for 100% accurate neighbor data (including diagonals)
+             world.get_block(wx, wy, wz)
         };
 
         // Standard Voxel AO calculation 
@@ -745,7 +730,34 @@ impl Chunk {
                         let ao01 = calc_ao(l_01, l_12, l_02); // 0,1 (-x, +z)
                         let ao11 = calc_ao(l_21, l_12, l_22); // 1,1 (+x, +z)
 
-                        v.extend_from_slice(&[fx, fy + block_top - w_off, fz, fx, fy + block_top - w_off, fz + 1.0, fx + 1.0, fy + block_top - w_off, fz + 1.0, fx, fy + block_top - w_off, fz, fx + 1.0, fy + block_top - w_off, fz + 1.0, fx + 1.0, fy + block_top - w_off, fz]);
+                        // 3D Liquid Heuristic: Sloping surface
+                        let mu = 0.1f32; // base offset
+                        let mut h00 = 1.0 - mu;
+                        let mut h10 = 1.0 - mu;
+                        let mut h01 = 1.0 - mu;
+                        let mut h11 = 1.0 - mu;
+
+                        if block == BlockType::Water {
+                            let slope = 0.5; // pull vertices down by this much if neighbor is air
+                            if get_block_safe(wx - 1, wy, wz) == BlockType::Air { h00 -= slope; h01 -= slope; }
+                            if get_block_safe(wx + 1, wy, wz) == BlockType::Air { h10 -= slope; h11 -= slope; }
+                            if get_block_safe(wx, wy, wz - 1) == BlockType::Air { h00 -= slope; h10 -= slope; }
+                            if get_block_safe(wx, wy, wz + 1) == BlockType::Air { h01 -= slope; h11 -= slope; }
+                            
+                            // Clamp to prevent going too low
+                            h00 = h00.max(0.1); h10 = h10.max(0.1); h01 = h01.max(0.1); h11 = h11.max(0.1);
+                        } else {
+                            h00 = block_top; h10 = block_top; h01 = block_top; h11 = block_top;
+                        }
+
+                        v.extend_from_slice(&[
+                            fx,       fy + h00, fz, 
+                            fx,       fy + h01, fz + 1.0, 
+                            fx + 1.0, fy + h11, fz + 1.0, 
+                            fx,       fy + h00, fz, 
+                            fx + 1.0, fy + h11, fz + 1.0, 
+                            fx + 1.0, fy + h10, fz
+                        ]);
                         t.extend_from_slice(&[tu0, tv0, tu0, tv1, tu1, tv1, tu0, tv0, tu1, tv1, tu1, tv0]);
                         
                         let l_b = get_light_safe(wx, wy + 1, wz);

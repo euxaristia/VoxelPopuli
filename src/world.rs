@@ -854,7 +854,7 @@ impl World {
         unsafe {
             gl::Enable(gl::BLEND);
             gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::Disable(gl::CULL_FACE);
+            gl::Enable(gl::CULL_FACE); // Re-enable to hide backfaces for "Real 3D" look
         }
         for chunk_opt in &self.chunks {
             if let Some(chunk) = chunk_opt {
@@ -862,9 +862,6 @@ impl World {
                 let max = Vec3::new(min.x + CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, min.z + CHUNK_DEPTH as f32);
                 if frustum.is_box_visible(min, max) { if let Some(mesh) = &chunk.mesh_transparent { mesh.draw(); } }
             }
-        }
-        unsafe {
-            gl::Enable(gl::CULL_FACE);
         }
     }
 
