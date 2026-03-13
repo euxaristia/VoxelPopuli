@@ -912,9 +912,7 @@ fn main() { // Entry point
                 gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
             }
 
-            // 1. Logo (Square to match generated asset)
-            let logo_size = sw.min(sh) * 0.7;
-            draw_texture_ui(&logo_texture, (sw - logo_size)/2.0, sh/2.0 - logo_size/2.0 - 50.0, logo_size, logo_size, &texture_ui_shader, sw, sh);
+            // 1. Logo removed as requested
 
             // 2. Spinner (8-segment pulse)
             let spin_x = sw / 2.0;

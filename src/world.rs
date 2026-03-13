@@ -567,33 +567,46 @@ impl World {
                                 }
                                 
                                 generated_this_frame += 1;
-                                if generated_this_frame >= 4 { break; }
+                                if generated_this_frame >= 8 { break; }
                             }
                         }
-                        if generated_this_frame >= 4 { break; }
+                        if generated_this_frame >= 8 { break; }
                     }
-                    if generated_this_frame >= 4 { break; }
+                    if generated_this_frame >= 8 { break; }
                 }
                 
                 // Only update last_pcx/last_pcz once we've at least tried to load the immediate ring
                 // Actually, let's keep the boundary check simple.
-                if generated_this_frame < 4 {
+                if generated_this_frame < 8 {
                     self.last_pcx = pcx; self.last_pcz = pcz;
                 }
             }
         }
 
         // --- Prioritized Meshing ---
-        // 1. Collect finished meshes from background and upload
-        let mut uploads_this_frame = 0;
+        // --- Prioritized Meshing ---
+        // 1. Collect and Prioritize finished meshes for GPU upload
+        let mut ready_indices = Vec::new();
         for i in 0..CHUNK_POOL_SIZE {
-            if let Some(chunk) = &mut self.chunks[i] {
-                if chunk.meshing_in_progress {
-                    if let (Some(opaque), Some(trans)) = (chunk.pending_mesh_opaque.take(), chunk.pending_mesh_transparent.take()) {
-                        chunk.upload_mesh(opaque, trans);
-                        uploads_this_frame += 1;
-                        if uploads_this_frame >= 2 { break; } // Limit uploads to prevent GPU pipeline stalls
-                    }
+            if let Some(chunk) = &self.chunks[i] {
+                if chunk.meshing_in_progress && chunk.pending_mesh_opaque.is_some() {
+                    let dx = chunk.x as f32 * CHUNK_WIDTH as f32 + 8.0 - player_pos.x;
+                    let dz = chunk.z as f32 * CHUNK_DEPTH as f32 + 8.0 - player_pos.z;
+                    let dist_sq = dx*dx + dz*dz;
+                    ready_indices.push((i, dist_sq));
+                }
+            }
+        }
+        // Sort by distance (asc) so closest chunks are uploaded first
+        ready_indices.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut uploads_this_frame = 0;
+        for (index, _) in ready_indices {
+            if let Some(chunk) = &mut self.chunks[index] {
+                if let (Some(opaque), Some(trans)) = (chunk.pending_mesh_opaque.take(), chunk.pending_mesh_transparent.take()) {
+                    chunk.upload_mesh(opaque, trans);
+                    uploads_this_frame += 1;
+                    if uploads_this_frame >= 12 { break; } // Increased limit for high-end hardware
                 }
             }
         }
