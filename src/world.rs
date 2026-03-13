@@ -354,33 +354,60 @@ impl World {
     pub fn update(&mut self, player_pos: Vec3, _time: f32) {
         let pcx = (player_pos.x / CHUNK_WIDTH as f32).floor() as i32;
         let pcz = (player_pos.z / CHUNK_DEPTH as f32).floor() as i32;
+        
+        // --- Spiral Chunk Generation ---
+        // If the player moved to a new chunk, we check for replacements.
+        // We use a spiral search to ensure closer chunks are generated first.
         if pcx != self.last_pcx || pcz != self.last_pcz {
-            for x in (pcx - VIEW_DISTANCE)..=(pcx + VIEW_DISTANCE) {
-                for z in (pcz - VIEW_DISTANCE)..=(pcz + VIEW_DISTANCE) {
-                    let index = self.get_pool_index(x, z);
-                    let should_replace = match &self.chunks[index] { None => true, Some(c) => c.x != x || c.z != z };
-                    if should_replace {
-                        let mut chunk = Box::new(Chunk::new(x, z));
-                        chunk.generate();
-                        self.chunks[index] = Some(chunk);
-                        self.apply_edits_to_chunk(x, z);
-                        if let Some(c) = &mut self.chunks[index] { c.dirty = true; self.dirty_count += 1; }
+            for r in 0..=VIEW_DISTANCE {
+                for x in (pcx - r)..=(pcx + r) {
+                    for z in (pcz - r)..=(pcz + r) {
+                        // Only check the outer edge of the current square "r"
+                        if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r { continue; }
+                        
+                        let index = self.get_pool_index(x, z);
+                        let should_replace = match &self.chunks[index] { None => true, Some(c) => c.x != x || c.z != z };
+                        if should_replace {
+                            let mut chunk = Box::new(Chunk::new(x, z));
+                            chunk.generate();
+                            self.chunks[index] = Some(chunk);
+                            self.apply_edits_to_chunk(x, z);
+                            if let Some(c) = &mut self.chunks[index] { c.dirty = true; self.dirty_count += 1; }
+                        }
                     }
                 }
             }
             self.last_pcx = pcx; self.last_pcz = pcz;
         }
-        let mut builds_this_frame = 0;
-        let mut indices_to_build = Vec::new();
+
+        // --- Prioritized Meshing ---
+        // Collect all dirty chunks and sort them by distance to player.
+        let mut dirty_indices = Vec::new();
         for i in 0..CHUNK_POOL_SIZE {
-            if let Some(chunk) = &mut self.chunks[i] {
-                if chunk.dirty { indices_to_build.push(i); chunk.dirty = false; self.dirty_count -= 1; builds_this_frame += 1; if builds_this_frame >= 4 { break; } }
+            if let Some(chunk) = &self.chunks[i] {
+                if chunk.dirty {
+                    let dx = chunk.x as f32 * CHUNK_WIDTH as f32 + 8.0 - player_pos.x;
+                    let dz = chunk.z as f32 * CHUNK_DEPTH as f32 + 8.0 - player_pos.z;
+                    let dist_sq = dx*dx + dz*dz;
+                    dirty_indices.push((i, dist_sq));
+                }
             }
         }
-        for index in indices_to_build {
-            let mut chunk = self.chunks[index].take().unwrap();
-            chunk.build_mesh(self);
-            self.chunks[index] = Some(chunk);
+        dirty_indices.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut builds_this_frame = 0;
+        for (index, _) in dirty_indices {
+            if let Some(chunk) = &mut self.chunks[index] {
+                chunk.dirty = false;
+                self.dirty_count -= 1;
+                
+                let mut chunk_to_build = self.chunks[index].take().unwrap();
+                chunk_to_build.build_mesh(self);
+                self.chunks[index] = Some(chunk_to_build);
+
+                builds_this_frame += 1;
+                if builds_this_frame >= 4 { break; }
+            }
         }
     }
 

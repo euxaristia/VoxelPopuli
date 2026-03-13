@@ -714,6 +714,8 @@ fn main() { // Entry point
     world.update(Vec3::new(32.5, 0.0, 32.5), 0.0); 
     for y in (0..255).rev() { if world.get_block(32, y, 32) != BlockType::Air { spawn_y = y as f32 + 2.0; break; } }
     let mut inv_slots = [None::<ItemStack>; 45];
+    inv_slots[0] = Some(ItemStack::new(BlockType::Nuke, 64));
+    inv_slots[1] = Some(ItemStack::new(BlockType::FlintAndSteel, 1));
     let mut inv_cursor: Option<ItemStack> = None;
     let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0, inventory_open: false, selected_slot: 0, health: 20, flying: false, last_space_release: 0.0, space_was_pressed: false };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
