@@ -6,7 +6,7 @@ mod renderer;
 mod world;
 
 use block::BlockType;
-use crate::world::{World, Frustum, VIEW_DISTANCE};
+use crate::world::{World, VIEW_DISTANCE};
 use rand::Rng;
 use glam::{Vec2, Vec3, Mat4};
 
@@ -427,6 +427,21 @@ fn draw_texture_ui_uv(texture: &Texture2D, x: f32, y: f32, w: f32, h: f32, u: f3
     mesh.draw();
 }
 
+fn draw_text(texture: &Texture2D, text: &str, x: f32, y: f32, size: f32, shader: &Shader, sw: f32, sh: f32) {
+    let mut cur_x = x;
+    for c in text.chars() {
+        let i = c as u32;
+        if i < 32 || i >= 128 { continue; }
+        let idx = i - 32;
+        let col = (idx % 16) as f32;
+        let row = (idx / 16) as f32;
+        let uw = 1.0 / 16.0;
+        let vh = 1.0 / 8.0;
+        draw_texture_ui_uv(texture, cur_x, y, size, size, col * uw, row * vh, uw, vh, shader, sw, sh);
+        cur_x += size * 0.55; 
+    }
+}
+
 fn draw_screen_quad(shader: &Shader, color: glam::Vec4) {
     let v = [
         -1.0, -1.0, 0.0,  1.0, -1.0, 0.0,  1.0,  1.0, 0.0,
@@ -805,43 +820,77 @@ fn explode(world: &mut World, x: i32, y: i32, z: i32, initial_radius: i32, is_nu
     }
 }
 
-fn draw_pause_menu(ui_shader: &Shader, sw: f32, sh: f32) {
+fn draw_pause_menu(ui_shader: &Shader, tex_shader: &Shader, font_tex: &Texture2D, sw: f32, sh: f32) {
     // 1. Full-screen tint
-    draw_rect(ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 150], sw, sh);
+    draw_rect(ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 160], sw, sh);
 
     // 2. Buttons (Left Column)
-    let btn_w = 260.0; let btn_h = 42.0; let btn_x = 60.0;
+    let btn_w = 340.0; let btn_h = 44.0; let btn_x = 100.0;
     let btn_y_start = sh / 2.0 - 100.0;
     
+    let labels = ["Resume Game", "Settings", "Marketplace", "Save & Quit"];
     for i in 0..4 {
-        let y = btn_y_start + i as f32 * (btn_h + 10.0);
+        let y = btn_y_start + i as f32 * (btn_h + 12.0);
         // Shadow/Border
-        draw_rect(ui_shader, btn_x - 2.0, y - 2.0, btn_w + 4.0, btn_h + 4.0, [0, 0, 0, 255], sw, sh);
+        draw_rect(ui_shader, btn_x - 2.0, y - 2.0, btn_w + 4.0, btn_h + 4.0, [20, 20, 20, 255], sw, sh);
         // Base
         draw_rect(ui_shader, btn_x, y, btn_w, btn_h, [198, 198, 198, 255], sw, sh);
         // Inset
-        draw_rect(ui_shader, btn_x + 2.0, y + 2.0, btn_w - 4.0, btn_h - 4.0, [139, 139, 139, 255], sw, sh);
+        draw_rect(ui_shader, btn_x + 2.0, y + 2.0, btn_w - 4.0, btn_h - 4.0, [110, 110, 110, 255], sw, sh);
+        
+        let label = labels[i];
+        let text_sz = 18.0;
+        let text_x = btn_x + (btn_w - label.len() as f32 * text_sz * 0.55) / 2.0;
+        draw_text(font_tex, label, text_x, y + 13.0, text_sz, tex_shader, sw, sh);
+    }
+
+    // Small buttons bottom left icons
+    let sbtn_s = 44.0;
+    for i in 0..3 {
+        let sx = btn_x + i as f32 * (sbtn_s + 10.0);
+        let sy = sh - 70.0;
+        draw_rect(ui_shader, sx - 2.0, sy - 2.0, sbtn_s + 4.0, sbtn_s + 4.0, [20, 20, 20, 255], sw, sh);
+        draw_rect(ui_shader, sx, sy, sbtn_s, sbtn_s, [198, 198, 198, 255], sw, sh);
+        
+        // Simple Icons
+        if i == 0 { // Chat
+            draw_rect(ui_shader, sx + 10.0, sy + 15.0, 24.0, 14.0, [60,60,60,255], sw, sh);
+            draw_rect(ui_shader, sx + 12.0, sy + 17.0, 6.0, 4.0, [255,255,255,100], sw, sh);
+        } else if i == 1 { // Camera
+            draw_rect(ui_shader, sx + 10.0, sy + 18.0, 24.0, 16.0, [60,60,60,255], sw, sh);
+            draw_rect(ui_shader, sx + 18.0, sy + 12.0, 8.0, 6.0, [60,60,60,255], sw, sh);
+            draw_rect(ui_shader, sx + 19.0, sy + 23.0, 6.0, 6.0, [255,255,255,100], sw, sh);
+        } else if i == 2 { // Profile
+            draw_rect(ui_shader, sx + 17.0, sy + 10.0, 12.0, 12.0, [60,60,60,255], sw, sh);
+            draw_rect(ui_shader, sx + 12.0, sy + 24.0, 22.0, 14.0, [60,60,60,255], sw, sh);
+        }
     }
 
     // 3. Right Panel (Friends / Session)
-    let panel_w = 400.0; let panel_h = sh - 100.0;
-    let panel_x = sw - panel_w - 60.0;
+    let panel_w = 380.0; let panel_h = sh - 100.0;
+    let panel_x = sw - panel_w - 40.0;
     let panel_y = 50.0;
     
     // Panel background
-    draw_rect(ui_shader, panel_x - 2.0, panel_y - 2.0, panel_w + 4.0, panel_h + 4.0, [0, 0, 0, 255], sw, sh);
-    draw_rect(ui_shader, panel_x, panel_y, panel_w, panel_h, [49, 49, 49, 220], sw, sh);
+    draw_rect(ui_shader, panel_x - 2.0, panel_y - 2.0, panel_w + 4.0, panel_h + 4.0, [20, 20, 20, 255], sw, sh);
+    draw_rect(ui_shader, panel_x, panel_y, panel_w, panel_h, [49, 49, 49, 230], sw, sh);
     
     // Header
-    draw_rect(ui_shader, panel_x, panel_y, panel_w, 50.0, [85, 85, 85, 255], sw, sh);
+    draw_text(font_tex, "Friends (12)", panel_x + 20.0, panel_y + 15.0, 20.0, tex_shader, sw, sh);
+    draw_rect(ui_shader, panel_x + 10.0, panel_y + 45.0, panel_w - 20.0, 2.0, [80, 80, 80, 255], sw, sh);
     
-    // Placeholder Friends
-    for i in 0..5 {
-        let py = panel_y + 70.0 + i as f32 * 70.0;
-        draw_rect(ui_shader, panel_x + 15.0, py, panel_w - 30.0, 60.0, [70, 70, 70, 255], sw, sh);
-        // Avatar placeholder
-        draw_rect(ui_shader, panel_x + 25.0, py + 10.0, 40.0, 40.0, [200, 200, 200, 255], sw, sh);
-    }
+    draw_text(font_tex, "Invite to Game", panel_x + 60.0, panel_y + 70.0, 18.0, tex_shader, sw, sh);
+    draw_text(font_tex, "Players in My World", panel_x + 20.0, panel_y + 120.0, 16.0, tex_shader, sw, sh);
+
+    // Player row
+    let py = panel_y + 150.0;
+    draw_rect(ui_shader, panel_x + 10.0, py, panel_w - 20.0, 50.0, [60, 60, 60, 255], sw, sh);
+    // Head icon
+    draw_rect(ui_shader, panel_x + 20.0, py + 10.0, 30.0, 30.0, [200, 150, 100, 255], sw, sh);
+    draw_text(font_tex, "Grog Grog", panel_x + 60.0, py + 17.0, 18.0, tex_shader, sw, sh);
+    
+    // Bottom centered text
+    draw_text(font_tex, "Game is paused", sw/2.0 - 60.0, sh - 40.0, 18.0, tex_shader, sw, sh);
 }
 
 fn main() { // Entry point
@@ -873,6 +922,7 @@ fn main() { // Entry point
     let color_shader = Shader::new(TEXTURE_VS, COLOR_FS).expect("Failed to compile COLOR shader");
     let target = RenderTexture2D::new(RENDER_WIDTH, RENDER_HEIGHT);
     let logo_texture = Texture2D::from_file("assets/logo.png");
+    let font_texture = Texture2D::from_file("assets/font.png");
     
     let mut game_state = GameState::Loading;
     let mut spawn_y = 150.0;
@@ -949,7 +999,7 @@ fn main() { // Entry point
             draw_rect(&ui_shader, bar_x, bar_y, bar_w * progress, bar_h, [255, 255, 255, 255], sw, sh);
 
             // 3. Spinner (Just a rotating dash/slash)
-            let spin_chars = ["|", "/", "-", "\\"];
+            let _spin_chars = ["|", "/", "-", "\\"];
             let _spin_idx = (current_time * 10.0) as usize % 4;
             // No text renderer yet, so we'll just skip the % text for now or implement a primitive one.
             // Let's at least show the bar and logo.
@@ -1027,14 +1077,14 @@ fn main() { // Entry point
                         }
                     } else if game_state == GameState::Paused && action == Action::Press && left {
                         let inner_win_size = window.get_size();
-                        let sw = inner_win_size.0 as f32; let sh = inner_win_size.1 as f32;
+                        let _sw = inner_win_size.0 as f32; let sh = inner_win_size.1 as f32;
                         let mx = last_cursor_pos.0 as f32; let my = last_cursor_pos.1 as f32;
                         
-                        let btn_w = 260.0; let btn_h = 42.0; let btn_x = 60.0;
+                        let btn_w = 340.0; let btn_h = 44.0; let btn_x = 100.0;
                         let btn_y_start = sh / 2.0 - 100.0;
                         
                         for i in 0..4 {
-                            let y = btn_y_start + i as f32 * (btn_h + 10.0);
+                            let y = btn_y_start + i as f32 * (btn_h + 12.0);
                             if mx >= btn_x && mx <= btn_x + btn_w && my >= y && my <= y + btn_h {
                                 if i == 0 { // Resume
                                     game_state = GameState::Playing;
@@ -1536,7 +1586,7 @@ fn main() { // Entry point
 
         if game_state == GameState::Paused {
             let (win_width, win_height) = window.get_size();
-            draw_pause_menu(&ui_shader, win_width as f32, win_height as f32);
+            draw_pause_menu(&ui_shader, &texture_ui_shader, &font_texture, win_width as f32, win_height as f32);
         }
 
         unsafe { gl::Enable(gl::DEPTH_TEST); gl::Enable(gl::CULL_FACE); }
