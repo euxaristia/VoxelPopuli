@@ -1,5 +1,6 @@
 use crate::chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT};
 use std::collections::HashMap;
+use std::sync::RwLock;
 use crate::block::BlockType;
 use crate::renderer::{Mesh, Texture2D, Shader};
 use crate::renderer;
@@ -75,7 +76,7 @@ pub struct World {
     pub star_model: Option<Mesh>,
     pub last_cloud_pos: Vec3,
     pub last_cloud_update_time: f32,
-    pub edits: HashMap<(i32, i32, i32), BlockType>,
+    pub edits: RwLock<HashMap<(i32, i32, i32), BlockType>>,
     pub suppress_edit_recording: bool,
     pub last_pcx: i32,
     pub last_pcz: i32,
@@ -103,7 +104,7 @@ impl World {
             star_model: None,
             last_cloud_pos: Vec3::new(-999999.0, -999999.0, -999999.0),
             last_cloud_update_time: -999.0,
-            edits: HashMap::new(),
+            edits: RwLock::new(HashMap::new()),
             suppress_edit_recording: false,
             last_pcx: -999999,
             last_pcz: -999999,
@@ -205,8 +206,10 @@ impl World {
         if y < 0 || y >= CHUNK_HEIGHT as i32 {
             return BlockType::Air;
         }
-        if let Some(b) = self.edits.get(&(x, y, z)) {
-            return *b;
+        if let Ok(edits) = self.edits.read() {
+            if let Some(b) = edits.get(&(x, y, z)) {
+                return *b;
+            }
         }
         let cx = x.div_euclid(CHUNK_WIDTH as i32);
         let cz = z.div_euclid(CHUNK_DEPTH as i32);
@@ -224,7 +227,9 @@ impl World {
         if y < 0 || y >= CHUNK_HEIGHT as i32 { return; }
         
         if !self.suppress_edit_recording {
-            self.edits.insert((x, y, z), block);
+            if let Ok(mut edits) = self.edits.write() {
+                edits.insert((x, y, z), block);
+            }
         }
 
         let cx = x.div_euclid(CHUNK_WIDTH as i32);
@@ -234,7 +239,7 @@ impl World {
 
         if let Some(chunk) = self.get_chunk_mut(cx, cz) {
             chunk.set_block(bx, y as usize, bz, block);
-            if !chunk.dirty && !chunk.meshing_in_progress {
+            if !chunk.dirty {
                 chunk.dirty = true;
                 self.dirty_count += 1;
             }
@@ -255,7 +260,7 @@ impl World {
             
             for (nx, nz) in neighbors {
                 if let Some(nc) = self.get_chunk_mut(nx, nz) {
-                    if !nc.dirty && !nc.meshing_in_progress {
+                    if !nc.dirty {
                         nc.dirty = true;
                         self.dirty_count += 1;
                     }
@@ -270,8 +275,13 @@ impl World {
         let chunk_end_x = chunk_start_x + CHUNK_WIDTH as i32;
         let chunk_end_z = chunk_start_z + CHUNK_DEPTH as i32;
 
-        let edits = self.edits.clone();
-        for ((ex, ey, ez), block) in edits {
+        let edits_clone = if let Ok(edits) = self.edits.read() {
+            edits.clone()
+        } else {
+            return;
+        };
+
+        for ((ex, ey, ez), block) in edits_clone {
             if ex >= chunk_start_x && ex < chunk_end_x && 
                ez >= chunk_start_z && ez < chunk_end_z {
                 self.suppress_edit_recording = true;
@@ -564,7 +574,10 @@ impl World {
         }
 
         // 2. Scan for dirty chunks and dispatch to background
-        let mut dirty_indices = Vec::new();
+        // Detonation Guard: Do not dispatch new meshing tasks if an explosion is currently modifying the world.
+        // This ensures background threads see a stable snapshot of the terrain.
+        if self.detonations.is_empty() {
+            let mut dirty_indices = Vec::new();
         for i in 0..CHUNK_POOL_SIZE {
             if let Some(chunk) = &self.chunks[i] {
                 if chunk.dirty && !chunk.meshing_in_progress {
@@ -614,6 +627,7 @@ impl World {
                 if dispatches_this_frame >= 16 { break; } // Dispatch many since user has 20 cores
             }
         }
+    }
 
         // --- Explosive Ticking ---
         let mut i = 0;
