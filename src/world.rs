@@ -3,7 +3,7 @@ use crate::block::BlockType;
 use crate::renderer::{Mesh, Texture2D, Shader};
 use glam::{Vec3, Mat4};
 
-pub const VIEW_DISTANCE: i32 = 14;
+pub const VIEW_DISTANCE: i32 = 23;
 pub const POOL_WIDTH: i32 = VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
 
