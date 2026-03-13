@@ -904,7 +904,7 @@ fn main() { // Entry point
             // Render Loading Screen
             unsafe {
                 gl::Viewport(0, 0, win_sw as i32, win_sh as i32);
-                gl::ClearColor(0.19, 0.19, 0.19, 1.0); // Minecraft Bedrock Gray #313131
+                gl::ClearColor(0.117, 0.117, 0.117, 1.0); // Exact #1e1e1e
                 gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
                 gl::Disable(gl::DEPTH_TEST);
                 gl::Disable(gl::CULL_FACE);
@@ -912,29 +912,43 @@ fn main() { // Entry point
                 gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
             }
 
-            // 1. Logo
-            let logo_w = 400.0; let logo_h = 400.0; // Assuming 1:1 or similar, adjust if needed
-            draw_texture_ui(&logo_texture, (sw - logo_w)/2.0, sh/2.0 - logo_h/2.0 - 50.0, logo_w, logo_h, &texture_ui_shader, sw, sh);
+            // 1. Logo (Square to match generated asset)
+            let logo_size = sw.min(sh) * 0.7;
+            draw_texture_ui(&logo_texture, (sw - logo_size)/2.0, sh/2.0 - logo_size/2.0 - 50.0, logo_size, logo_size, &texture_ui_shader, sw, sh);
 
-            // 2. Progress Bar
-            let bar_w = 400.0; let bar_h = 10.0;
+            // 2. Spinner (8-segment pulse)
+            let spin_x = sw / 2.0;
+            let spin_y = sh / 2.0 + 10.0;
+            let spin_radius = 16.0;
+            for i in 0..8 {
+                let angle = (i as f32 / 8.0) * 2.0 * std::f32::consts::PI;
+                let t_offset = (current_time * 8.0) as usize % 8;
+                let brightness = if i == t_offset { 255 } else if i == (t_offset + 7) % 8 { 180 } else if i == (t_offset + 6) % 8 { 100 } else { 40 };
+                let sx = spin_x + angle.cos() * spin_radius;
+                let sy = spin_y + angle.sin() * spin_radius;
+                draw_rect(&ui_shader, sx - 2.0, sy - 2.0, 4.0, 4.0, [255, 255, 255, brightness], sw, sh);
+            }
+
+            // 3. Progress Bar (Thin & Clean)
+            let bar_w = (sw * 0.45).min(500.0);
+            let bar_h = 4.0;
             let bar_x = (sw - bar_w) / 2.0;
-            let bar_y = sh / 2.0 + 20.0;
+            let bar_y = sh / 2.0 + 60.0;
             
-            // Background of bar
-            draw_rect(&ui_shader, bar_x - 2.0, bar_y - 2.0, bar_w + 4.0, bar_h + 4.0, [255, 255, 255, 255], sw, sh); // Border
-            draw_rect(&ui_shader, bar_x, bar_y, bar_w, bar_h, [49, 49, 49, 255], sw, sh); // Bar BG
+            // Border (1px white)
+            draw_rect(&ui_shader, bar_x - 1.0, bar_y - 1.0, bar_w + 2.0, bar_h + 2.0, [255, 255, 255, 255], sw, sh);
+            // BG (Inside border)
+            draw_rect(&ui_shader, bar_x, bar_y, bar_w, bar_h, [30, 30, 30, 255], sw, sh);
             
-            // Progress
+            // Progress Fill
             let total_chunks = (VIEW_DISTANCE * 2 + 1) as f32 * (VIEW_DISTANCE * 2 + 1) as f32;
             let progress = (world.chunks_generated_count as f32 / total_chunks).clamp(0.0, 1.0);
             draw_rect(&ui_shader, bar_x, bar_y, bar_w * progress, bar_h, [255, 255, 255, 255], sw, sh);
 
-            // 3. Spinner (Just a rotating dash/slash)
-            let _spin_chars = ["|", "/", "-", "\\"];
-            let _spin_idx = (current_time * 10.0) as usize % 4;
-            // No text renderer yet, so we'll just skip the % text for now or implement a primitive one.
-            // Let's at least show the bar and logo.
+            // 4. Percentage Text
+            let pct = (progress * 100.0) as i32;
+            let pct_str = format!("{}%", pct);
+            draw_text(&font_texture, &pct_str, sw / 2.0 - 15.0, bar_y + 15.0, 1.5, &texture_ui_shader, sw, sh);
 
             unsafe { gl::Enable(gl::DEPTH_TEST); }
             window.swap_buffers();

@@ -42,22 +42,18 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, initial_radius: i32, i
     for dx in -r_int..=r_int {
         for dy in -r_int..=r_int {
             for dz in -r_int..=r_int {
+                // Use a slightly more inclusive check to avoid floating grass/trees
                 let dist_sq = (dx*dx + dy*dy + dz*dz) as f32;
-                if dist_sq <= r2 {
+                if dist_sq <= r2 + 0.5 { 
                     let bx = x + dx; let by = y + dy; let bz = z + dz;
                     
-                    // Fast path check: HashMap check for edits is still fast,
-                    // but we can optimize the world lookup by checking if we're in the same chunk.
                     let b = world.get_block(bx, by, bz);
                     if b != BlockType::Air && b != BlockType::Bedrock {
                         world.set_block(bx, by, bz, BlockType::Air);
                         
-                        // Dirty the chunk if we changed it
                         let cx = bx.div_euclid(16);
                         let cz = bz.div_euclid(16);
                         if last_chunk_coords != Some((cx, cz)) {
-                            // The set_block call already handles dirtying, but we can ensure
-                            // we batch updates if needed in future.
                             last_chunk_coords = Some((cx, cz));
                         }
                     }

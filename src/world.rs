@@ -536,7 +536,9 @@ impl World {
                     self.last_pcx = pcx; self.last_pcz = pcz;
                 }
             } else {
-                // NORMAL MODE: Non-blocking spiral (all objects created, limited meshing)
+                // NORMAL MODE: Non-blocking spiral (Discovery)
+                // Throttle generation to prevent massive stutters when crossing boundaries
+                let mut generated_this_frame = 0;
                 for r in 0..=VIEW_DISTANCE {
                     for x in (pcx - r)..=(pcx + r) {
                         for z in (pcz - r)..=(pcz + r) {
@@ -549,12 +551,35 @@ impl World {
                                 chunk.generate();
                                 self.chunks[index] = Some(chunk);
                                 self.apply_edits_to_chunk(x, z);
-                                if let Some(c) = &mut self.chunks[index] { c.dirty = true; self.dirty_count += 1; }
+                                
+                                // Dirty the new chunk AND its neighbors to fix lighting/meshing gaps
+                                if let Some(c) = &mut self.chunks[index] {
+                                    if !c.dirty { c.dirty = true; self.dirty_count += 1; }
+                                }
+                                let neighbors = [(x-1, z), (x+1, z), (x, z-1), (x, z+1)];
+                                for (nx, nz) in neighbors {
+                                    if let Some(nc) = self.get_chunk_mut(nx, nz) {
+                                        if !nc.dirty {
+                                            nc.dirty = true;
+                                            self.dirty_count += 1;
+                                        }
+                                    }
+                                }
+                                
+                                generated_this_frame += 1;
+                                if generated_this_frame >= 4 { break; }
                             }
                         }
+                        if generated_this_frame >= 4 { break; }
                     }
+                    if generated_this_frame >= 4 { break; }
                 }
-                self.last_pcx = pcx; self.last_pcz = pcz;
+                
+                // Only update last_pcx/last_pcz once we've at least tried to load the immediate ring
+                // Actually, let's keep the boundary check simple.
+                if generated_this_frame < 4 {
+                    self.last_pcx = pcx; self.last_pcz = pcz;
+                }
             }
         }
 

@@ -1021,7 +1021,6 @@ impl Chunk {
     pub fn upload_mesh(&mut self, opaque: MeshData, transparent: MeshData) {
         self.mesh_opaque = if opaque.v.is_empty() { None } else { Some(Mesh::new(&opaque.v, Some(&opaque.t), Some(&opaque.n), Some(&opaque.c))) };
         self.mesh_transparent = if transparent.v.is_empty() { None } else { Some(Mesh::new(&transparent.v, Some(&transparent.t), Some(&transparent.n), Some(&transparent.c))) };
-        self.dirty = false;
         self.meshing_in_progress = false;
     }
 }
