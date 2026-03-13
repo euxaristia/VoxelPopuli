@@ -252,7 +252,7 @@ impl World {
                 self.active_falling.insert((x, y, z));
             }
             // Neighbors might now be able to flow or fall
-            let neighbors = [(x, y+1, z), (x+1, y, z), (x-1, y, z), (x, y, z+1), (x, y, z-1)];
+            let neighbors = [(x, y+1, z), (x, y-1, z), (x+1, y, z), (x-1, y, z), (x, y, z+1), (x, y, z-1)];
             for (nx, ny, nz) in neighbors {
                 let nb = self.get_block(nx, ny, nz);
                 if nb == BlockType::Water {
@@ -731,12 +731,31 @@ impl World {
                 self.set_block(x, y, z, BlockType::Air);
                 self.set_block(x, y-1, z, BlockType::Water);
                 self.suppress_edit_recording = false;
-                // set_block already adds (x, y-1, z) and neighbors to active_water
-            } else if y > 0 && self.get_block(x, y-1, z).is_solid() {
-                // 2. Spread sideways (simple)
+            } else if y > 0 {
+                // 2. Spread sideways
+                // If it can't flow down, try to flow into any air or water gap that is lower
+                // Simple finite water: it just tries to find a lower spot.
+                let mut moved = false;
                 for (dx, dz) in [(1,0), (-1,0), (0,1), (0,-1)] {
                     if self.get_block(x+dx, y, z+dz) == BlockType::Air {
-                        if y > 0 && self.get_block(x+dx, y-1, z+dz) == BlockType::Air {
+                        // Priority 1: Hole found next to us
+                        if self.get_block(x+dx, y-1, z+dz) == BlockType::Air {
+                             self.suppress_edit_recording = true;
+                             self.set_block(x, y, z, BlockType::Air);
+                             self.set_block(x+dx, y, z+dz, BlockType::Water);
+                             self.suppress_edit_recording = false;
+                             moved = true;
+                             break;
+                        }
+                        // Priority 2: Level spread (only if we are atop a floor)
+                        // This makes large lakes flatten out better
+                        // But we limit it to keep it "finite"
+                    }
+                }
+                
+                if !moved && self.get_block(x, y-1, z).is_solid() {
+                     for (dx, dz) in [(1,0), (-1,0), (0,1), (0,-1)] {
+                        if self.get_block(x+dx, y, z+dz) == BlockType::Air {
                              self.suppress_edit_recording = true;
                              self.set_block(x, y, z, BlockType::Air);
                              self.set_block(x+dx, y, z+dz, BlockType::Water);
@@ -748,7 +767,7 @@ impl World {
             }
             
             processed += 1;
-            if processed > 5000 { 
+            if processed > 20000 { 
                 self.active_water.extend(to_process.into_iter().skip(processed));
                 break; 
             }
@@ -775,7 +794,7 @@ impl World {
             }
             
             processed += 1;
-            if processed > 5000 {
+            if processed > 20000 {
                 self.active_falling.extend(to_process.into_iter().skip(processed));
                 break;
             }
