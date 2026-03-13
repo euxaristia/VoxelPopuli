@@ -1,4 +1,4 @@
-use glfw::{Action, Context, Key};
+use glfw::{Action, Context, Key, GamepadAxis, GamepadButton, JoystickId};
 mod block;
 mod chunk;
 mod noise;
@@ -12,8 +12,8 @@ use glam::{Vec2, Vec3, Mat4};
 
 const WINDOW_WIDTH: u32 = 1920;
 const WINDOW_HEIGHT: u32 = 1080;
-const RENDER_WIDTH: i32 = 960;
-const RENDER_HEIGHT: i32 = 540;
+const RENDER_WIDTH: i32 = 1500;
+const RENDER_HEIGHT: i32 = 844;
 
 const PS1_VS: &str = r#"
 #version 330 core
@@ -523,6 +523,12 @@ fn main() {
     let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0, inventory_open: false, selected_slot: 0, health: 20, flying: false, last_space_release: 0.0, space_was_pressed: false };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
+    let mut prev_gp_rt = -1.0f32;
+    let mut prev_gp_lt = -1.0f32;
+    let mut prev_gp_dpad_right = false;
+    let mut prev_gp_dpad_left = false;
+    let mut prev_gp_rb = false;
+    let mut prev_gp_lb = false;
     let mut last_time = glfw.get_time();
     let mut fps_last_time = last_time;
     let mut fps_frames: u32 = 0;
@@ -606,6 +612,120 @@ fn main() {
                 _ => {}
             }
         }
+        // --- Gamepad input ---
+        let mut gp_jump = false;
+        let mut gp_sneak = false;
+        let mut gp_sprint = false;
+        let mut gp_lx = 0.0f32;
+        let mut gp_ly = 0.0f32;
+        let gp_joystick = glfw.get_joystick(JoystickId::Joystick1);
+        if gp_joystick.is_present() {
+            if let Some(gs) = gp_joystick.get_gamepad_state() {
+                const DEADZONE: f32 = 0.15;
+                const LOOK_SPEED: f32 = 3.0;
+
+                // Right stick: camera look
+                if !player.inventory_open {
+                    let rx = gs.get_axis(GamepadAxis::AxisRightX);
+                    let ry = gs.get_axis(GamepadAxis::AxisRightY);
+                    let rx = if rx.abs() > DEADZONE { rx } else { 0.0 };
+                    let ry = if ry.abs() > DEADZONE { ry } else { 0.0 };
+                    camera_angle.x -= rx * LOOK_SPEED * delta_time;
+                    camera_angle.y -= ry * LOOK_SPEED * delta_time;
+                    camera_angle.y = camera_angle.y.clamp(-1.56, 1.56);
+                }
+
+                // Left stick: movement (captured for use below)
+                {
+                    let lx = gs.get_axis(GamepadAxis::AxisLeftX);
+                    let ly = gs.get_axis(GamepadAxis::AxisLeftY);
+                    gp_lx = if lx.abs() > DEADZONE { lx } else { 0.0 };
+                    gp_ly = if ly.abs() > DEADZONE { ly } else { 0.0 };
+                }
+
+                // Buttons: A=jump, B=sneak/descend, L3=sprint
+                gp_jump  = gs.get_button_state(GamepadButton::ButtonA)         == Action::Press;
+                gp_sneak = gs.get_button_state(GamepadButton::ButtonB)         == Action::Press;
+                gp_sprint= gs.get_button_state(GamepadButton::ButtonLeftThumb) == Action::Press;
+
+                // Triggers: RT=break block, LT=place block (on press edge)
+                let rt = gs.get_axis(GamepadAxis::AxisRightTrigger);
+                let lt = gs.get_axis(GamepadAxis::AxisLeftTrigger);
+
+                if !player.inventory_open {
+                    let gp_break = rt > 0.5 && prev_gp_rt <= 0.5;
+                    let gp_place = lt > 0.5 && prev_gp_lt <= 0.5;
+
+                    if gp_break || gp_place {
+                        let gp_eye  = player.position + Vec3::new(0.0, 1.6, 0.0);
+                        let gp_look = Vec3::new(
+                            camera_angle.y.cos() * camera_angle.x.sin(),
+                            camera_angle.y.sin(),
+                            camera_angle.y.cos() * camera_angle.x.cos(),
+                        );
+                        if gp_break {
+                            let res = world.raycast(gp_eye, gp_look, 8.0);
+                            if res.hit {
+                                let broken = world.get_block(res.x, res.y, res.z);
+                                if broken != BlockType::Air && broken != BlockType::Water {
+                                    let mut added = false;
+                                    for i in 0..10 {
+                                        if hotbar[i] == broken && hotbar_counts[i] > 0 {
+                                            hotbar_counts[i] += 1; added = true; break;
+                                        }
+                                    }
+                                    if !added {
+                                        for i in 0..10 {
+                                            if hotbar_counts[i] == 0 {
+                                                hotbar[i] = broken; hotbar_counts[i] = 1; break;
+                                            }
+                                        }
+                                    }
+                                }
+                                world.set_block(res.x, res.y, res.z, BlockType::Air);
+                            }
+                        }
+                        if gp_place {
+                            let res = world.raycast(gp_eye, gp_look, 8.0);
+                            if res.hit {
+                                let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+                                if world.get_block(nx, ny, nz) == BlockType::Air {
+                                    let slot = player.selected_slot;
+                                    let b = hotbar[slot];
+                                    if b != BlockType::Air && hotbar_counts[slot] > 0 {
+                                        world.set_block(nx, ny, nz, b);
+                                        hotbar_counts[slot] -= 1;
+                                        if hotbar_counts[slot] == 0 { hotbar[slot] = BlockType::Air; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                prev_gp_rt = rt;
+                prev_gp_lt = lt;
+
+                // D-Pad + bumpers: hotbar slot selection
+                let dpad_r = gs.get_button_state(GamepadButton::ButtonDpadRight) == Action::Press;
+                let dpad_l = gs.get_button_state(GamepadButton::ButtonDpadLeft)  == Action::Press;
+                let rb     = gs.get_button_state(GamepadButton::ButtonRightBumper) == Action::Press;
+                let lb     = gs.get_button_state(GamepadButton::ButtonLeftBumper)  == Action::Press;
+
+                if (dpad_r && !prev_gp_dpad_right) || (rb && !prev_gp_rb) {
+                    player.selected_slot = (player.selected_slot + 1) % 10;
+                }
+                if (dpad_l && !prev_gp_dpad_left) || (lb && !prev_gp_lb) {
+                    player.selected_slot = (player.selected_slot + 9) % 10;
+                }
+
+                prev_gp_dpad_right = dpad_r;
+                prev_gp_dpad_left  = dpad_l;
+                prev_gp_rb = rb;
+                prev_gp_lb = lb;
+            }
+        }
+
         let forward = Vec3::new(camera_angle.x.sin(), 0.0, camera_angle.x.cos());
         let right = forward.cross(Vec3::Y);
         let mut move_dir = Vec3::ZERO;
@@ -614,10 +734,12 @@ fn main() {
             if window.get_key(Key::S) == Action::Press { move_dir -= forward; }
             if window.get_key(Key::A) == Action::Press { move_dir -= right; }
             if window.get_key(Key::D) == Action::Press { move_dir += right; }
+            // Left stick movement
+            move_dir += right * gp_lx + forward * (-gp_ly);
         }
-        let is_sprinting = window.get_key(Key::LeftControl) == Action::Press;
-        let is_jumping = window.get_key(Key::Space) == Action::Press;
-        let is_sneaking = window.get_key(Key::LeftShift) == Action::Press;
+        let is_sprinting = window.get_key(Key::LeftControl) == Action::Press || gp_sprint;
+        let is_jumping   = window.get_key(Key::Space)       == Action::Press || gp_jump;
+        let is_sneaking  = window.get_key(Key::LeftShift)   == Action::Press || gp_sneak;
         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
         player.update(&world, move_dir, delta_time, is_sprinting, is_jumping, is_sneaking, current_time);
