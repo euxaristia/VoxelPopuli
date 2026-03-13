@@ -47,6 +47,7 @@ pub struct MeshData {
 pub struct Chunk {
     pub blocks: Box<[[[BlockType; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
     pub light: Box<[[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
+    pub liquid_levels: Box<[[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
     pub mesh_opaque: Option<Mesh>,
     pub mesh_transparent: Option<Mesh>,
     pub pending_mesh_opaque: Option<MeshData>,
@@ -62,6 +63,7 @@ impl Chunk {
         Self {
             blocks: Box::new([[[BlockType::Air; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
             light: Box::new([[[0; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
+            liquid_levels: Box::new([[[0; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
             mesh_opaque: None,
             mesh_transparent: None,
             pending_mesh_opaque: None,
@@ -539,6 +541,11 @@ impl Chunk {
     pub fn set_block(&mut self, x: usize, y: usize, z: usize, block: BlockType) {
         if x < CHUNK_WIDTH && y < CHUNK_HEIGHT && z < CHUNK_DEPTH {
             self.blocks[x][y][z] = block;
+            if block == BlockType::Water {
+                self.liquid_levels[x][y][z] = 64;
+            } else {
+                self.liquid_levels[x][y][z] = 0;
+            }
             self.dirty = true;
         }
     }
@@ -647,53 +654,105 @@ impl Chunk {
                     let block = self.blocks[x][y][z];
                     if block == BlockType::Air { continue; }
 
-                    if y < current_min_y { current_min_y = y; }
-                    if y > current_max_y { current_max_y = y; }
-
-                    let is_t = block == BlockType::Water;
-                    let (v, t, n, c) = if is_t {
-                        (&mut v_tr, &mut t_tr, &mut n_tr, &mut c_tr)
-                    } else {
-                        (&mut v_op, &mut t_op, &mut n_op, &mut c_op)
-                    };
-
                     let fx = (x as i32 + self.x * CHUNK_WIDTH as i32) as f32;
                     let fy = y as f32;
                     let fz = (z as i32 + self.z * CHUNK_DEPTH as i32) as f32;
                     let ts = 1.0 / 16.0;
-                    let pad = 0.5 / 256.0; // Half a pixel padding to prevent mipmap/texture bleeding
-                                let (tx, ty) = match block {
-                                    BlockType::Stone => (1, 0),
-                                    BlockType::Dirt => (2, 0),
-                                    BlockType::Grass => (3, 0),
-                                    BlockType::Bedrock => (1, 1),
-                                    BlockType::Water => (13, 12),
-                                    BlockType::OakLog => (4, 0),
-                                    BlockType::OakLeaves => (5, 0),
-                                    BlockType::Sand => (6, 0),
-                                    BlockType::Gravel => (7, 0),
-                                    BlockType::CoalOre => (2, 1),
-                                    BlockType::IronOre => (3, 1),
-                                    BlockType::TNT => (4, 1),
-                                    BlockType::Nuke => (5, 2),
-                                    BlockType::IronBlock => (6, 1),
-                                    BlockType::RawIron => (7, 1),
-                                    BlockType::IronIngot => (8, 1),
-                                    BlockType::FlintAndSteel => (9, 1),
-                                    BlockType::PowderedSnow => (8, 0),
-                                    BlockType::SnowLayer => (8, 0),
-                                    BlockType::SnowyGrass => (10, 0),
-                                    BlockType::SpruceLog => (11, 0),
-                                    BlockType::SpruceLeaves => (12, 0),
-                                    _ => (0, 0),
-                                };
+                    let pad = 0.5 / 256.0;
+                    
+                    if block == BlockType::Water {
+                        let level = self.liquid_levels[x][y][z];
+                        if level == 0 { continue; }
+                        
+                        let sub_size = 0.25f32;
+                        let ts_sub = ts * 0.25; 
+                        let (tx, ty) = (13, 12);
+                        let u0 = tx as f32 * ts + pad;
+                        let v0 = ty as f32 * ts + pad;
+                        
+                        let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
+                        let wy = y as i32;
+                        let wz = z as i32 + self.z * CHUNK_DEPTH as i32;
 
-                                let u0 = tx as f32 * ts + pad;
-                                let v0 = ty as f32 * ts + pad;
-                                let u1 = (tx + 1) as f32 * ts - pad;
-                                let v1 = (ty + 1) as f32 * ts - pad;
+                        for sy in 0..4 {
+                            for sx in 0..4 {
+                                for sz in 0..4 {
+                                    let sub_idx = (sy * 16 + sx * 4 + sz) as u8;
+                                    if sub_idx >= level { continue; }
+                                    let sfx = fx + sx as f32 * sub_size;
+                                    let sfy = fy + sy as f32 * sub_size;
+                                    let sfz = fz + sz as f32 * sub_size;
+                                    
+                                    let mut draw_top = sy == 3 || (sub_idx + 16 >= level);
+                                    if draw_top {
+                                        v_tr.extend_from_slice(&[sfx, sfy + sub_size, sfz, sfx, sfy + sub_size, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz + sub_size, sfx, sfy + sub_size, sfz, sfx + sub_size, sfy + sub_size, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz]);
+                                        t_tr.extend_from_slice(&[u0, v0, u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0, v0, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0]);
+                                        for _ in 0..6 { n_tr.extend_from_slice(&[0.0, 1.0, 0.0]); }
+                                        let c_val = (255.0 * calc_light_f(get_light_safe(wx, wy + 1, wz))) as u8;
+                                        for _ in 0..6 { c_tr.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
+                                    }
+                                    
+                                    if sx == 3 {
+                                        let nx = get_block_safe(wx + 1, wy, wz);
+                                        if nx != BlockType::Water {
+                                            v_tr.extend_from_slice(&[sfx + sub_size, sfy, sfz + sub_size, sfx + sub_size, sfy, sfz, sfx + sub_size, sfy + sub_size, sfz, sfx + sub_size, sfy, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz, sfx + sub_size, sfy + sub_size, sfz + sub_size]);
+                                            t_tr.extend_from_slice(&[u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0, u0, v0 + ts_sub, u0 + ts_sub, v0, u0, v0]);
+                                            for _ in 0..6 { n_tr.extend_from_slice(&[1.0, 0.0, 0.0]); }
+                                            let c_val = (255.0 * 0.8 * calc_light_f(get_light_safe(wx + 1, wy, wz))) as u8;
+                                            for _ in 0..6 { c_tr.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
+                                        }
+                                    }
+                                    if sx == 0 {
+                                        let nx = get_block_safe(wx - 1, wy, wz);
+                                        if nx != BlockType::Water {
+                                            v_tr.extend_from_slice(&[sfx, sfy, sfz, sfx, sfy, sfz + sub_size, sfx, sfy + sub_size, sfz + sub_size, sfx, sfy, sfz, sfx, sfy + sub_size, sfz + sub_size, sfx, sfy + sub_size, sfz]);
+                                            t_tr.extend_from_slice(&[u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0, u0, v0 + ts_sub, u0 + ts_sub, v0, u0, v0]);
+                                            for _ in 0..6 { n_tr.extend_from_slice(&[-1.0, 0.0, 0.0]); }
+                                            let c_val = (255.0 * 0.8 * calc_light_f(get_light_safe(wx - 1, wy, wz))) as u8;
+                                            for _ in 0..6 { c_tr.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
+                                        }
+                                    }
+                                    if sz == 3 {
+                                        let nz = get_block_safe(wx, wy, wz + 1);
+                                        if nz != BlockType::Water {
+                                            v_tr.extend_from_slice(&[sfx, sfy, sfz + sub_size, sfx + sub_size, sfy, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz + sub_size, sfx, sfy, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz + sub_size, sfx, sfy + sub_size, sfz + sub_size]);
+                                            t_tr.extend_from_slice(&[u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0, u0, v0 + ts_sub, u0 + ts_sub, v0, u0, v0]);
+                                            for _ in 0..6 { n_tr.extend_from_slice(&[0.0, 0.0, 1.0]); }
+                                            let c_val = (255.0 * 0.6 * calc_light_f(get_light_safe(wx, wy, wz + 1))) as u8;
+                                            for _ in 0..6 { c_tr.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
+                                        }
+                                    }
+                                    if sz == 0 {
+                                        let nz = get_block_safe(wx, wy, wz - 1);
+                                        if nz != BlockType::Water {
+                                            v_tr.extend_from_slice(&[sfx + sub_size, sfy, sfz, sfx, sfy, sfz, sfx, sfy + sub_size, sfz, sfx + sub_size, sfy, sfz, sfx, sfy + sub_size, sfz, sfx + sub_size, sfy + sub_size, sfz]);
+                                            t_tr.extend_from_slice(&[u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0, u0, v0 + ts_sub, u0 + ts_sub, v0, u0, v0]);
+                                            for _ in 0..6 { n_tr.extend_from_slice(&[0.0, 0.0, -1.0]); }
+                                            let c_val = (255.0 * 0.6 * calc_light_f(get_light_safe(wx, wy, wz - 1))) as u8;
+                                            for _ in 0..6 { c_tr.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
 
-                    let w_off = if block == BlockType::Water { 0.1 } else { 0.0 };
+                    // STANDARD BLOCK MESHING (OPAQUE)
+                    let (v, t, n, c) = (&mut v_op, &mut t_op, &mut n_op, &mut c_op);
+                    let (tx, ty) = match block {
+                        BlockType::Stone => (1, 0), BlockType::Dirt => (2, 0), BlockType::Grass => (3, 0),
+                        BlockType::Bedrock => (1, 1), BlockType::OakLog => (4, 0), BlockType::OakLeaves => (5, 0),
+                        BlockType::Sand => (6, 0), BlockType::Gravel => (7, 0), BlockType::CoalOre => (2, 1),
+                        BlockType::IronOre => (3, 1), BlockType::TNT => (4, 1), BlockType::Nuke => (5, 2),
+                        BlockType::IronBlock => (6, 1), BlockType::RawIron => (7, 1), BlockType::IronIngot => (8, 1),
+                        BlockType::FlintAndSteel => (9, 1), BlockType::PowderedSnow => (8, 0), BlockType::SnowLayer => (8, 0),
+                        BlockType::SnowyGrass => (10, 0), BlockType::SpruceLog => (11, 0), BlockType::SpruceLeaves => (12, 0),
+                        _ => (0, 0),
+                    };
+
+                    let u0 = tx as f32 * ts + pad; let v0 = ty as f32 * ts + pad;
+                    let u1 = (tx + 1) as f32 * ts - pad; let v1 = (ty + 1) as f32 * ts - pad;
                     let block_top = if block == BlockType::SnowLayer { 0.125 } else { 1.0 };
                     let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
                     let wy = y as i32;
@@ -708,13 +767,9 @@ impl Chunk {
                     let neighbor_top = if y < CHUNK_HEIGHT - 1 { self.blocks[x][y + 1][z] } else { BlockType::Air };
                     if should_draw_face(block, neighbor_top) {
                         let (mut tu0, mut tv0, mut tu1, mut tv1) = (u0, v0, u1, v1);
-                        if block == BlockType::Grass {
-                            tu0 = 0.0; tv0 = 0.0; tu1 = ts - pad; tv1 = ts - pad;
-                        } else if block == BlockType::SnowyGrass {
-                            tu0 = 9.0 * ts + pad; tv0 = pad; tu1 = 10.0 * ts - pad; tv1 = ts - pad;
-                        } else if block == BlockType::OakLog || block == BlockType::SpruceLog {
-                            tu0 = 5.0 * ts + pad; tv0 = ts + pad; tu1 = 6.0 * ts - pad; tv1 = 2.0 * ts - pad;
-                        }
+                        if block == BlockType::Grass { tu0 = 0.0; tv0 = 0.0; tu1 = ts - pad; tv1 = ts - pad; }
+                        else if block == BlockType::SnowyGrass { tu0 = 10.0 * ts + pad; tv0 = pad; tu1 = 11.0 * ts - pad; tv1 = ts - pad; }
+                        else if block == BlockType::OakLog || block == BlockType::SpruceLog { tu0 = 5.0 * ts + pad; tv0 = ts + pad; tu1 = 6.0 * ts - pad; tv1 = 2.0 * ts - pad; }
 
                         let l_00 = is_solid(get_block_safe(wx - 1, wy + 1, wz - 1));
                         let l_10 = is_solid(get_block_safe(wx,     wy + 1, wz - 1));
@@ -725,300 +780,61 @@ impl Chunk {
                         let l_12 = is_solid(get_block_safe(wx,     wy + 1, wz + 1));
                         let l_22 = is_solid(get_block_safe(wx + 1, wy + 1, wz + 1));
 
-                        let ao00 = calc_ao(l_01, l_10, l_00); // 0,0 (-x, -z)
-                        let ao10 = calc_ao(l_21, l_10, l_20); // 1,0 (+x, -z)
-                        let ao01 = calc_ao(l_01, l_12, l_02); // 0,1 (-x, +z)
-                        let ao11 = calc_ao(l_21, l_12, l_22); // 1,1 (+x, +z)
+                        let ao00 = calc_ao(l_01, l_10, l_00); let ao10 = calc_ao(l_21, l_10, l_20);
+                        let ao01 = calc_ao(l_01, l_12, l_02); let ao11 = calc_ao(l_21, l_12, l_22);
 
-                        // 3D Liquid Heuristic: Sloping surface
-                        let mu = 0.1f32; // base offset
-                        let mut h00 = 1.0 - mu;
-                        let mut h10 = 1.0 - mu;
-                        let mut h01 = 1.0 - mu;
-                        let mut h11 = 1.0 - mu;
-
-                        if block == BlockType::Water {
-                            let slope = 0.5; // pull vertices down by this much if neighbor is air
-                            if get_block_safe(wx - 1, wy, wz) == BlockType::Air { h00 -= slope; h01 -= slope; }
-                            if get_block_safe(wx + 1, wy, wz) == BlockType::Air { h10 -= slope; h11 -= slope; }
-                            if get_block_safe(wx, wy, wz - 1) == BlockType::Air { h00 -= slope; h10 -= slope; }
-                            if get_block_safe(wx, wy, wz + 1) == BlockType::Air { h01 -= slope; h11 -= slope; }
-                            
-                            // Clamp to prevent going too low
-                            h00 = h00.max(0.1); h10 = h10.max(0.1); h01 = h01.max(0.1); h11 = h11.max(0.1);
-                        } else {
-                            h00 = block_top; h10 = block_top; h01 = block_top; h11 = block_top;
-                        }
-
-                        v.extend_from_slice(&[
-                            fx,       fy + h00, fz, 
-                            fx,       fy + h01, fz + 1.0, 
-                            fx + 1.0, fy + h11, fz + 1.0, 
-                            fx,       fy + h00, fz, 
-                            fx + 1.0, fy + h11, fz + 1.0, 
-                            fx + 1.0, fy + h10, fz
-                        ]);
+                        v.extend_from_slice(&[fx, fy + block_top, fz, fx, fy + block_top, fz + 1.0, fx + 1.0, fy + block_top, fz + 1.0, fx, fy + block_top, fz, fx + 1.0, fy + block_top, fz + 1.0, fx + 1.0, fy + block_top, fz]);
                         t.extend_from_slice(&[tu0, tv0, tu0, tv1, tu1, tv1, tu0, tv0, tu1, tv1, tu1, tv0]);
                         
                         let l_b = get_light_safe(wx, wy + 1, wz);
-                        let ll_01 = get_light_safe(wx - 1, wy + 1, wz);
-                        let ll_10 = get_light_safe(wx, wy + 1, wz - 1);
-                        let ll_21 = get_light_safe(wx + 1, wy + 1, wz);
-                        let ll_12 = get_light_safe(wx, wy + 1, wz + 1);
-                        let ll_00 = get_light_safe(wx - 1, wy + 1, wz - 1);
-                        let ll_20 = get_light_safe(wx + 1, wy + 1, wz - 1);
-                        let ll_02 = get_light_safe(wx - 1, wy + 1, wz + 1);
-                        let ll_22 = get_light_safe(wx + 1, wy + 1, wz + 1);
+                        let ll_01 = get_light_safe(wx - 1, wy + 1, wz); let ll_10 = get_light_safe(wx, wy + 1, wz - 1);
+                        let ll_21 = get_light_safe(wx + 1, wy + 1, wz); let ll_12 = get_light_safe(wx, wy + 1, wz + 1);
+                        let light00 = calc_vertex_light(l_b, ll_01, ll_10, get_light_safe(wx - 1, wy + 1, wz - 1));
+                        let light10 = calc_vertex_light(l_b, ll_21, ll_10, get_light_safe(wx + 1, wy + 1, wz - 1));
+                        let light01 = calc_vertex_light(l_b, ll_01, ll_12, get_light_safe(wx - 1, wy + 1, wz + 1));
+                        let light11 = calc_vertex_light(l_b, ll_21, ll_12, get_light_safe(wx + 1, wy + 1, wz + 1));
 
-                        let light00 = calc_vertex_light(l_b, ll_01, ll_10, ll_00);
-                        let light10 = calc_vertex_light(l_b, ll_21, ll_10, ll_20);
-                        let light01 = calc_vertex_light(l_b, ll_01, ll_12, ll_02);
-                        let light11 = calc_vertex_light(l_b, ll_21, ll_12, ll_22);
-
-                        let base_shade = 1.0;
                         for _ in 0..6 { n.extend_from_slice(&[0.0, 1.0, 0.0]); }
-                        
-                        let c00 = (255.0 * light00 * base_shade * ao00) as u8;
-                        let c10 = (255.0 * light10 * base_shade * ao10) as u8;
-                        let c01 = (255.0 * light01 * base_shade * ao01) as u8;
-                        let c11 = (255.0 * light11 * base_shade * ao11) as u8;
-                        let a = if block == BlockType::Water { WATER_VERTEX_ALPHA } else { 255 };
-                        c.extend_from_slice(&[c00, c00, c00, a, c01, c01, c01, a, c11, c11, c11, a, c00, c00, c00, a, c11, c11, c11, a, c10, c10, c10, a]);
+                        let c00 = (255.0 * light00 * ao00) as u8; let c10 = (255.0 * light10 * ao10) as u8;
+                        let c01 = (255.0 * light01 * ao01) as u8; let c11 = (255.0 * light11 * ao11) as u8;
+                        c.extend_from_slice(&[c00, c00, c00, 255, c01, c01, c01, 255, c11, c11, c11, 255, c00, c00, c00, 255, c11, c11, c11, 255, c10, c10, c10, 255]);
                     }
 
                     // Bottom
                     let neighbor_bottom = if y > 0 { self.blocks[x][y - 1][z] } else { BlockType::Bedrock };
                     if should_draw_face(block, neighbor_bottom) {
-                        let (mut tu0, mut tv0, mut tu1, mut tv1) = (u0, v0, u1, v1);
-                        if block == BlockType::Grass || block == BlockType::SnowyGrass {
-                            tu0 = 2.0 * ts + pad; tv0 = 0.0; tu1 = 3.0 * ts - pad; tv1 = ts - pad;
-                        } else if block == BlockType::OakLog || block == BlockType::SpruceLog {
-                            tu0 = 5.0 * ts + pad; tv0 = ts + pad; tu1 = 6.0 * ts - pad; tv1 = 2.0 * ts - pad;
-                        }
-
-                        let l_00 = is_solid(get_block_safe(wx - 1, wy - 1, wz - 1));
-                        let l_10 = is_solid(get_block_safe(wx,     wy - 1, wz - 1));
-                        let l_20 = is_solid(get_block_safe(wx + 1, wy - 1, wz - 1));
-                        let l_01 = is_solid(get_block_safe(wx - 1, wy - 1, wz    ));
-                        let l_21 = is_solid(get_block_safe(wx + 1, wy - 1, wz    ));
-                        let l_02 = is_solid(get_block_safe(wx - 1, wy - 1, wz + 1));
-                        let l_12 = is_solid(get_block_safe(wx,     wy - 1, wz + 1));
-                        let l_22 = is_solid(get_block_safe(wx + 1, wy - 1, wz + 1));
-
-                        let ao00 = calc_ao(l_01, l_10, l_00);
-                        let ao10 = calc_ao(l_21, l_10, l_20);
-                        let ao01 = calc_ao(l_01, l_12, l_02);
-                        let ao11 = calc_ao(l_21, l_12, l_22);
-
                         v.extend_from_slice(&[fx, fy, fz, fx + 1.0, fy, fz + 1.0, fx, fy, fz + 1.0, fx, fy, fz, fx + 1.0, fy, fz, fx + 1.0, fy, fz + 1.0]);
-                        t.extend_from_slice(&[tu0, tv0, tu1, tv1, tu0, tv1, tu0, tv0, tu1, tv0, tu1, tv1]);
-                        
-                        let l_b = get_light_safe(wx, wy - 1, wz);
-                        let ll_01 = get_light_safe(wx - 1, wy - 1, wz);
-                        let ll_10 = get_light_safe(wx, wy - 1, wz - 1);
-                        let ll_21 = get_light_safe(wx + 1, wy - 1, wz);
-                        let ll_12 = get_light_safe(wx, wy - 1, wz + 1);
-                        let ll_00 = get_light_safe(wx - 1, wy - 1, wz - 1);
-                        let ll_20 = get_light_safe(wx + 1, wy - 1, wz - 1);
-                        let ll_02 = get_light_safe(wx - 1, wy - 1, wz + 1);
-                        let ll_22 = get_light_safe(wx + 1, wy - 1, wz + 1);
-
-                        let light00 = calc_vertex_light(l_b, ll_01, ll_10, ll_00);
-                        let light10 = calc_vertex_light(l_b, ll_21, ll_10, ll_20);
-                        let light01 = calc_vertex_light(l_b, ll_01, ll_12, ll_02);
-                        let light11 = calc_vertex_light(l_b, ll_21, ll_12, ll_22);
-
-                        let base_shade = 0.5;
+                        t.extend_from_slice(&[u0, v0, u1, v1, u0, v1, u0, v0, u1, v0, u1, v1]);
                         for _ in 0..6 { n.extend_from_slice(&[0.0, -1.0, 0.0]); }
-
-                        let c00 = (255.0 * light00 * base_shade * ao00) as u8;
-                        let c10 = (255.0 * light10 * base_shade * ao10) as u8;
-                        let c01 = (255.0 * light01 * base_shade * ao01) as u8;
-                        let c11 = (255.0 * light11 * base_shade * ao11) as u8;
-                        let a = 255;
-                        c.extend_from_slice(&[c00, c00, c00, a, c11, c11, c11, a, c01, c01, c01, a, c00, c00, c00, a, c10, c10, c10, a, c11, c11, c11, a]);
+                        let light = calc_light_f(get_light_safe(wx, wy - 1, wz));
+                        let shade = (255.0 * light * 0.5) as u8;
+                        for _ in 0..6 { c.extend_from_slice(&[shade, shade, shade, 255]); }
                     }
 
-                    // Sides
-                    // Z+
-                    let neighbor_zp = if z < CHUNK_DEPTH - 1 { self.blocks[x][y][z + 1] } else { unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[x][y][0]) } };
-                    if should_draw_face(block, neighbor_zp) {
-                        let l_00 = is_solid(get_block_safe(wx - 1, wy - 1, wz + 1));
-                        let l_10 = is_solid(get_block_safe(wx,     wy - 1, wz + 1));
-                        let l_20 = is_solid(get_block_safe(wx + 1, wy - 1, wz + 1));
-                        let l_01 = is_solid(get_block_safe(wx - 1, wy,     wz + 1));
-                        let l_21 = is_solid(get_block_safe(wx + 1, wy,     wz + 1));
-                        let l_02 = is_solid(get_block_safe(wx - 1, wy + 1, wz + 1));
-                        let l_12 = is_solid(get_block_safe(wx,     wy + 1, wz + 1));
-                        let l_22 = is_solid(get_block_safe(wx + 1, wy + 1, wz + 1));
-
-                        let ao00 = calc_ao(l_01, l_10, l_00);
-                        let ao10 = calc_ao(l_21, l_10, l_20);
-                        let ao01 = calc_ao(l_01, l_12, l_02);
-                        let ao11 = calc_ao(l_21, l_12, l_22);
-
-                        v.extend_from_slice(&[fx, fy, fz + 1.0, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + block_top - w_off, fz + 1.0, fx, fy, fz + 1.0, fx + 1.0, fy + block_top - w_off, fz + 1.0, fx, fy + block_top - w_off, fz + 1.0]);
-                        t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
-                        
-                        let l_b = get_light_safe(wx, wy, wz + 1);
-                        let ll_01 = get_light_safe(wx - 1, wy, wz + 1);
-                        let ll_10 = get_light_safe(wx, wy - 1, wz + 1);
-                        let ll_21 = get_light_safe(wx + 1, wy, wz + 1);
-                        let ll_12 = get_light_safe(wx, wy + 1, wz + 1);
-                        let ll_00 = get_light_safe(wx - 1, wy - 1, wz + 1);
-                        let ll_20 = get_light_safe(wx + 1, wy - 1, wz + 1);
-                        let ll_02 = get_light_safe(wx - 1, wy + 1, wz + 1);
-                        let ll_22 = get_light_safe(wx + 1, wy + 1, wz + 1);
-
-                        let light00 = calc_vertex_light(l_b, ll_01, ll_10, ll_00);
-                        let light10 = calc_vertex_light(l_b, ll_21, ll_10, ll_20);
-                        let light01 = calc_vertex_light(l_b, ll_01, ll_12, ll_02);
-                        let light11 = calc_vertex_light(l_b, ll_21, ll_12, ll_22);
-
-                        let base_shade = 0.6;
-                        for _ in 0..6 { n.extend_from_slice(&[0.0, 0.0, 1.0]); }
-
-                        let c00 = (255.0 * light00 * base_shade * ao00) as u8;
-                        let c10 = (255.0 * light10 * base_shade * ao10) as u8;
-                        let c01 = (255.0 * light01 * base_shade * ao01) as u8;
-                        let c11 = (255.0 * light11 * base_shade * ao11) as u8;
-                        let a = if block == BlockType::Water { WATER_VERTEX_ALPHA } else { 255 };
-                        c.extend_from_slice(&[c00, c00, c00, a, c10, c10, c10, a, c11, c11, c11, a, c00, c00, c00, a, c11, c11, c11, a, c01, c01, c01, a]);
-                    }
-                    // Z-
-                    let neighbor_zn = if z > 0 { self.blocks[x][y][z - 1] } else { unsafe { n_nz.map_or(BlockType::Air, |c| (*c).blocks[x][y][CHUNK_DEPTH - 1]) } };
-                    if should_draw_face(block, neighbor_zn) {
-                        let l_00 = is_solid(get_block_safe(wx + 1, wy - 1, wz - 1));
-                        let l_10 = is_solid(get_block_safe(wx,     wy - 1, wz - 1));
-                        let l_20 = is_solid(get_block_safe(wx - 1, wy - 1, wz - 1));
-                        let l_01 = is_solid(get_block_safe(wx + 1, wy,     wz - 1));
-                        let l_21 = is_solid(get_block_safe(wx - 1, wy,     wz - 1));
-                        let l_02 = is_solid(get_block_safe(wx + 1, wy + 1, wz - 1));
-                        let l_12 = is_solid(get_block_safe(wx,     wy + 1, wz - 1));
-                        let l_22 = is_solid(get_block_safe(wx - 1, wy + 1, wz - 1));
-
-                        let ao00 = calc_ao(l_01, l_10, l_00);
-                        let ao10 = calc_ao(l_21, l_10, l_20);
-                        let ao01 = calc_ao(l_01, l_12, l_02);
-                        let ao11 = calc_ao(l_21, l_12, l_22);
-
-                        v.extend_from_slice(&[fx + 1.0, fy, fz, fx, fy, fz, fx, fy + block_top - w_off, fz, fx + 1.0, fy, fz, fx, fy + block_top - w_off, fz, fx + 1.0, fy + block_top - w_off, fz]);
-                        t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
-                        
-                        let l_b = get_light_safe(wx, wy, wz - 1);
-                        let ll_01 = get_light_safe(wx + 1, wy, wz - 1);
-                        let ll_10 = get_light_safe(wx, wy - 1, wz - 1);
-                        let ll_21 = get_light_safe(wx - 1, wy, wz - 1);
-                        let ll_12 = get_light_safe(wx, wy + 1, wz - 1);
-                        let ll_00 = get_light_safe(wx + 1, wy - 1, wz - 1);
-                        let ll_20 = get_light_safe(wx - 1, wy - 1, wz - 1);
-                        let ll_02 = get_light_safe(wx + 1, wy + 1, wz - 1);
-                        let ll_22 = get_light_safe(wx - 1, wy + 1, wz - 1);
-
-                        let light00 = calc_vertex_light(l_b, ll_01, ll_10, ll_00);
-                        let light10 = calc_vertex_light(l_b, ll_21, ll_10, ll_20);
-                        let light01 = calc_vertex_light(l_b, ll_01, ll_12, ll_02);
-                        let light11 = calc_vertex_light(l_b, ll_21, ll_12, ll_22);
-
-                        let base_shade = 0.6;
-                        for _ in 0..6 { n.extend_from_slice(&[0.0, 0.0, -1.0]); }
-
-                        let c00 = (255.0 * light00 * base_shade * ao00) as u8;
-                        let c10 = (255.0 * light10 * base_shade * ao10) as u8;
-                        let c01 = (255.0 * light01 * base_shade * ao01) as u8;
-                        let c11 = (255.0 * light11 * base_shade * ao11) as u8;
-                        let a = if block == BlockType::Water { WATER_VERTEX_ALPHA } else { 255 };
-                        c.extend_from_slice(&[c00, c00, c00, a, c10, c10, c10, a, c11, c11, c11, a, c00, c00, c00, a, c11, c11, c11, a, c01, c01, c01, a]);
-                    }
-                    // X+
-                    let neighbor_xp = if x < CHUNK_WIDTH - 1 { self.blocks[x + 1][y][z] } else { unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[0][y][z]) } };
-                    if should_draw_face(block, neighbor_xp) {
-                        let l_00 = is_solid(get_block_safe(wx + 1, wy - 1, wz + 1));
-                        let l_10 = is_solid(get_block_safe(wx + 1, wy - 1, wz    ));
-                        let l_20 = is_solid(get_block_safe(wx + 1, wy - 1, wz - 1));
-                        let l_01 = is_solid(get_block_safe(wx + 1, wy,     wz + 1));
-                        let l_21 = is_solid(get_block_safe(wx + 1, wy,     wz - 1));
-                        let l_02 = is_solid(get_block_safe(wx + 1, wy + 1, wz + 1));
-                        let l_12 = is_solid(get_block_safe(wx + 1, wy + 1, wz    ));
-                        let l_22 = is_solid(get_block_safe(wx + 1, wy + 1, wz - 1));
-
-                        let ao00 = calc_ao(l_01, l_10, l_00);
-                        let ao10 = calc_ao(l_21, l_10, l_20);
-                        let ao01 = calc_ao(l_01, l_12, l_02);
-                        let ao11 = calc_ao(l_21, l_12, l_22);
-
-                        v.extend_from_slice(&[fx + 1.0, fy, fz + 1.0, fx + 1.0, fy, fz, fx + 1.0, fy + block_top - w_off, fz, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + block_top - w_off, fz, fx + 1.0, fy + block_top - w_off, fz + 1.0]);
-                        t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
-                        
-                        let l_b = get_light_safe(wx + 1, wy, wz);
-                        let ll_01 = get_light_safe(wx + 1, wy, wz + 1);
-                        let ll_10 = get_light_safe(wx + 1, wy - 1, wz);
-                        let ll_21 = get_light_safe(wx + 1, wy, wz - 1);
-                        let ll_12 = get_light_safe(wx + 1, wy + 1, wz);
-                        let ll_00 = get_light_safe(wx + 1, wy - 1, wz + 1);
-                        let ll_20 = get_light_safe(wx + 1, wy - 1, wz - 1);
-                        let ll_02 = get_light_safe(wx + 1, wy + 1, wz + 1);
-                        let ll_22 = get_light_safe(wx + 1, wy + 1, wz - 1);
-
-                        let light00 = calc_vertex_light(l_b, ll_01, ll_10, ll_00);
-                        let light10 = calc_vertex_light(l_b, ll_21, ll_10, ll_20);
-                        let light01 = calc_vertex_light(l_b, ll_01, ll_12, ll_02);
-                        let light11 = calc_vertex_light(l_b, ll_21, ll_12, ll_22);
-
-                        let base_shade = 0.8;
-                        for _ in 0..6 { n.extend_from_slice(&[1.0, 0.0, 0.0]); }
-
-                        let c00 = (255.0 * light00 * base_shade * ao00) as u8;
-                        let c10 = (255.0 * light10 * base_shade * ao10) as u8;
-                        let c01 = (255.0 * light01 * base_shade * ao01) as u8;
-                        let c11 = (255.0 * light11 * base_shade * ao11) as u8;
-                        let a = if block == BlockType::Water { WATER_VERTEX_ALPHA } else { 255 };
-                        c.extend_from_slice(&[c00, c00, c00, a, c10, c10, c10, a, c11, c11, c11, a, c00, c00, c00, a, c11, c11, c11, a, c01, c01, c01, a]);
-                    }
-                    // X-
-                    let neighbor_xn = if x > 0 { self.blocks[x - 1][y][z] } else { unsafe { n_nx.map_or(BlockType::Air, |c| (*c).blocks[CHUNK_WIDTH - 1][y][z]) } };
-                    if should_draw_face(block, neighbor_xn) {
-                        let l_00 = is_solid(get_block_safe(wx - 1, wy - 1, wz - 1));
-                        let l_10 = is_solid(get_block_safe(wx - 1, wy - 1, wz    ));
-                        let l_20 = is_solid(get_block_safe(wx - 1, wy - 1, wz + 1));
-                        let l_01 = is_solid(get_block_safe(wx - 1, wy,     wz - 1));
-                        let l_21 = is_solid(get_block_safe(wx - 1, wy,     wz + 1));
-                        let l_02 = is_solid(get_block_safe(wx - 1, wy + 1, wz - 1));
-                        let l_12 = is_solid(get_block_safe(wx - 1, wy + 1, wz    ));
-                        let l_22 = is_solid(get_block_safe(wx - 1, wy + 1, wz + 1));
-
-                        let ao00 = calc_ao(l_01, l_10, l_00);
-                        let ao10 = calc_ao(l_21, l_10, l_20);
-                        let ao01 = calc_ao(l_01, l_12, l_02);
-                        let ao11 = calc_ao(l_21, l_12, l_22);
-
-                        v.extend_from_slice(&[fx, fy, fz, fx, fy, fz + 1.0, fx, fy + block_top - w_off, fz + 1.0, fx, fy, fz, fx, fy + block_top - w_off, fz + 1.0, fx, fy + block_top - w_off, fz]);
-                        t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
-                        
-                        let l_b = get_light_safe(wx - 1, wy, wz);
-                        let ll_01 = get_light_safe(wx - 1, wy, wz - 1);
-                        let ll_10 = get_light_safe(wx - 1, wy - 1, wz);
-                        let ll_21 = get_light_safe(wx - 1, wy, wz + 1);
-                        let ll_12 = get_light_safe(wx - 1, wy + 1, wz);
-                        let ll_00 = get_light_safe(wx - 1, wy - 1, wz - 1);
-                        let ll_20 = get_light_safe(wx - 1, wy - 1, wz + 1);
-                        let ll_02 = get_light_safe(wx - 1, wy + 1, wz - 1);
-                        let ll_22 = get_light_safe(wx - 1, wy + 1, wz + 1);
-
-                        let light00 = calc_vertex_light(l_b, ll_01, ll_10, ll_00);
-                        let light10 = calc_vertex_light(l_b, ll_21, ll_10, ll_20);
-                        let light01 = calc_vertex_light(l_b, ll_01, ll_12, ll_02);
-                        let light11 = calc_vertex_light(l_b, ll_21, ll_12, ll_22);
-
-                        let base_shade = 0.8;
-                        for _ in 0..6 { n.extend_from_slice(&[-1.0, 0.0, 0.0]); }
-
-                        let c00 = (255.0 * light00 * base_shade * ao00) as u8;
-                        let c10 = (255.0 * light10 * base_shade * ao10) as u8;
-                        let c01 = (255.0 * light01 * base_shade * ao01) as u8;
-                        let c11 = (255.0 * light11 * base_shade * ao11) as u8;
-                        let a = if block == BlockType::Water { WATER_VERTEX_ALPHA } else { 255 };
-                        c.extend_from_slice(&[c00, c00, c00, a, c10, c10, c10, a, c11, c11, c11, a, c00, c00, c00, a, c11, c11, c11, a, c01, c01, c01, a]);
+                    // Sides (Z+, Z-, X+, X-)
+                    let neighbors = [
+                        (if z < CHUNK_DEPTH - 1 { self.blocks[x][y][z + 1] } else { unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[x][y][0]) } }, [0.0, 0.0, 1.0], 0.6),
+                        (if z > 0 { self.blocks[x][y][z - 1] } else { unsafe { n_nz.map_or(BlockType::Air, |c| (*c).blocks[x][y][CHUNK_DEPTH - 1]) } }, [0.0, 0.0, -1.0], 0.6),
+                        (if x < CHUNK_WIDTH - 1 { self.blocks[x + 1][y][z] } else { unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[0][y][z]) } }, [1.0, 0.0, 0.0], 0.8),
+                        (if x > 0 { self.blocks[x - 1][y][z] } else { unsafe { n_nx.map_or(BlockType::Air, |c| (*c).blocks[CHUNK_WIDTH - 1][y][z]) } }, [-1.0, 0.0, 0.0], 0.8),
+                    ];
+                    for (i, (neighbor, norm, s_mul)) in neighbors.iter().enumerate() {
+                        if should_draw_face(block, *neighbor) {
+                            if i == 0 { // Z+
+                                v.extend_from_slice(&[fx, fy, fz + 1.0, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + block_top, fz + 1.0, fx, fy, fz + 1.0, fx + 1.0, fy + block_top, fz + 1.0, fx, fy + block_top, fz + 1.0]);
+                            } else if i == 1 { // Z-
+                                v.extend_from_slice(&[fx + 1.0, fy, fz, fx, fy, fz, fx, fy + block_top, fz, fx + 1.0, fy, fz, fx, fy + block_top, fz, fx + 1.0, fy + block_top, fz]);
+                            } else if i == 2 { // X+
+                                v.extend_from_slice(&[fx + 1.0, fy, fz + 1.0, fx + 1.0, fy, fz, fx + 1.0, fy + block_top, fz, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + block_top, fz, fx + 1.0, fy + block_top, fz + 1.0]);
+                            } else { // X-
+                                v.extend_from_slice(&[fx, fy, fz, fx, fy, fz + 1.0, fx, fy + block_top, fz + 1.0, fx, fy, fz, fx, fy + block_top, fz + 1.0, fx, fy + block_top, fz]);
+                            }
+                            t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
+                            for _ in 0..6 { n.extend_from_slice(norm); }
+                            let light = calc_light_f(get_light_safe(wx + norm[0] as i32, wy, wz + norm[2] as i32));
+                            let shade = (255.0 * light * s_mul) as u8;
+                            for _ in 0..6 { c.extend_from_slice(&[shade, shade, shade, 255]); }
+                        }
                     }
                 }
             }

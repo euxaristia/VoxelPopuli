@@ -717,42 +717,92 @@ impl World {
         self.update_falling_blocks();
     }
 
+    pub fn get_liquid_level(&self, x: i32, y: i32, z: i32) -> u8 {
+        if y < 0 || y >= CHUNK_HEIGHT as i32 { return 0; }
+        let cx = x.div_euclid(CHUNK_WIDTH as i32);
+        let cz = z.div_euclid(CHUNK_DEPTH as i32);
+        let bx = x.rem_euclid(CHUNK_WIDTH as i32) as usize;
+        let bz = z.rem_euclid(CHUNK_DEPTH as i32) as usize;
+
+        if let Some(chunk) = self.get_chunk(cx, cz) {
+            return chunk.liquid_levels[bx][y as usize][bz];
+        }
+        0
+    }
+
+    pub fn set_liquid_level(&mut self, x: i32, y: i32, z: i32, level: u8) {
+        if y < 0 || y >= CHUNK_HEIGHT as i32 { return; }
+        let cx = x.div_euclid(CHUNK_WIDTH as i32);
+        let cz = z.div_euclid(CHUNK_DEPTH as i32);
+        let bx = x.rem_euclid(CHUNK_WIDTH as i32) as usize;
+        let bz = z.rem_euclid(CHUNK_DEPTH as i32) as usize;
+
+        let mut needs_activation = false;
+        if let Some(chunk) = self.get_chunk_mut(cx, cz) {
+            chunk.liquid_levels[bx][y as usize][bz] = level;
+            // Also sync the block type
+            if level > 0 {
+                if chunk.blocks[bx][y as usize][bz] != BlockType::Water {
+                    chunk.blocks[bx][y as usize][bz] = BlockType::Water;
+                    needs_activation = true;
+                }
+            } else {
+                if chunk.blocks[bx][y as usize][bz] == BlockType::Water {
+                    chunk.blocks[bx][y as usize][bz] = BlockType::Air;
+                }
+            }
+            if !chunk.dirty {
+                chunk.dirty = true;
+                self.dirty_count += 1;
+            }
+        }
+        
+        if needs_activation {
+            self.active_water.insert((x, y, z));
+        }
+    }
+
     pub fn update_water(&mut self) {
         if self.active_water.is_empty() { return; }
         let to_process: Vec<(i32, i32, i32)> = self.active_water.drain().collect();
         
         let mut processed = 0;
         for (x, y, z) in to_process.iter().copied() {
-            if self.get_block(x, y, z) != BlockType::Water { continue; }
+            let level = self.get_liquid_level(x, y, z);
+            if level == 0 { continue; }
             
-            // 1. Flow down
-            if y > 0 && self.get_block(x, y-1, z) == BlockType::Air {
-                self.set_block(x, y, z, BlockType::Air);
-                self.set_block(x, y-1, z, BlockType::Water);
-            } else if y > 0 {
-                // 2. Spread sideways
-                let mut moved = false;
-                for (dx, dz) in [(1,0), (-1,0), (0,1), (0,-1)] {
-                    if self.get_block(x+dx, y, z+dz) == BlockType::Air {
-                        let target_below = self.get_block(x+dx, y-1, z+dz);
-                        // Priority 1: Hole (Air or Water) found next to us
-                        if target_below == BlockType::Air || target_below == BlockType::Water {
-                             self.set_block(x, y, z, BlockType::Air);
-                             self.set_block(x+dx, y, z+dz, BlockType::Water);
-                             moved = true;
-                             break;
-                        }
+            // 1. DLU Flow: DOWN
+            if y > 0 {
+                let below_block = self.get_block(x, y - 1, z);
+                if below_block == BlockType::Air || below_block == BlockType::Water {
+                    let below_level = self.get_liquid_level(x, y - 1, z);
+                    if below_level < 64 {
+                        let transfer = (64 - below_level).min(level);
+                        self.set_liquid_level(x, y, z, level - transfer);
+                        self.set_liquid_level(x, y - 1, z, below_level + transfer);
+                        self.active_water.insert((x, y - 1, z));
+                        if level - transfer > 0 { self.active_water.insert((x, y, z)); }
+                        processed += 1;
+                        continue;
                     }
                 }
-                
-                // Priority 2: Level spread (only if we are atop a floor)
-                if !moved && self.get_block(x, y-1, z).is_solid() {
-                     for (dx, dz) in [(1,0), (-1,0), (0,1), (0,-1)] {
-                        if self.get_block(x+dx, y, z+dz) == BlockType::Air {
-                             self.set_block(x, y, z, BlockType::Air);
-                             self.set_block(x+dx, y, z+dz, BlockType::Water);
-                             break;
-                        }
+            }
+            
+            // 2. DLU Flow: SIDEWAYS (Equalize)
+            let neighbors = [(x + 1, y, z), (x - 1, y, z), (x, y, z + 1), (x, y, z - 1)];
+            // Basic shuffling for less deterministic flow
+            for (nx, ny, nz) in neighbors {
+                let nb = self.get_block(nx, ny, nz);
+                if nb == BlockType::Air || nb == BlockType::Water {
+                    let nl = self.get_liquid_level(nx, ny, nz);
+                    if nl < level - 1 { // -1 to prevent oscillation
+                        let diff = level - nl;
+                        let transfer = (diff / 2).max(1);
+                        self.set_liquid_level(x, y, z, level - transfer);
+                        self.set_liquid_level(nx, ny, nz, nl + transfer);
+                        self.active_water.insert((nx, ny, nz));
+                        self.active_water.insert((x, y, z));
+                        break;
                     }
                 }
             }
