@@ -454,7 +454,11 @@ impl Chunk {
                 }
             }
         }
+        
+        self.calculate_lighting();
+    }
 
+    pub fn calculate_lighting(&mut self) {
         // PASS 7: Simple skylight (top-down sunlight)
         for x in 0..CHUNK_WIDTH {
             for z in 0..CHUNK_DEPTH {
@@ -539,6 +543,7 @@ impl Chunk {
     }
 
     pub fn build_mesh(&mut self, world: &crate::world::World) {
+        self.calculate_lighting();
         let mut v_op = Vec::new();
         let mut t_op = Vec::new();
         let mut n_op = Vec::new();
