@@ -851,12 +851,20 @@ impl World {
     }
 
     pub fn render_transparent(&self, frustum: &Frustum) {
+        unsafe {
+            gl::Enable(gl::BLEND);
+            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            gl::Disable(gl::CULL_FACE);
+        }
         for chunk_opt in &self.chunks {
             if let Some(chunk) = chunk_opt {
                 let min = Vec3::new(chunk.x as f32 * CHUNK_WIDTH as f32, 0.0, chunk.z as f32 * CHUNK_DEPTH as f32);
                 let max = Vec3::new(min.x + CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, min.z + CHUNK_DEPTH as f32);
                 if frustum.is_box_visible(min, max) { if let Some(mesh) = &chunk.mesh_transparent { mesh.draw(); } }
             }
+        }
+        unsafe {
+            gl::Enable(gl::CULL_FACE);
         }
     }
 

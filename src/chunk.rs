@@ -35,7 +35,7 @@ pub fn get_biome(world_x: f32, world_z: f32) -> Biome {
 pub const CHUNK_WIDTH: usize = 16;
 pub const CHUNK_HEIGHT: usize = 256;
 pub const CHUNK_DEPTH: usize = 16;
-pub const WATER_VERTEX_ALPHA: u8 = 240;
+pub const WATER_VERTEX_ALPHA: u8 = 160;
 
 pub struct MeshData {
     pub v: Vec<f32>,
@@ -708,7 +708,7 @@ impl Chunk {
                                 let u1 = (tx + 1) as f32 * ts - pad;
                                 let v1 = (ty + 1) as f32 * ts - pad;
 
-                    let w_off = if block == BlockType::Water { -0.005 } else { 0.0 };
+                    let w_off = if block == BlockType::Water { 0.1 } else { 0.0 };
                     let block_top = if block == BlockType::SnowLayer { 0.125 } else { 1.0 };
                     let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
                     let wy = y as i32;
