@@ -8,13 +8,123 @@ mod world;
 use block::BlockType;
 use world::World;
 
-const INVENTORY_BLOCKS: [BlockType; 10] = [
-    BlockType::Grass,    BlockType::Dirt,     BlockType::Stone,   BlockType::OakLog,    BlockType::OakLeaves,
-    BlockType::Sand,     BlockType::Gravel,   BlockType::CoalOre, BlockType::SpruceLog, BlockType::SpruceLeaves,
-];
+// ── Inventory ──────────────────────────────────────────────────────────────
+// Slot layout (45 total):
+//   0-8   hotbar           9-35  main inventory (3×9)
+//   36-39 armor (visual)  40-43  crafting 2×2     44  crafting output
 
-fn inv_idx(block: BlockType) -> Option<usize> {
-    INVENTORY_BLOCKS.iter().position(|&b| b == block)
+#[derive(Clone, Copy, PartialEq)]
+struct ItemStack { block: BlockType, count: u32 }
+impl ItemStack { fn new(b: BlockType, n: u32) -> Self { Self { block: b, count: n } } }
+
+const STACK_MAX: u32 = 64;
+
+/// Add items when mining – hotbar first, then main inventory.
+fn inv_add(slots: &mut [Option<ItemStack>; 45], block: BlockType, mut amt: u32) {
+    for pass in 0..2u8 {
+        for i in (0..9).chain(9..36) {
+            if amt == 0 { return; }
+            match slots[i] {
+                Some(s) if s.block == block && s.count < STACK_MAX && pass == 0 => {
+                    let add = (STACK_MAX - s.count).min(amt);
+                    slots[i] = Some(ItemStack::new(block, s.count + add)); amt -= add;
+                }
+                None if pass == 1 => {
+                    let add = amt.min(STACK_MAX);
+                    slots[i] = Some(ItemStack::new(block, add)); amt -= add;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Full MC 1.0 slot-click mechanics.
+fn inv_click(slots: &mut [Option<ItemStack>; 45], cursor: &mut Option<ItemStack>, slot: usize, right: bool, shift: bool) {
+    // Crafting output: pick up only (no placing)
+    if slot == 44 {
+        if !right && cursor.is_none() { *cursor = slots[44].take(); }
+        return;
+    }
+    // Armor slots: simple swap for now
+    if (36..40).contains(&slot) {
+        if !shift { std::mem::swap(&mut slots[slot], cursor); }
+        return;
+    }
+    if shift {
+        if let Some(s) = slots[slot] {
+            slots[slot] = None;
+            let (a, b) = if slot < 9 { (9usize, 36usize) } else { (0usize, 9usize) };
+            let mut rem = s.count;
+            for i in a..b { // fill existing stacks
+                if rem == 0 { break; }
+                if let Some(d) = slots[i] { if d.block == s.block && d.count < STACK_MAX {
+                    let add = (STACK_MAX - d.count).min(rem);
+                    slots[i] = Some(ItemStack::new(s.block, d.count + add)); rem -= add;
+                }}
+            }
+            for i in a..b { // fill empty slots
+                if rem == 0 { break; }
+                if slots[i].is_none() { let n = rem.min(STACK_MAX); slots[i] = Some(ItemStack::new(s.block, n)); rem -= n; }
+            }
+            if rem > 0 { slots[slot] = Some(ItemStack::new(s.block, rem)); }
+        }
+        return;
+    }
+    if right {
+        if cursor.is_none() {
+            if let Some(s) = slots[slot] {
+                let half = (s.count + 1) / 2;
+                *cursor = Some(ItemStack::new(s.block, half));
+                let left = s.count - half;
+                slots[slot] = if left > 0 { Some(ItemStack::new(s.block, left)) } else { None };
+            }
+        } else {
+            let held = cursor.unwrap();
+            let ok = match slots[slot] { None => true, Some(d) => d.block == held.block && d.count < STACK_MAX };
+            if ok {
+                match slots[slot] {
+                    None => { slots[slot] = Some(ItemStack::new(held.block, 1)); }
+                    Some(d) => { slots[slot] = Some(ItemStack::new(d.block, d.count + 1)); }
+                }
+                let nc = held.count - 1;
+                *cursor = if nc > 0 { Some(ItemStack::new(held.block, nc)) } else { None };
+            }
+        }
+    } else {
+        match (*cursor, slots[slot]) {
+            (None, _)                                         => { *cursor = slots[slot].take(); }
+            (Some(h), None)                                   => { slots[slot] = Some(h); *cursor = None; }
+            (Some(h), Some(d)) if h.block == d.block => {
+                let add = (STACK_MAX - d.count).min(h.count);
+                slots[slot] = Some(ItemStack::new(d.block, d.count + add));
+                let nc = h.count - add;
+                *cursor = if nc > 0 { Some(ItemStack::new(h.block, nc)) } else { None };
+            }
+            _ => { std::mem::swap(&mut slots[slot], cursor); }
+        }
+    }
+}
+
+/// Returns (x, y, w, h) of a slot in the inventory panel.
+fn slot_rect(slot: usize, px: f32, py: f32) -> (f32, f32, f32, f32) {
+    let ss = 36.0f32; let st = 38.0f32; // size, stride
+    match slot {
+        0..=8  => (px + 10.0 + slot as f32 * st,            py + 294.0, ss, ss),
+        9..=35 => { let i = slot-9; (px+10.0+(i%9) as f32*st, py+168.0+(i/9) as f32*st, ss, ss) }
+        36..=39=> (px + 10.0, py + 10.0 + (slot-36) as f32 * st, ss, ss),
+        40..=43=> { let i = slot-40; (px+195.0+(i%2) as f32*st, py+28.0+(i/2) as f32*st, ss, ss) }
+        44     => (px + 304.0, py + 42.0, ss, ss),
+        _      => (0.0, 0.0, 0.0, 0.0),
+    }
+}
+
+fn slot_at_pos(mx: f32, my: f32, px: f32, py: f32) -> Option<usize> {
+    for s in (0..45).filter(|&s| !(36..40).contains(&s)) { // skip armor for now
+        let (x, y, w, h) = slot_rect(s, px, py);
+        if mx >= x && mx < x+w && my >= y && my < y+h { return Some(s); }
+    }
+    None
 }
 use renderer::{Shader, Texture2D, RenderTexture2D};
 use glam::{Vec2, Vec3, Mat4};
@@ -510,7 +620,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     glfw.window_hint(glfw::WindowHint::OpenGlForwardCompat(true));
     let (mut window, events) = glfw.create_window(WINDOW_WIDTH, WINDOW_HEIGHT, "VoxelPopuli Rust", glfw::WindowMode::Windowed).expect("Failed to create GLFW window.");
-    window.make_current(); window.set_key_polling(true); window.set_cursor_pos_polling(true); window.set_size_polling(true); window.set_mouse_button_polling(true); window.set_cursor_mode(glfw::CursorMode::Disabled);
+    window.make_current(); window.set_key_polling(true); window.set_cursor_pos_polling(true); window.set_size_polling(true); window.set_mouse_button_polling(true); window.set_scroll_polling(true); window.set_cursor_mode(glfw::CursorMode::Disabled);
     gl::load_with(|s| window.get_proc_address(s).map_or(std::ptr::null(), |p| p as *const _));
     unsafe {
         gl::Enable(gl::DEPTH_TEST); gl::DepthFunc(gl::LEQUAL);
@@ -527,8 +637,8 @@ fn main() {
     let mut spawn_y = 150.0;
     world.update(Vec3::new(32.5, 0.0, 32.5), 0.0); 
     for y in (0..255).rev() { if world.get_block(32, y, 32) != BlockType::Air { spawn_y = y as f32 + 2.0; break; } }
-    let mut hotbar = [BlockType::Air; 10];
-    let mut inv_counts = [0u32; 10]; // counts indexed by INVENTORY_BLOCKS
+    let mut inv_slots = [None::<ItemStack>; 45];
+    let mut inv_cursor: Option<ItemStack> = None;
     let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0, inventory_open: false, selected_slot: 0, health: 20, flying: false, last_space_release: 0.0, space_was_pressed: false };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
@@ -565,7 +675,31 @@ fn main() {
                     if player.inventory_open {
                         window.set_cursor_mode(glfw::CursorMode::Normal);
                     } else {
+                        // Return cursor item to inventory on close
+                        if let Some(c) = inv_cursor { inv_add(&mut inv_slots, c.block, c.count); inv_cursor = None; }
                         window.set_cursor_mode(glfw::CursorMode::Disabled);
+                    }
+                }
+                // Hotbar selection: keys 1-9
+                glfw::WindowEvent::Key(Key::Num1, _, Action::Press, _) => { player.selected_slot = 0; }
+                glfw::WindowEvent::Key(Key::Num2, _, Action::Press, _) => { player.selected_slot = 1; }
+                glfw::WindowEvent::Key(Key::Num3, _, Action::Press, _) => { player.selected_slot = 2; }
+                glfw::WindowEvent::Key(Key::Num4, _, Action::Press, _) => { player.selected_slot = 3; }
+                glfw::WindowEvent::Key(Key::Num5, _, Action::Press, _) => { player.selected_slot = 4; }
+                glfw::WindowEvent::Key(Key::Num6, _, Action::Press, _) => { player.selected_slot = 5; }
+                glfw::WindowEvent::Key(Key::Num7, _, Action::Press, _) => { player.selected_slot = 6; }
+                glfw::WindowEvent::Key(Key::Num8, _, Action::Press, _) => { player.selected_slot = 7; }
+                glfw::WindowEvent::Key(Key::Num9, _, Action::Press, _) => { player.selected_slot = 8; }
+                // Q: drop cursor item (inv open) or selected hotbar item (inv closed)
+                glfw::WindowEvent::Key(Key::Q, _, Action::Press, _) => {
+                    if player.inventory_open { inv_cursor = None; }
+                    else { inv_slots[player.selected_slot] = None; }
+                }
+
+                glfw::WindowEvent::Scroll(_, dy) => {
+                    if !player.inventory_open {
+                        if dy > 0.0 { player.selected_slot = (player.selected_slot + 8) % 9; }
+                        else        { player.selected_slot = (player.selected_slot + 1) % 9; }
                     }
                 }
 
@@ -577,62 +711,39 @@ fn main() {
                     }
                     last_cursor_pos = (x, y);
                 }
-                glfw::WindowEvent::MouseButton(button, Action::Press, _) => {
-                    if player.inventory_open {
-                        // Inventory click: assign clicked block type to selected hotbar slot
-                        if button == glfw::MouseButtonLeft {
-                            let (win_w, win_h) = window.get_framebuffer_size();
-                            let sw = win_w as f32; let sh = win_h as f32;
-                            let slot_size = 70.0f32; let cols = 5usize;
-                            let grid_w = cols as f32 * (slot_size + 10.0) - 10.0;
-                            let grid_h = 2.0 * (slot_size + 10.0) - 10.0;
-                            let inv_x = (sw - grid_w) / 2.0;
-                            let inv_y = (sh - grid_h) / 2.0;
-                            let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
-                            for i in 0..10usize {
-                                let col = (i % cols) as f32; let row = (i / cols) as f32;
-                                let sx = inv_x + col * (slot_size + 10.0);
-                                let sy = inv_y + row * (slot_size + 10.0);
-                                if mx >= sx && mx < sx + slot_size && my >= sy && my < sy + slot_size {
-                                    if inv_counts[i] > 0 {
-                                        hotbar[player.selected_slot] = INVENTORY_BLOCKS[i];
-                                    }
-                                    break;
-                                }
-                            }
+                glfw::WindowEvent::MouseButton(button, action, mods) => {
+                    let left  = button == glfw::MouseButtonLeft;
+                    let right = button == glfw::MouseButtonRight;
+                    let shift = mods.contains(glfw::Modifiers::Shift);
+                    if player.inventory_open && action == Action::Press {
+                        let (win_w, win_h) = window.get_framebuffer_size();
+                        let (sw, sh) = (win_w as f32, win_h as f32);
+                        let (px, py) = (sw / 2.0 - 190.0, sh / 2.0 - 170.0);
+                        let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
+                        if let Some(slot) = slot_at_pos(mx, my, px, py) {
+                            inv_click(&mut inv_slots, &mut inv_cursor, slot, right && !left, shift);
                         }
-                    } else {
+                    } else if !player.inventory_open && action == Action::Press {
                         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
                         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
-                        if button == glfw::MouseButtonLeft {
+                        if left {
                             let res = world.raycast(eye_pos, look_dir, 8.0);
                             if res.hit {
-                                let broken_block = world.get_block(res.x, res.y, res.z);
-                                if broken_block != BlockType::Air && broken_block != BlockType::Water && broken_block != BlockType::Bedrock {
-                                    if let Some(idx) = inv_idx(broken_block) {
-                                        inv_counts[idx] += 1;
-                                        // Auto-assign to hotbar if not already there
-                                        if !hotbar.iter().any(|&b| b == broken_block) {
-                                            for slot in hotbar.iter_mut() {
-                                                if *slot == BlockType::Air { *slot = broken_block; break; }
-                                            }
-                                        }
-                                    }
+                                let broken = world.get_block(res.x, res.y, res.z);
+                                if broken != BlockType::Air && broken != BlockType::Water && broken != BlockType::Bedrock {
+                                    inv_add(&mut inv_slots, broken, 1);
                                 }
                                 world.set_block(res.x, res.y, res.z, BlockType::Air);
                             }
-                        } else if button == glfw::MouseButtonRight {
+                        } else if right {
                             let res = world.raycast(eye_pos, look_dir, 8.0);
                             if res.hit {
                                 let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
                                 if world.get_block(nx, ny, nz) == BlockType::Air {
-                                    let slot = player.selected_slot;
-                                    let b = hotbar[slot];
-                                    if let Some(idx) = inv_idx(b) {
-                                        if inv_counts[idx] > 0 {
-                                            world.set_block(nx, ny, nz, b);
-                                            inv_counts[idx] -= 1;
-                                        }
+                                    if let Some(s) = &mut inv_slots[player.selected_slot] {
+                                        world.set_block(nx, ny, nz, s.block);
+                                        s.count -= 1;
+                                        if s.count == 0 { inv_slots[player.selected_slot] = None; }
                                     }
                                 }
                             }
@@ -698,14 +809,7 @@ fn main() {
                             if res.hit {
                                 let broken = world.get_block(res.x, res.y, res.z);
                                 if broken != BlockType::Air && broken != BlockType::Water && broken != BlockType::Bedrock {
-                                    if let Some(idx) = inv_idx(broken) {
-                                        inv_counts[idx] += 1;
-                                        if !hotbar.iter().any(|&b| b == broken) {
-                                            for slot in hotbar.iter_mut() {
-                                                if *slot == BlockType::Air { *slot = broken; break; }
-                                            }
-                                        }
-                                    }
+                                    inv_add(&mut inv_slots, broken, 1);
                                 }
                                 world.set_block(res.x, res.y, res.z, BlockType::Air);
                             }
@@ -715,13 +819,10 @@ fn main() {
                             if res.hit {
                                 let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
                                 if world.get_block(nx, ny, nz) == BlockType::Air {
-                                    let slot = player.selected_slot;
-                                    let b = hotbar[slot];
-                                    if let Some(idx) = inv_idx(b) {
-                                        if inv_counts[idx] > 0 {
-                                            world.set_block(nx, ny, nz, b);
-                                            inv_counts[idx] -= 1;
-                                        }
+                                    if let Some(s) = &mut inv_slots[player.selected_slot] {
+                                        world.set_block(nx, ny, nz, s.block);
+                                        s.count -= 1;
+                                        if s.count == 0 { inv_slots[player.selected_slot] = None; }
                                     }
                                 }
                             }
@@ -739,10 +840,10 @@ fn main() {
                 let lb     = gs.get_button_state(GamepadButton::ButtonLeftBumper)  == Action::Press;
 
                 if (dpad_r && !prev_gp_dpad_right) || (rb && !prev_gp_rb) {
-                    player.selected_slot = (player.selected_slot + 1) % 10;
+                    player.selected_slot = (player.selected_slot + 1) % 9;
                 }
                 if (dpad_l && !prev_gp_dpad_left) || (lb && !prev_gp_lb) {
-                    player.selected_slot = (player.selected_slot + 9) % 10;
+                    player.selected_slot = (player.selected_slot + 8) % 9;
                 }
 
                 prev_gp_dpad_right = dpad_r;
@@ -817,22 +918,28 @@ fn main() {
 
         unsafe { gl::Disable(gl::DEPTH_TEST); gl::Enable(gl::BLEND); gl::Disable(gl::CULL_FACE); }
         ui_shader.bind(); ui_shader.set_vec2(ui_shader.get_uniform_location("uScreenSize"), glam::Vec2::new(win_width as f32, win_height as f32));
-        let (sw, sh) = (win_width as f32, win_height as f32); let hbx = (sw - 400.0) / 2.0;
-        for i in 0..10 {
-            let rx = hbx + i as f32 * 40.0; let ry = sh - 45.0;
-            let color = if player.selected_slot == i { [255, 255, 255, 255] } else { [100, 100, 100, 255] };
-            draw_rect(&ui_shader, rx, ry, 35.0, 35.0, color, sw, sh);
-            let b = hotbar[i];
-            let count = if b != BlockType::Air { inv_idx(b).map(|j| inv_counts[j]).unwrap_or(0) } else { 0 };
-            if count > 0 {
-                let mut block_color = get_block_ui_color(b);
-                block_color[3] = 255;
-                draw_rect(&ui_shader, rx + 5.0, ry + 5.0, 25.0, 25.0, block_color, sw, sh);
-            } else if b != BlockType::Air {
-                // Slot assigned but empty: dim indicator
-                let mut block_color = get_block_ui_color(b);
-                block_color[0] /= 3; block_color[1] /= 3; block_color[2] /= 3; block_color[3] = 180;
-                draw_rect(&ui_shader, rx + 5.0, ry + 5.0, 25.0, 25.0, block_color, sw, sh);
+        let (sw, sh) = (win_width as f32, win_height as f32);
+        let hbx = (sw - (9.0 * 40.0 - 4.0)) / 2.0; // 9 slots × 40px stride − last gap
+        for i in 0..9usize {
+            let rx = hbx + i as f32 * 40.0; let ry = sh - 46.0;
+            // Slot background
+            let bg = if player.selected_slot == i { [198, 198, 198, 255] } else { [85, 85, 85, 220] };
+            draw_rect(&ui_shader, rx, ry, 36.0, 36.0, bg, sw, sh);
+            // Slot border (black outline)
+            draw_rect(&ui_shader, rx, ry, 36.0, 1.0, [0,0,0,255], sw, sh);
+            draw_rect(&ui_shader, rx, ry+35.0, 36.0, 1.0, [0,0,0,255], sw, sh);
+            draw_rect(&ui_shader, rx, ry, 1.0, 36.0, [0,0,0,255], sw, sh);
+            draw_rect(&ui_shader, rx+35.0, ry, 1.0, 36.0, [0,0,0,255], sw, sh);
+            // Selected slot: bright white border
+            if player.selected_slot == i {
+                draw_rect(&ui_shader, rx-2.0, ry-2.0, 40.0, 2.0, [255,255,255,255], sw, sh);
+                draw_rect(&ui_shader, rx-2.0, ry+36.0, 40.0, 2.0, [255,255,255,255], sw, sh);
+                draw_rect(&ui_shader, rx-2.0, ry-2.0, 2.0, 40.0, [255,255,255,255], sw, sh);
+                draw_rect(&ui_shader, rx+36.0, ry-2.0, 2.0, 40.0, [255,255,255,255], sw, sh);
+            }
+            if let Some(s) = inv_slots[i] {
+                let mut c = get_block_ui_color(s.block); c[3] = 255;
+                draw_rect(&ui_shader, rx + 4.0, ry + 4.0, 28.0, 28.0, c, sw, sh);
             }
         }
         // Crosshair (hidden when inventory is open)
@@ -840,69 +947,133 @@ fn main() {
             draw_rect(&ui_shader, sw/2.0 - 2.0, sh/2.0 - 2.0, 4.0, 4.4, [255, 255, 255, 255], sw, sh);
         }
 
-        // Inventory overlay
+        // ── Inventory overlay (MC 1.0 layout) ─────────────────────────────────
         if player.inventory_open {
-            // Dim the screen
-            draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.0, 0.0, 0.65));
+            draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.0, 0.0, 0.6));
             unsafe { gl::Disable(gl::DEPTH_TEST); gl::Enable(gl::BLEND); gl::Disable(gl::CULL_FACE); }
             ui_shader.bind();
             ui_shader.set_vec2(ui_shader.get_uniform_location("uScreenSize"), glam::Vec2::new(sw, sh));
 
-            let slot_size = 70.0f32;
-            let gap = 10.0f32;
-            let cols = 5usize;
-            let grid_w = cols as f32 * (slot_size + gap) - gap;
-            let grid_h = 2.0 * (slot_size + gap) - gap;
-            let inv_x = (sw - grid_w) / 2.0;
-            let inv_y = (sh - grid_h) / 2.0;
+            // Panel: 380×340, centered
+            let (px, py) = (sw / 2.0 - 190.0, sh / 2.0 - 170.0);
+            let (pw, ph) = (380.0f32, 340.0f32);
 
-            // Panel background
-            let pad = 20.0;
-            draw_rect(&ui_shader, inv_x - pad, inv_y - pad, grid_w + pad*2.0, grid_h + pad*2.0, [30, 30, 30, 220], sw, sh);
-            draw_rect(&ui_shader, inv_x - pad - 2.0, inv_y - pad - 2.0, grid_w + pad*2.0 + 4.0, grid_h + pad*2.0 + 4.0, [80, 80, 80, 255], sw, sh);
-            draw_rect(&ui_shader, inv_x - pad, inv_y - pad, grid_w + pad*2.0, grid_h + pad*2.0, [30, 30, 30, 220], sw, sh);
+            // Panel background (MC dark gray)
+            draw_rect(&ui_shader, px-2.0, py-2.0, pw+4.0, ph+4.0, [55,55,55,255], sw, sh);
+            draw_rect(&ui_shader, px, py, pw, ph, [139,120,100,255], sw, sh); // brownish MC
+            draw_rect(&ui_shader, px+2.0, py+2.0, pw-4.0, ph-4.0, [198,182,161,255], sw, sh); // lighter inset
 
+            // ── Separator line between upper and lower sections
+            draw_rect(&ui_shader, px+6.0, py+158.0, pw-12.0, 2.0, [85,75,65,255], sw, sh);
+            draw_rect(&ui_shader, px+6.0, py+160.0, pw-12.0, 1.0, [220,200,180,255], sw, sh);
+
+            // ── Player silhouette (left side of upper section)
+            let plx = px + 50.0; let ply = py + 10.0;
+            draw_rect(&ui_shader, plx, ply, 90.0, 140.0, [85,75,65,120], sw, sh); // bg
+            // head
+            draw_rect(&ui_shader, plx+20.0, ply+4.0,  50.0, 50.0, [140,95,65,255], sw, sh);
+            draw_rect(&ui_shader, plx+24.0, ply+14.0, 14.0, 10.0, [50,50,50,180], sw, sh); // eyes
+            draw_rect(&ui_shader, plx+52.0, ply+14.0, 14.0, 10.0, [50,50,50,180], sw, sh);
+            // torso
+            draw_rect(&ui_shader, plx+22.0, ply+56.0, 46.0, 40.0, [65,95,170,255], sw, sh);
+            // arms
+            draw_rect(&ui_shader, plx+6.0,  ply+56.0, 14.0, 38.0, [65,95,170,255], sw, sh);
+            draw_rect(&ui_shader, plx+70.0, ply+56.0, 14.0, 38.0, [65,95,170,255], sw, sh);
+            // legs
+            draw_rect(&ui_shader, plx+22.0, ply+98.0, 20.0, 40.0, [50,60,140,255], sw, sh);
+            draw_rect(&ui_shader, plx+48.0, ply+98.0, 20.0, 40.0, [50,60,140,255], sw, sh);
+
+            // ── Armor slots (4 vertical, far left)
+            let armor_labels = [[120,140,200,180],[120,140,200,180],[120,140,200,180],[120,140,200,180]];
+            for i in 0..4usize {
+                let (sx, sy, sw2, sh2) = slot_rect(36+i, px, py);
+                draw_rect(&ui_shader, sx, sy, sw2, sh2, [100,88,78,255], sw, sh);
+                draw_rect(&ui_shader, sx+2.0, sy+2.0, sw2-4.0, sh2-4.0, [75,65,58,180], sw, sh);
+                // Armor piece color hint
+                let c = armor_labels[i];
+                draw_rect(&ui_shader, sx+8.0, sy+8.0, 20.0, 20.0, c, sw, sh);
+                if let Some(s) = inv_slots[36+i] {
+                    let mut bc = get_block_ui_color(s.block); bc[3] = 255;
+                    draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
+                }
+            }
+
+            // ── Crafting 2×2 + output
+            for i in 40..44usize {
+                let (sx, sy, sw2, sh2) = slot_rect(i, px, py);
+                let hov = { let (mx,my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32); mx>=sx&&mx<sx+sw2&&my>=sy&&my<sy+sh2 };
+                let bg = if hov { [130,115,100,255] } else { [100,88,78,255] };
+                draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, sw, sh);
+                draw_rect(&ui_shader, sx+2.0, sy+2.0, sw2-4.0, sh2-4.0, [75,65,58,200], sw, sh);
+                if let Some(s) = inv_slots[i] {
+                    let mut bc = get_block_ui_color(s.block); bc[3] = 255;
+                    draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
+                }
+            }
+            // Arrow → between craft and output
+            draw_rect(&ui_shader, px+279.0, py+45.0, 18.0, 8.0, [85,75,65,255], sw, sh);
+            draw_rect(&ui_shader, px+291.0, py+38.0, 6.0, 22.0, [85,75,65,255], sw, sh);
+            // Craft output slot (slot 44) – larger
+            {
+                let (sx, sy, sw2, sh2) = slot_rect(44, px, py);
+                let hov = { let (mx,my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32); mx>=sx&&mx<sx+sw2&&my>=sy&&my<sy+sh2 };
+                let bg = if hov { [145,130,110,255] } else { [110,98,85,255] };
+                draw_rect(&ui_shader, sx-2.0, sy-2.0, sw2+4.0, sh2+4.0, [55,45,35,255], sw, sh);
+                draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, sw, sh);
+                if let Some(s) = inv_slots[44] {
+                    let mut bc = get_block_ui_color(s.block); bc[3] = 255;
+                    draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
+                }
+            }
+
+            // ── Helper closure to draw a slot
             let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
-            for i in 0..10usize {
-                let col = (i % cols) as f32; let row = (i / cols) as f32;
-                let sx = inv_x + col * (slot_size + gap);
-                let sy = inv_y + row * (slot_size + gap);
-
-                let hovered = mx >= sx && mx < sx + slot_size && my >= sy && my < sy + slot_size;
-                let has_items = inv_counts[i] > 0;
-                let assigned_to_selected = hotbar[player.selected_slot] == INVENTORY_BLOCKS[i];
-
-                // Slot background
-                let bg = if assigned_to_selected { [60, 60, 80, 220] } else { [45, 45, 45, 200] };
-                draw_rect(&ui_shader, sx, sy, slot_size, slot_size, bg, sw, sh);
-
-                // Border
-                let border_color = if hovered && has_items { [255, 220, 50, 255] }
-                    else if assigned_to_selected { [120, 120, 200, 255] }
-                    else { [70, 70, 70, 255] };
-                let bw = 2.0;
-                draw_rect(&ui_shader, sx, sy, slot_size, bw, border_color, sw, sh);
-                draw_rect(&ui_shader, sx, sy + slot_size - bw, slot_size, bw, border_color, sw, sh);
-                draw_rect(&ui_shader, sx, sy, bw, slot_size, border_color, sw, sh);
-                draw_rect(&ui_shader, sx + slot_size - bw, sy, bw, slot_size, border_color, sw, sh);
-
-                // Block color swatch
-                let mut block_color = get_block_ui_color(INVENTORY_BLOCKS[i]);
-                if !has_items { block_color[0] /= 4; block_color[1] /= 4; block_color[2] /= 4; block_color[3] = 120; }
-                let inner = slot_size - 20.0;
-                draw_rect(&ui_shader, sx + 10.0, sy + 10.0, inner, inner, block_color, sw, sh);
-
-                // Count indicator: small dots in bottom-right (up to 5 dots = many)
-                if has_items {
-                    let dots = (inv_counts[i] as usize).min(5);
-                    let dot_size = 6.0; let dot_gap = 3.0;
-                    let dots_w = dots as f32 * (dot_size + dot_gap) - dot_gap;
-                    let dot_x0 = sx + slot_size - dots_w - 4.0;
-                    let dot_y = sy + slot_size - dot_size - 4.0;
+            let draw_slot = |shader: &Shader, sx: f32, sy: f32, ss: f32, item: Option<ItemStack>, hov: bool, sw: f32, sh: f32| {
+                let bg = if hov && item.is_some() { [145,130,110,255] } else { [100,88,78,255] };
+                draw_rect(shader, sx, sy, ss, ss, bg, sw, sh);
+                draw_rect(shader, sx+2.0, sy+2.0, ss-4.0, ss-4.0, [75,65,55,200], sw, sh);
+                if let Some(s) = item {
+                    let mut bc = get_block_ui_color(s.block); bc[3] = 255;
+                    draw_rect(shader, sx+4.0, sy+4.0, ss-8.0, ss-8.0, bc, sw, sh);
+                    // Count dots (up to 8 = 64)
+                    let dots = ((s.count as f32 / 8.0).ceil() as usize).clamp(1, 8);
+                    let dsz = 4.0; let dgap = 2.0;
+                    let dw = dots as f32 * (dsz+dgap) - dgap;
+                    let dx0 = sx + ss - dw - 3.0;
+                    let dy0 = sy + ss - dsz - 3.0;
                     for d in 0..dots {
-                        let dx = dot_x0 + d as f32 * (dot_size + dot_gap);
-                        draw_rect(&ui_shader, dx, dot_y, dot_size, dot_size, [255, 255, 255, 200], sw, sh);
+                        draw_rect(shader, dx0 + d as f32*(dsz+dgap), dy0, dsz, dsz, [255,255,255,200], sw, sh);
                     }
+                }
+            };
+
+            // ── Main inventory (slots 9-35, 3×9)
+            for slot in 9..36usize {
+                let (sx, sy, ss, _) = slot_rect(slot, px, py);
+                let hov = mx>=sx && mx<sx+ss && my>=sy && my<sy+ss;
+                draw_slot(&ui_shader, sx, sy, ss, inv_slots[slot], hov, sw, sh);
+            }
+            // ── Hotbar row in inventory (slots 0-8)
+            for slot in 0..9usize {
+                let (sx, sy, ss, _) = slot_rect(slot, px, py);
+                let hov = mx>=sx && mx<sx+ss && my>=sy && my<sy+ss;
+                // Highlight selected
+                if player.selected_slot == slot {
+                    draw_rect(&ui_shader, sx-2.0, sy-2.0, ss+4.0, ss+4.0, [255,255,255,180], sw, sh);
+                }
+                draw_slot(&ui_shader, sx, sy, ss, inv_slots[slot], hov, sw, sh);
+            }
+
+            // ── Cursor item (held on mouse)
+            if let Some(c) = inv_cursor {
+                let mut bc = get_block_ui_color(c.block); bc[3] = 220;
+                draw_rect(&ui_shader, mx - 14.0, my - 14.0, 28.0, 28.0, bc, sw, sh);
+                // Count dots
+                let dots = ((c.count as f32 / 8.0).ceil() as usize).clamp(1, 8);
+                let dsz = 4.0; let dgap = 2.0;
+                let dw = dots as f32 * (dsz+dgap) - dgap;
+                for d in 0..dots {
+                    draw_rect(&ui_shader, mx - 14.0 + 28.0 - dw + d as f32*(dsz+dgap), my + 8.0, dsz, dsz, [255,255,255,255], sw, sh);
                 }
             }
         }
