@@ -28,9 +28,9 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, initial_radius: i32, i
             }
         }
         
-        // Radius = BASE * 1.2^(nuke_count - 1) up to a tighter cap
-        total_radius = initial_radius as f32 * 1.2f32.powi(nuke_count - 1);
-        if total_radius > 100.0 { total_radius = 100.0; } // Lower cap for high-end stability
+        // Radius = BASE * 1.1^(nuke_count - 1) up to a tighter cap
+        total_radius = (initial_radius as f32) * 1.1f32.powi(nuke_count - 1);
+        if total_radius > 45.0 { total_radius = 45.0; } // Significantly lower cap for stability
     }
 
     let r_int = total_radius as i32;
@@ -77,7 +77,7 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, initial_radius: i32, i
     });
 
     // 2. Flying debris/smoke
-    let particle_count = if is_nuke { 60 } else { 15 };
+    let particle_count = if is_nuke { 30 } else { 10 };
     for _ in 0..particle_count {
         let mut rng = rand::thread_rng();
         let vx = rng.gen_range(-30.0..30.0);
