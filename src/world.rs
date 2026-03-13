@@ -3,7 +3,7 @@ use crate::block::BlockType;
 use crate::renderer::{Mesh, Texture2D, Shader};
 use glam::{Vec3, Mat4};
 
-pub const VIEW_DISTANCE: i32 = 23;
+pub const VIEW_DISTANCE: i32 = 35;
 pub const POOL_WIDTH: i32 = VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
 
@@ -236,7 +236,44 @@ impl World {
             draw_block(9, 0, 240, 245, 250); // SnowyGrass top (same as snow)
             draw_block(11, 0, 60, 40, 25);  // SpruceLog
             draw_block(12, 0, 30, 80, 30);  // SpruceLeaves
+            draw_block(6, 1, 230, 230, 230); // IronBlock
+            draw_block(7, 1, 210, 160, 130); // RawIron item
+            draw_block(8, 1, 245, 245, 245); // IronIngot item
+            draw_block(9, 1, 180, 180, 190); // Flint & Steel item
         }
+
+        // IronOre: Stone with pinkish-tan spots
+        {
+            let mut draw_block = |tx: i32, ty: i32| {
+                for x in 0..16 {
+                    for y in 0..16 {
+                        let noise = (crate::noise::noise_2d(x as f32 * 0.5, y as f32 * 0.5) * 20.0) as i32;
+                        let nr = (140i32 + noise).clamp(0, 255) as u8;
+                        let ng = (140i32 + noise).clamp(0, 255) as u8;
+                        let nb = (140i32 + noise).clamp(0, 255) as u8;
+                        draw_pixel(tx * 16 + x, ty * 16 + y, nr, ng, nb, 255);
+                    }
+                }
+            };
+            draw_block(3, 1);
+            for x in 0..16 { for y in 0..16 {
+                if (x*7 + y*3) % 11 == 0 { draw_pixel(3*16+x, 1*16+y, 220, 180, 150, 255); }
+            }}
+        }
+
+        // TNT: Red with white stripe
+        for x in 0..16 { for y in 0..16 {
+            let (r,g,b) = if y >= 6 && y <= 10 { (240, 240, 240) } else { (220, 40, 40) };
+            draw_pixel(4*16+x, 1*16+y, r, g, b, 255);
+        }}
+
+        // Nuke: Yellow with radiation symbol
+        for x in 0..16 { for y in 0..16 {
+            let dx = x as f32 - 7.5; let dy = y as f32 - 7.5;
+            let dist = (dx*dx + dy*dy).sqrt();
+            let (r,g,b) = if dist < 3.0 || (dist < 6.0 && ( (dx/dy).atan2(1.0).abs() < 0.5 || (dx/dy).atan2(1.0).abs() > 2.5)) { (30, 30, 30) } else { (220, 210, 20) };
+            draw_pixel(5*16+x, 2*16+y, r, g, b, 255);
+        }}
         // SnowyGrass side: dirt with white snow strip on top rows
         for x in 0..16i32 {
             for y in 0..16i32 {

@@ -18,11 +18,18 @@ pub enum BlockType {
     SpruceLog,
     SpruceLeaves,
     SnowLayer,
+    IronOre,
+    RawIron,
+    IronIngot,
+    IronBlock,
+    TNT,
+    Nuke,
+    FlintAndSteel,
 }
 
 #[allow(dead_code)]
 impl BlockType {
-    pub const COUNT: usize = 16;
+    pub const COUNT: usize = 23;
     
     pub fn from_u8(value: u8) -> Self {
         match value {
@@ -42,7 +49,21 @@ impl BlockType {
             13 => BlockType::SpruceLog,
             14 => BlockType::SpruceLeaves,
             15 => BlockType::SnowLayer,
+            16 => BlockType::IronOre,
+            17 => BlockType::RawIron,
+            18 => BlockType::IronIngot,
+            19 => BlockType::IronBlock,
+            20 => BlockType::TNT,
+            21 => BlockType::Nuke,
+            22 => BlockType::FlintAndSteel,
             _ => BlockType::Air,
+        }
+    }
+
+    pub fn is_item(&self) -> bool {
+        match self {
+            BlockType::RawIron | BlockType::IronIngot | BlockType::FlintAndSteel => true,
+            _ => false,
         }
     }
 }

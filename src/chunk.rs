@@ -9,13 +9,21 @@ pub enum Biome {
     Desert,
     SnowyTundra,
     SnowyTaiga,
+    Mountains,
+    HighHills,
 }
 
 pub fn get_biome(world_x: f32, world_z: f32) -> Biome {
     let temperature = perlin_2d(world_x + 5000.0, world_z + 5000.0, 0.002, 2);
     let humidity = perlin_2d(world_x + 10000.0, world_z + 10000.0, 0.002, 2);
+    let mountain_noise = perlin_2d(world_x + 20000.0, world_z + 20000.0, 0.001, 3);
+    let hills_noise = perlin_2d(world_x + 30000.0, world_z + 30000.0, 0.005, 2);
 
-    if temperature < -0.15 {
+    if mountain_noise > 0.45 {
+        Biome::Mountains
+    } else if hills_noise > 0.35 {
+        Biome::HighHills
+    } else if temperature < -0.15 {
         if humidity > 0.0 { Biome::SnowyTaiga } else { Biome::SnowyTundra }
     } else if temperature > 0.15 {
         Biome::Desert
@@ -65,12 +73,35 @@ impl Chunk {
                 let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
                 let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
                 let biome = get_biome(world_x, world_z);
+                
                 let continental = perlin_2d(world_x, world_z, 0.005, 3);
-                let base_h = continental * 40.0 + 128.0;
                 let detail = perlin_2d(world_x, world_z, 0.03, 4);
-                let hill_f = if continental > 0.2 { (continental - 0.2) * 2.0 } else { 0.0 };
-                let height = (base_h + detail * 15.0 * (1.0 + hill_f)) as usize;
-                let height = height.clamp(0, CHUNK_HEIGHT - 1);
+                
+                let (base_h, height_scale) = match biome {
+                    Biome::Mountains => {
+                        let ridged = (perlin_2d(world_x, world_z, 0.01, 3).abs() * -1.0 + 1.0).powi(2);
+                        (continental * 50.0 + 140.0 + ridged * 60.0, 30.0)
+                    }
+                    Biome::HighHills => {
+                        (continental * 40.0 + 135.0, 25.0)
+                    }
+                    _ => {
+                        (continental * 40.0 + 128.0, 15.0)
+                    }
+                };
+
+                let mut height = (base_h + detail * height_scale) as i32;
+                
+                // Fjord carving: if mountainous/hilly and near ocean (low continental)
+                if (biome == Biome::Mountains || biome == Biome::HighHills) && continental < 0.1 {
+                    let fjord_noise = perlin_2d(world_x, world_z, 0.02, 2).abs();
+                    if fjord_noise < 0.15 {
+                        let depth_factor = (0.15 - fjord_noise) / 0.15;
+                        height = (height as f32 * (1.0 - depth_factor) + 110.0 * depth_factor) as i32;
+                    }
+                }
+
+                let height = height.clamp(0, CHUNK_HEIGHT as i32 - 1) as usize;
 
                 for y in 0..CHUNK_HEIGHT {
                     let b = if y == 0 {
@@ -79,7 +110,8 @@ impl Chunk {
                         BlockType::Stone
                     } else if y < height {
                         match biome {
-                            Biome::Desert => if height < 126 { BlockType::Sand } else { BlockType::Sand },
+                            Biome::Desert => BlockType::Sand,
+                            Biome::Mountains => if y > 180 { BlockType::Stone } else { BlockType::Dirt },
                             _ => if height < 126 { BlockType::Sand } else { BlockType::Dirt },
                         }
                     } else if y == height {
@@ -89,6 +121,8 @@ impl Chunk {
                             match biome {
                                 Biome::Desert => BlockType::Sand,
                                 Biome::SnowyTundra | Biome::SnowyTaiga => BlockType::SnowyGrass,
+                                Biome::Mountains => if height > 185 { BlockType::PowderedSnow } else if height > 160 { BlockType::Stone } else { BlockType::Grass },
+                                Biome::HighHills => BlockType::Grass,
                                 Biome::Plains => BlockType::Grass,
                             }
                         }
@@ -104,39 +138,37 @@ impl Chunk {
 
 
 
-        // PASS 3: Ores
+        // PASS 3: Coal Ores
         for _ in 0..150 {
             let x = rng.gen_range(0..CHUNK_WIDTH) as i32;
             let y = rng.gen_range(0..CHUNK_HEIGHT) as i32;
             let z = rng.gen_range(0..CHUNK_DEPTH) as i32;
-
             let vein_size = rng.gen_range(1..=17);
-            let mut current_x = x;
-            let mut current_y = y;
-            let mut current_z = z;
-
+            let mut current_x = x; let mut current_y = y; let mut current_z = z;
             for _ in 0..vein_size {
-                if current_x >= 0 && current_x < CHUNK_WIDTH as i32 &&
-                   current_z >= 0 && current_z < CHUNK_DEPTH as i32 &&
-                   current_y >= 0 && current_y < CHUNK_HEIGHT as i32 {
-                    let cx = current_x as usize;
-                    let cy = current_y as usize;
-                    let cz = current_z as usize;
-                    if self.blocks[cx][cy][cz] == BlockType::Stone {
-                        self.blocks[cx][cy][cz] = BlockType::CoalOre;
-                    }
+                if current_x >= 0 && current_x < CHUNK_WIDTH as i32 && current_z >= 0 && current_z < CHUNK_DEPTH as i32 && current_y >= 0 && current_y < CHUNK_HEIGHT as i32 {
+                    let cx = current_x as usize; let cy = current_y as usize; let cz = current_z as usize;
+                    if self.blocks[cx][cy][cz] == BlockType::Stone { self.blocks[cx][cy][cz] = BlockType::CoalOre; }
                 }
-
                 let dir = rng.gen_range(0..6);
-                match dir {
-                    0 => current_x += 1,
-                    1 => current_x -= 1,
-                    2 => current_y += 1,
-                    3 => current_y -= 1,
-                    4 => current_z += 1,
-                    5 => current_z -= 1,
-                    _ => {}
+                match dir { 0 => current_x += 1, 1 => current_x -= 1, 2 => current_y += 1, 3 => current_y -= 1, 4 => current_z += 1, 5 => current_z -= 1, _ => {} }
+            }
+        }
+        
+        // PASS 3b: Iron Ores (Slightly rarer, deeper)
+        for _ in 0..80 {
+            let x = rng.gen_range(0..CHUNK_WIDTH) as i32;
+            let y = rng.gen_range(0..64) as i32;
+            let z = rng.gen_range(0..CHUNK_DEPTH) as i32;
+            let vein_size = rng.gen_range(1..=9);
+            let mut current_x = x; let mut current_y = y; let mut current_z = z;
+            for _ in 0..vein_size {
+                if current_x >= 0 && current_x < CHUNK_WIDTH as i32 && current_z >= 0 && current_z < CHUNK_DEPTH as i32 && current_y >= 0 && current_y < CHUNK_HEIGHT as i32 {
+                    let cx = current_x as usize; let cy = current_y as usize; let cz = current_z as usize;
+                    if self.blocks[cx][cy][cz] == BlockType::Stone { self.blocks[cx][cy][cz] = BlockType::IronOre; }
                 }
+                let dir = rng.gen_range(0..6);
+                match dir { 0 => current_x += 1, 1 => current_x -= 1, 2 => current_y += 1, 3 => current_y -= 1, 4 => current_z += 1, 5 => current_z -= 1, _ => {} }
             }
         }
 
@@ -288,7 +320,7 @@ impl Chunk {
         let mut tree_positions: Vec<(usize, usize)> = Vec::new();
 
         let (tree_attempts, min_dist) = match get_biome((self.x * CHUNK_WIDTH as i32 + 8) as f32, (self.z * CHUNK_DEPTH as i32 + 8) as f32) {
-            Biome::Plains => (2, 4),
+            Biome::Plains | Biome::HighHills => (2, 4),
             Biome::SnowyTaiga => (8, 5), // Reduced attempts and increased distance to prevent bunching
             _ => (0, 0),
         };
@@ -404,7 +436,7 @@ impl Chunk {
                 let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
                 let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
                 let biome = get_biome(world_x, world_z);
-                if biome == Biome::SnowyTundra || biome == Biome::SnowyTaiga {
+                if biome == Biome::SnowyTundra || biome == Biome::SnowyTaiga || biome == Biome::Mountains {
                     // Find topmost solid block and place snow on top
                     for y in (1..CHUNK_HEIGHT - 1).rev() {
                         let b = self.blocks[x][y][z];
@@ -646,6 +678,13 @@ impl Chunk {
                                     BlockType::Sand => (6, 0),
                                     BlockType::Gravel => (7, 0),
                                     BlockType::CoalOre => (2, 1),
+                                    BlockType::IronOre => (3, 1),
+                                    BlockType::TNT => (4, 1),
+                                    BlockType::Nuke => (5, 2),
+                                    BlockType::IronBlock => (6, 1),
+                                    BlockType::RawIron => (7, 1),
+                                    BlockType::IronIngot => (8, 1),
+                                    BlockType::FlintAndSteel => (9, 1),
                                     BlockType::PowderedSnow => (8, 0),
                                     BlockType::SnowLayer => (8, 0),
                                     BlockType::SnowyGrass => (10, 0),

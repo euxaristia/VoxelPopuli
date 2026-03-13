@@ -134,6 +134,52 @@ const WINDOW_HEIGHT: u32 = 1080;
 const RENDER_WIDTH: i32 = 1500;
 const RENDER_HEIGHT: i32 = 844;
 
+#[derive(Debug)]
+struct WindowState {
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    maximized: bool,
+}
+
+impl WindowState {
+    fn load() -> Self {
+        let path = "window.cfg";
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let mut width = 1280;
+            let mut height = 720;
+            let mut x = 100;
+            let mut y = 100;
+            let mut maximized = false;
+            for line in content.lines() {
+                let parts: Vec<&str> = line.split(':').collect();
+                if parts.len() == 2 {
+                    match parts[0] {
+                        "width" => width = parts[1].parse().unwrap_or(width),
+                        "height" => height = parts[1].parse().unwrap_or(height),
+                        "x" => x = parts[1].parse().unwrap_or(x),
+                        "y" => y = parts[1].parse().unwrap_or(y),
+                        "maximized" => maximized = parts[1].parse().unwrap_or(maximized),
+                        _ => {}
+                    }
+                }
+            }
+            Self { width, height, x, y, maximized }
+        } else {
+            Self { width: 1280, height: 720, x: 100, y: 100, maximized: false }
+        }
+    }
+
+    fn save(&self) {
+        let content = format!(
+            "width:{}\nheight:{}\nx:{}\ny:{}\nmaximized:{}\n",
+            self.width, self.height, self.x, self.y, self.maximized
+        );
+        let _ = std::fs::write("window.cfg", content);
+    }
+}
+
 const PS1_VS: &str = r#"
 #version 330 core
 layout(location = 0) in vec3 vertexPosition;
@@ -409,6 +455,13 @@ fn get_block_ui_color(block: BlockType) -> [u8; 4] {
         BlockType::SnowyGrass => [240, 245, 250, 255],
         BlockType::SpruceLog => [60, 40, 25, 255],
         BlockType::SpruceLeaves => [30, 80, 30, 255],
+        BlockType::IronOre => [180, 160, 140, 255],
+        BlockType::RawIron => [210, 160, 130, 255],
+        BlockType::IronIngot => [230, 230, 230, 255],
+        BlockType::IronBlock => [240, 240, 240, 255],
+        BlockType::TNT => [220, 50, 50, 255],
+        BlockType::Nuke => [200, 200, 20, 255],
+        BlockType::FlintAndSteel => [150, 150, 160, 255],
         _ => [0, 0, 0, 0],
     }
 }
@@ -613,14 +666,37 @@ fn draw_bubble(shader: &Shader, x: f32, y: f32, size: f32, screen_width: f32, sc
     }
 }
 
-fn main() {
-    let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
+fn explode(world: &mut World, x: i32, y: i32, z: i32, radius: i32) {
+    let r2 = radius * radius;
+    for dx in -radius..=radius {
+        for dy in -radius..=radius {
+            for dz in -radius..=radius {
+                if dx*dx + dy*dy + dz*dz <= r2 {
+                    let bx = x + dx; let by = y + dy; let bz = z + dz;
+                    let b = world.get_block(bx, by, bz);
+                    if b != BlockType::Air && b != BlockType::Bedrock {
+                        world.set_block(bx, by, bz, BlockType::Air);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn main() { // Entry point
+    let state = WindowState::load();
+    let mut glfw = glfw::init(glfw::log_errors).unwrap();
     glfw.window_hint(glfw::WindowHint::ContextVersion(3, 3));
     glfw.window_hint(glfw::WindowHint::OpenGlProfile(glfw::OpenGlProfileHint::Core));
     #[cfg(target_os = "macos")]
     glfw.window_hint(glfw::WindowHint::OpenGlForwardCompat(true));
-    let (mut window, events) = glfw.create_window(WINDOW_WIDTH, WINDOW_HEIGHT, "VoxelPopuli Rust", glfw::WindowMode::Windowed).expect("Failed to create GLFW window.");
-    window.make_current(); window.set_key_polling(true); window.set_cursor_pos_polling(true); window.set_size_polling(true); window.set_mouse_button_polling(true); window.set_scroll_polling(true); window.set_cursor_mode(glfw::CursorMode::Disabled);
+    let (mut window, events) = glfw.create_window(state.width, state.height, "VoxelPopuli Rust", glfw::WindowMode::Windowed).expect("Failed to create GLFW window.");
+    window.make_current(); 
+    window.set_pos(state.x, state.y);
+    if state.maximized {
+        window.maximize();
+    }
+    window.set_key_polling(true); window.set_cursor_pos_polling(true); window.set_size_polling(true); window.set_mouse_button_polling(true); window.set_scroll_polling(true); window.set_cursor_mode(glfw::CursorMode::Disabled);
     gl::load_with(|s| window.get_proc_address(s).map_or(std::ptr::null(), |p| p as *const _));
     unsafe {
         gl::Enable(gl::DEPTH_TEST); gl::DepthFunc(gl::LEQUAL);
@@ -726,28 +802,43 @@ fn main() {
                     } else if !player.inventory_open && action == Action::Press {
                         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
                         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
-                        if left {
-                            let res = world.raycast(eye_pos, look_dir, 8.0);
-                            if res.hit {
-                                let broken = world.get_block(res.x, res.y, res.z);
-                                if broken != BlockType::Air && broken != BlockType::Water && broken != BlockType::Bedrock {
-                                    inv_add(&mut inv_slots, broken, 1);
-                                }
-                                world.set_block(res.x, res.y, res.z, BlockType::Air);
-                            }
-                        } else if right {
-                            let res = world.raycast(eye_pos, look_dir, 8.0);
-                            if res.hit {
-                                let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                                if world.get_block(nx, ny, nz) == BlockType::Air {
-                                    if let Some(s) = &mut inv_slots[player.selected_slot] {
-                                        world.set_block(nx, ny, nz, s.block);
-                                        s.count -= 1;
-                                        if s.count == 0 { inv_slots[player.selected_slot] = None; }
+                                if left {
+                                    let res = world.raycast(eye_pos, look_dir, 8.0);
+                                    if res.hit {
+                                        let broken = world.get_block(res.x, res.y, res.z);
+                                        if broken != BlockType::Air && broken != BlockType::Water && broken != BlockType::Bedrock {
+                                            inv_add(&mut inv_slots, broken, 1);
+                                        }
+                                        world.set_block(res.x, res.y, res.z, BlockType::Air);
+                                    }
+                                } else if right {
+                                    let res = world.raycast(eye_pos, look_dir, 8.0);
+                                    if res.hit {
+                                        if let Some(s) = &mut inv_slots[player.selected_slot] {
+                                            if s.block == BlockType::FlintAndSteel {
+                                                let target = world.get_block(res.x, res.y, res.z);
+                                                if target == BlockType::TNT {
+                                                    world.set_block(res.x, res.y, res.z, BlockType::Air);
+                                                    explode(&mut world, res.x, res.y, res.z, 4);
+                                                    continue;
+                                                } else if target == BlockType::Nuke {
+                                                    world.set_block(res.x, res.y, res.z, BlockType::Air);
+                                                    explode(&mut world, res.x, res.y, res.z, 20);
+                                                    continue;
+                                                }
+                                            }
+                                            
+                                            if !s.block.is_item() {
+                                                let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+                                                if world.get_block(nx, ny, nz) == BlockType::Air {
+                                                    world.set_block(nx, ny, nz, s.block);
+                                                    s.count -= 1;
+                                                    if s.count == 0 { inv_slots[player.selected_slot] = None; }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        }
                     }
                 }
                 _ => {}
@@ -817,12 +908,27 @@ fn main() {
                         if gp_place {
                             let res = world.raycast(gp_eye, gp_look, 8.0);
                             if res.hit {
-                                let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                                if world.get_block(nx, ny, nz) == BlockType::Air {
-                                    if let Some(s) = &mut inv_slots[player.selected_slot] {
-                                        world.set_block(nx, ny, nz, s.block);
-                                        s.count -= 1;
-                                        if s.count == 0 { inv_slots[player.selected_slot] = None; }
+                                if let Some(s) = &mut inv_slots[player.selected_slot] {
+                                    if s.block == BlockType::FlintAndSteel {
+                                        let target = world.get_block(res.x, res.y, res.z);
+                                        if target == BlockType::TNT {
+                                            world.set_block(res.x, res.y, res.z, BlockType::Air);
+                                            explode(&mut world, res.x, res.y, res.z, 4);
+                                            prev_gp_lt = lt; continue;
+                                        } else if target == BlockType::Nuke {
+                                            world.set_block(res.x, res.y, res.z, BlockType::Air);
+                                            explode(&mut world, res.x, res.y, res.z, 20);
+                                            prev_gp_lt = lt; continue;
+                                        }
+                                    }
+
+                                    if !s.block.is_item() {
+                                        let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+                                        if world.get_block(nx, ny, nz) == BlockType::Air {
+                                            world.set_block(nx, ny, nz, s.block);
+                                            s.count -= 1;
+                                            if s.count == 0 { inv_slots[player.selected_slot] = None; }
+                                        }
                                     }
                                 }
                             }
@@ -1113,4 +1219,9 @@ fn main() {
         unsafe { gl::Enable(gl::DEPTH_TEST); gl::Enable(gl::CULL_FACE); }
         window.swap_buffers();
     }
+    let (xw, yw) = window.get_pos();
+    let (ww, hw) = window.get_size();
+    let maximized = window.is_maximized();
+    let state = WindowState { width: ww as u32, height: hw as u32, x: xw, y: yw, maximized };
+    state.save();
 }
