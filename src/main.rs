@@ -407,9 +407,6 @@ fn draw_texture_quad(texture: &Texture2D) {
     mesh.draw();
 }
 
-fn draw_texture_ui(texture: &Texture2D, x: f32, y: f32, w: f32, h: f32, shader: &Shader, screen_width: f32, screen_height: f32) {
-    draw_texture_ui_uv(texture, x, y, w, h, 0.0, 0.0, 1.0, 1.0, shader, screen_width, screen_height);
-}
 
 fn draw_texture_ui_uv(texture: &Texture2D, x: f32, y: f32, w: f32, h: f32, u: f32, v: f32, uw: f32, vh: f32, shader: &Shader, screen_width: f32, screen_height: f32) {
     let verts = [
@@ -849,7 +846,6 @@ fn main() { // Entry point
     let texture_ui_shader = Shader::new(UI_TEXTURE_VS, UI_TEXTURE_FS).expect("Failed to compile UI TEXTURE shader");
     let color_shader = Shader::new(TEXTURE_VS, COLOR_FS).expect("Failed to compile COLOR shader");
     let target = RenderTexture2D::new(RENDER_WIDTH, RENDER_HEIGHT);
-    let logo_texture = Texture2D::from_file("assets/logo.png");
     let font_texture = Texture2D::from_file("assets/font.png");
     
     let mut is_fullscreen = false;

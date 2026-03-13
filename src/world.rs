@@ -88,7 +88,8 @@ pub struct World {
     pub is_loading: bool,
     pub loading_radius: i32,
     pub chunks_generated_count: i32,
-    pub active_water: Vec<(i32, i32, i32)>,
+    pub active_water: std::collections::HashSet<(i32, i32, i32)>,
+    pub active_falling: std::collections::HashSet<(i32, i32, i32)>,
 }
 
 impl World {
@@ -116,7 +117,8 @@ impl World {
             is_loading: true,
             loading_radius: 0,
             chunks_generated_count: 0,
-            active_water: Vec::new(),
+            active_water: std::collections::HashSet::new(),
+            active_falling: std::collections::HashSet::new(),
         }
     }
 
@@ -245,12 +247,20 @@ impl World {
             }
             
             if block == BlockType::Water {
-                self.active_water.push((x, y, z));
+                self.active_water.insert((x, y, z));
+            } else if block == BlockType::Sand || block == BlockType::Gravel {
+                self.active_falling.insert((x, y, z));
             }
-            // Neighbors might now be able to flow
-            self.active_water.push((x, y+1, z));
-            self.active_water.push((x+1, y, z)); self.active_water.push((x-1, y, z));
-            self.active_water.push((x, y, z+1)); self.active_water.push((x, y, z-1));
+            // Neighbors might now be able to flow or fall
+            let neighbors = [(x, y+1, z), (x+1, y, z), (x-1, y, z), (x, y, z+1), (x, y, z-1)];
+            for (nx, ny, nz) in neighbors {
+                let nb = self.get_block(nx, ny, nz);
+                if nb == BlockType::Water {
+                    self.active_water.insert((nx, ny, nz));
+                } else if nb == BlockType::Sand || nb == BlockType::Gravel {
+                    self.active_falling.insert((nx, ny, nz));
+                }
+            }
 
             let mut neighbors = Vec::new();
             if bx == 0 { neighbors.push((cx - 1, cz)); }
@@ -691,16 +701,17 @@ impl World {
                 i += 1;
             }
         }
+
+        // --- Physics Simulation ---
+        self.update_water();
+        self.update_falling_blocks();
     }
 
     pub fn update_water(&mut self) {
         if self.active_water.is_empty() { return; }
-        let mut to_process = std::mem::take(&mut self.active_water);
-        to_process.dedup();
+        let to_process: Vec<(i32, i32, i32)> = self.active_water.drain().collect();
         
-        let mut next_active = Vec::new();
         let mut processed = 0;
-        
         for (x, y, z) in to_process.iter().copied() {
             if self.get_block(x, y, z) != BlockType::Water { continue; }
             
@@ -710,23 +721,16 @@ impl World {
                 self.set_block(x, y, z, BlockType::Air);
                 self.set_block(x, y-1, z, BlockType::Water);
                 self.suppress_edit_recording = false;
-                next_active.push((x, y-1, z));
-                // Add neighbors to active
-                next_active.push((x+1, y, z)); next_active.push((x-1, y, z));
-                next_active.push((x, y, z+1)); next_active.push((x, y, z-1));
-                next_active.push((x, y+1, z));
+                // set_block already adds (x, y-1, z) and neighbors to active_water
             } else if y > 0 && self.get_block(x, y-1, z).is_solid() {
                 // 2. Spread sideways (simple)
                 for (dx, dz) in [(1,0), (-1,0), (0,1), (0,-1)] {
                     if self.get_block(x+dx, y, z+dz) == BlockType::Air {
-                        // For the requested "finite" look, we fill holes.
-                        // If there's air below a neighbor, we flow there.
                         if y > 0 && self.get_block(x+dx, y-1, z+dz) == BlockType::Air {
                              self.suppress_edit_recording = true;
                              self.set_block(x, y, z, BlockType::Air);
                              self.set_block(x+dx, y, z+dz, BlockType::Water);
                              self.suppress_edit_recording = false;
-                             next_active.push((x+dx, y, z+dz));
                              break;
                         }
                     }
@@ -734,12 +738,38 @@ impl World {
             }
             
             processed += 1;
-            if processed > 200 { 
-                next_active.extend(to_process.into_iter().skip(processed));
+            if processed > 400 { 
+                self.active_water.extend(to_process.into_iter().skip(processed));
                 break; 
             }
         }
-        self.active_water = next_active;
+    }
+
+    pub fn update_falling_blocks(&mut self) {
+        if self.active_falling.is_empty() { return; }
+        let to_process: Vec<(i32, i32, i32)> = self.active_falling.drain().collect();
+        
+        let mut processed = 0;
+        for (x, y, z) in to_process.iter().copied() {
+            let b = self.get_block(x, y, z);
+            if b != BlockType::Sand && b != BlockType::Gravel { continue; }
+            
+            if y > 0 {
+                let target = self.get_block(x, y-1, z);
+                if target == BlockType::Air || target == BlockType::Water {
+                    self.suppress_edit_recording = true;
+                    self.set_block(x, y, z, BlockType::Air);
+                    self.set_block(x, y-1, z, b);
+                    self.suppress_edit_recording = false;
+                }
+            }
+            
+            processed += 1;
+            if processed > 400 {
+                self.active_falling.extend(to_process.into_iter().skip(processed));
+                break;
+            }
+        }
     }
 
     pub fn init_celestial(&mut self) {
