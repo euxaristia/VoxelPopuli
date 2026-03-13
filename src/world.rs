@@ -1,6 +1,7 @@
 use crate::chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT};
 use crate::block::BlockType;
 use crate::renderer::{Mesh, Texture2D, Shader};
+use crate::renderer;
 use glam::{Vec3, Mat4};
 
 pub const VIEW_DISTANCE: i32 = 35;
@@ -84,6 +85,14 @@ pub struct World {
     pub last_pcx: i32,
     pub last_pcz: i32,
     pub dirty_count: i32,
+    pub explosives: Vec<crate::block::ActiveExplosive>,
+    pub particles: Vec<crate::block::Particle>,
+    pub detonations: Vec<(glam::Vec3, crate::block::BlockType)>,
+    pub cube_mesh: renderer::Mesh,
+    pub is_loading: bool,
+    pub loading_radius: i32,
+    pub chunks_generated_count: i32,
+    pub active_water: Vec<(i32, i32, i32)>,
 }
 
 impl World {
@@ -104,6 +113,60 @@ impl World {
             last_pcx: -999999,
             last_pcz: -999999,
             dirty_count: 0,
+            explosives: Vec::new(),
+            particles: Vec::new(),
+            detonations: Vec::new(),
+            cube_mesh: Self::create_cube_mesh(),
+            is_loading: true,
+            loading_radius: 0,
+            chunks_generated_count: 0,
+            active_water: Vec::new(),
+        }
+    }
+
+    fn create_cube_mesh() -> renderer::Mesh {
+        let v: Vec<f32> = vec![
+            0.0,0.0,0.0, 0.0,0.0,1.0, 1.0,0.0,1.0, 0.0,0.0,0.0, 1.0,0.0,1.0, 1.0,0.0,0.0, // bottom
+            0.0,1.0,0.0, 0.0,1.0,1.0, 1.0,1.0,1.0, 0.0,1.0,0.0, 1.0,1.0,1.0, 1.0,1.0,0.0, // top
+            0.0,0.0,0.0, 0.0,1.0,0.0, 1.0,1.0,0.0, 0.0,0.0,0.0, 1.0,1.0,0.0, 1.0,0.0,0.0, // front
+            0.0,0.0,1.0, 0.0,1.0,1.0, 1.0,1.0,1.0, 0.0,0.0,1.0, 1.0,1.0,1.0, 1.0,0.0,1.0, // back
+            0.0,0.0,0.0, 0.0,1.0,0.0, 0.0,1.0,1.0, 0.0,0.0,0.0, 0.0,1.0,1.0, 0.0,0.0,1.0, // left
+            1.0,0.0,0.0, 1.0,1.0,0.0, 1.0,1.0,1.0, 1.0,0.0,0.0, 1.0,1.0,1.0, 1.0,0.0,1.0, // right
+        ];
+        let t: Vec<f32> = vec![0.0; v.len()/3*2];
+        let n: Vec<f32> = vec![0.0; v.len()];
+        let c: Vec<u8> = vec![255; v.len()/3*4];
+        renderer::Mesh::new(&v, Some(&t), Some(&n), Some(&c))
+    }
+
+    pub fn render_explosives(&self, shader: &crate::renderer::Shader, _mvp: &glam::Mat4, current_time: f32) {
+        let _loc_mvp = shader.get_uniform_location("uMVP");
+        let loc_model = shader.get_uniform_location("uModel");
+        let loc_diff = shader.get_uniform_location("colDiffuse");
+
+        for e in &self.explosives {
+            let flash = (current_time * 4.0) as i32 % 2 == 0;
+            let diffuse = if flash { glam::Vec4::new(4.0, 4.0, 4.0, 1.0) } else { glam::Vec4::ONE };
+            shader.set_vec4(loc_diff, diffuse);
+            
+            let model = glam::Mat4::from_translation(e.position);
+            shader.set_mat4(loc_model, &model);
+            self.cube_mesh.draw();
+        }
+        shader.set_vec4(loc_diff, glam::Vec4::ONE);
+    }
+
+    pub fn render_particles(&self, shader: &crate::renderer::Shader, _mvp: &glam::Mat4) {
+        let loc_model = shader.get_uniform_location("uModel");
+        let loc_diff = shader.get_uniform_location("colDiffuse");
+
+        for p in &self.particles {
+            let alpha = (p.life / p.max_life).clamp(0.0, 1.0);
+            shader.set_vec4(loc_diff, glam::Vec4::new(1.0, 1.0, 1.0, alpha));
+            
+            let model = glam::Mat4::from_translation(p.position) * glam::Mat4::from_scale(glam::Vec3::splat(p.scale * alpha));
+            shader.set_mat4(loc_model, &model);
+            self.cube_mesh.draw();
         }
     }
 
@@ -172,6 +235,14 @@ impl World {
                 self.dirty_count += 1;
             }
             
+            if block == BlockType::Water {
+                self.active_water.push((x, y, z));
+            }
+            // Neighbors might now be able to flow
+            self.active_water.push((x, y+1, z));
+            self.active_water.push((x+1, y, z)); self.active_water.push((x-1, y, z));
+            self.active_water.push((x, y, z+1)); self.active_water.push((x, y, z-1));
+
             let mut neighbors = Vec::new();
             if bx == 0 { neighbors.push((cx - 1, cz)); }
             if bx == CHUNK_WIDTH - 1 { neighbors.push((cx + 1, cz)); }
@@ -261,18 +332,52 @@ impl World {
             }}
         }
 
-        // TNT: Red with white stripe
-        for x in 0..16 { for y in 0..16 {
-            let (r,g,b) = if y >= 6 && y <= 10 { (240, 240, 240) } else { (220, 40, 40) };
-            draw_pixel(4*16+x, 1*16+y, r, g, b, 255);
+        // TNT: Red with white stripe and "TNT" text
+        let tnt_pixels: [(u8, u8, u8); 256] = [
+            (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (186, 45, 27), (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (186, 45, 27), (210, 51, 38),
+            (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (210, 51, 38),
+            (186, 45, 27), (186, 45, 27), (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (186, 45, 27),
+            (210, 51, 38), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (186, 45, 27), (210, 51, 38), (210, 51, 38),
+            (186, 45, 27), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (186, 45, 27),
+            (210, 51, 38), (186, 45, 27), (124, 124, 124), (124, 124, 124), (124, 124, 124), (124, 124, 124), (124, 124, 124), (124, 124, 124), (124, 124, 124), (124, 124, 124), (124, 124, 124), (124, 124, 124), (124, 124, 124), (124, 124, 124), (186, 45, 27), (210, 51, 38),
+            (186, 45, 27), (210, 51, 38), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (210, 51, 38), (186, 45, 27),
+            (210, 51, 38), (186, 45, 27), (198, 198, 198), (32, 32, 32), (32, 32, 32), (32, 32, 32), (198, 198, 198), (32, 32, 32), (32, 32, 32), (32, 32, 32), (198, 198, 198), (32, 32, 32), (32, 32, 32), (32, 32, 32), (186, 45, 27), (210, 51, 38),
+            (186, 45, 27), (210, 51, 38), (198, 198, 198), (198, 198, 198), (32, 32, 32), (198, 198, 198), (198, 198, 198), (198, 198, 198), (32, 32, 32), (198, 198, 198), (198, 198, 198), (198, 198, 198), (32, 32, 32), (198, 198, 198), (210, 51, 38), (186, 45, 27),
+            (210, 51, 38), (186, 45, 27), (198, 198, 198), (198, 198, 198), (32, 32, 32), (198, 198, 198), (198, 198, 198), (198, 198, 198), (32, 32, 32), (198, 198, 198), (198, 198, 198), (198, 198, 198), (32, 32, 32), (198, 198, 198), (186, 45, 27), (210, 51, 38),
+            (186, 45, 27), (210, 51, 38), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (198, 198, 198), (210, 51, 38), (186, 45, 27),
+            (210, 51, 38), (186, 45, 27), (58, 58, 58), (58, 58, 58), (58, 58, 58), (58, 58, 58), (58, 58, 58), (58, 58, 58), (58, 58, 58), (58, 58, 58), (58, 58, 58), (58, 58, 58), (58, 58, 58), (58, 58, 58), (186, 45, 27), (210, 51, 38),
+            (186, 45, 27), (186, 45, 27), (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (186, 45, 27),
+            (210, 51, 38), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (186, 45, 27), (210, 51, 38), (210, 51, 38),
+            (186, 45, 27), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (186, 45, 27),
+            (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (210, 51, 38), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (210, 51, 38), (186, 45, 27), (186, 45, 27), (210, 51, 38),
+        ];
+        for y in 0..16 { for x in 0..16 {
+            let (r,g,b) = tnt_pixels[y * 16 + x];
+            draw_pixel(4*16+x as i32, 1*16+y as i32, r, g, b, 255);
         }}
 
-        // Nuke: Yellow with radiation symbol
-        for x in 0..16 { for y in 0..16 {
-            let dx = x as f32 - 7.5; let dy = y as f32 - 7.5;
-            let dist = (dx*dx + dy*dy).sqrt();
-            let (r,g,b) = if dist < 3.0 || (dist < 6.0 && ( (dx/dy).atan2(1.0).abs() < 0.5 || (dx/dy).atan2(1.0).abs() > 2.5)) { (30, 30, 30) } else { (220, 210, 20) };
-            draw_pixel(5*16+x, 2*16+y, r, g, b, 255);
+        // Nuke: High-fidelity Radiation Symbol
+        let nuke_pixels: [(u8, u8, u8); 256] = [
+            (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+            (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0), (255, 255, 0),
+        ];
+        for y in 0..16 { for x in 0..16 {
+            let (r,g,b) = nuke_pixels[y * 16 + x];
+            draw_pixel(5*16+x as i32, 2*16+y as i32, r, g, b, 255);
         }}
         // SnowyGrass side: dirt with white snow strip on top rows
         for x in 0..16i32 {
@@ -356,28 +461,64 @@ impl World {
         let pcz = (player_pos.z / CHUNK_DEPTH as f32).floor() as i32;
         
         // --- Spiral Chunk Generation ---
-        // If the player moved to a new chunk, we check for replacements.
-        // We use a spiral search to ensure closer chunks are generated first.
         if pcx != self.last_pcx || pcz != self.last_pcz {
-            for r in 0..=VIEW_DISTANCE {
-                for x in (pcx - r)..=(pcx + r) {
-                    for z in (pcz - r)..=(pcz + r) {
-                        // Only check the outer edge of the current square "r"
-                        if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r { continue; }
-                        
-                        let index = self.get_pool_index(x, z);
-                        let should_replace = match &self.chunks[index] { None => true, Some(c) => c.x != x || c.z != z };
-                        if should_replace {
-                            let mut chunk = Box::new(Chunk::new(x, z));
-                            chunk.generate();
-                            self.chunks[index] = Some(chunk);
-                            self.apply_edits_to_chunk(x, z);
-                            if let Some(c) = &mut self.chunks[index] { c.dirty = true; self.dirty_count += 1; }
+            if self.is_loading {
+                // In loading state, we process the spiral radius-by-radius, a few chunks per frame
+                let mut generated_this_frame = 0;
+                while self.loading_radius <= VIEW_DISTANCE && generated_this_frame < 64 {
+                    let r = self.loading_radius;
+                    // We need to iterate over the ring r
+                    // This is slightly complex to do incrementally inside the loop without more state,
+                    // but we can just do the whole ring if it's small, or just a few.
+                    // Let's simplify and just do the whole ring r then increment loading_radius.
+                    for x in (pcx - r)..=(pcx + r) {
+                        for z in (pcz - r)..=(pcz + r) {
+                            if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r { continue; }
+                            
+                            let index = self.get_pool_index(x, z);
+                            let should_replace = match &self.chunks[index] { None => true, Some(c) => c.x != x || c.z != z };
+                            if should_replace {
+                                let mut chunk = Box::new(Chunk::new(x, z));
+                                chunk.generate();
+                                self.chunks[index] = Some(chunk);
+                                self.apply_edits_to_chunk(x, z);
+                                if let Some(c) = &mut self.chunks[index] { c.dirty = true; self.dirty_count += 1; }
+                                self.chunks_generated_count += 1;
+                                generated_this_frame += 1;
+                                if generated_this_frame >= 64 { break; }
+                            }
+                        }
+                        if generated_this_frame >= 64 { break; }
+                    }
+                    if generated_this_frame < 64 {
+                        self.loading_radius += 1;
+                    }
+                }
+                if self.loading_radius > VIEW_DISTANCE {
+                    self.is_loading = false;
+                    self.last_pcx = pcx; self.last_pcz = pcz;
+                }
+            } else {
+                // NORMAL MODE: Non-blocking spiral (all objects created, limited meshing)
+                for r in 0..=VIEW_DISTANCE {
+                    for x in (pcx - r)..=(pcx + r) {
+                        for z in (pcz - r)..=(pcz + r) {
+                            if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r { continue; }
+                            
+                            let index = self.get_pool_index(x, z);
+                            let should_replace = match &self.chunks[index] { None => true, Some(c) => c.x != x || c.z != z };
+                            if should_replace {
+                                let mut chunk = Box::new(Chunk::new(x, z));
+                                chunk.generate();
+                                self.chunks[index] = Some(chunk);
+                                self.apply_edits_to_chunk(x, z);
+                                if let Some(c) = &mut self.chunks[index] { c.dirty = true; self.dirty_count += 1; }
+                            }
                         }
                     }
                 }
+                self.last_pcx = pcx; self.last_pcz = pcz;
             }
-            self.last_pcx = pcx; self.last_pcz = pcz;
         }
 
         // --- Prioritized Meshing ---
@@ -409,6 +550,80 @@ impl World {
                 if builds_this_frame >= 4 { break; }
             }
         }
+
+        // --- Explosive Ticking ---
+        let mut i = 0;
+        while i < self.explosives.len() {
+            self.explosives[i].fuse -= _time;
+            if self.explosives[i].fuse <= 0.0 {
+                let e = self.explosives.remove(i);
+                self.detonations.push((e.position, e.block_type));
+            } else {
+                i += 1;
+            }
+        }
+
+        // --- Particle Ticking ---
+        let mut i = 0;
+        while i < self.particles.len() {
+            let vel = self.particles[i].velocity;
+            self.particles[i].position += vel * _time;
+            self.particles[i].life -= _time;
+            if self.particles[i].life <= 0.0 {
+                self.particles.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    pub fn update_water(&mut self) {
+        if self.active_water.is_empty() { return; }
+        let mut to_process = std::mem::take(&mut self.active_water);
+        to_process.dedup();
+        
+        let mut next_active = Vec::new();
+        let mut processed = 0;
+        
+        for (x, y, z) in to_process.iter().copied() {
+            if self.get_block(x, y, z) != BlockType::Water { continue; }
+            
+            // 1. Flow down
+            if y > 0 && self.get_block(x, y-1, z) == BlockType::Air {
+                self.suppress_edit_recording = true;
+                self.set_block(x, y, z, BlockType::Air);
+                self.set_block(x, y-1, z, BlockType::Water);
+                self.suppress_edit_recording = false;
+                next_active.push((x, y-1, z));
+                // Add neighbors to active
+                next_active.push((x+1, y, z)); next_active.push((x-1, y, z));
+                next_active.push((x, y, z+1)); next_active.push((x, y, z-1));
+                next_active.push((x, y+1, z));
+            } else if y > 0 && self.get_block(x, y-1, z).is_solid() {
+                // 2. Spread sideways (simple)
+                for (dx, dz) in [(1,0), (-1,0), (0,1), (0,-1)] {
+                    if self.get_block(x+dx, y, z+dz) == BlockType::Air {
+                        // For the requested "finite" look, we fill holes.
+                        // If there's air below a neighbor, we flow there.
+                        if y > 0 && self.get_block(x+dx, y-1, z+dz) == BlockType::Air {
+                             self.suppress_edit_recording = true;
+                             self.set_block(x, y, z, BlockType::Air);
+                             self.set_block(x+dx, y, z+dz, BlockType::Water);
+                             self.suppress_edit_recording = false;
+                             next_active.push((x+dx, y, z+dz));
+                             break;
+                        }
+                    }
+                }
+            }
+            
+            processed += 1;
+            if processed > 200 { 
+                next_active.extend(to_process.into_iter().skip(processed));
+                break; 
+            }
+        }
+        self.active_water = next_active;
     }
 
     pub fn init_celestial(&mut self) {

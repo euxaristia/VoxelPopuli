@@ -6,7 +6,16 @@ mod renderer;
 mod world;
 
 use block::BlockType;
-use world::World;
+use crate::world::{World, Frustum, VIEW_DISTANCE};
+use rand::Rng;
+use glam::{Vec2, Vec3, Mat4};
+
+#[derive(PartialEq)]
+pub enum GameState {
+    Loading,
+    Playing,
+    Paused,
+}
 
 // ── Inventory ──────────────────────────────────────────────────────────────
 // Slot layout (45 total):
@@ -126,13 +135,13 @@ fn slot_at_pos(mx: f32, my: f32, px: f32, py: f32) -> Option<usize> {
     }
     None
 }
+// shader imports
 use renderer::{Shader, Texture2D, RenderTexture2D};
-use glam::{Vec2, Vec3, Mat4};
 
-const WINDOW_WIDTH: u32 = 1920;
-const WINDOW_HEIGHT: u32 = 1080;
-const RENDER_WIDTH: i32 = 1500;
-const RENDER_HEIGHT: i32 = 844;
+// const WINDOW_WIDTH: u32 = 1920;
+// const WINDOW_HEIGHT: u32 = 1080;
+const RENDER_WIDTH: i32 = 1125;
+const RENDER_HEIGHT: i32 = 633;
 
 #[derive(Debug)]
 struct WindowState {
@@ -348,6 +357,29 @@ void main() {
 }
 "#;
 
+const UI_TEXTURE_VS: &str = r#"
+#version 330 core
+layout(location = 0) in vec3 vertexPosition;
+layout(location = 1) in vec2 vertexTexCoord;
+uniform vec2 uScreenSize;
+out vec2 fragTexCoord;
+void main() {
+    vec2 pos = (vertexPosition.xy / uScreenSize) * 2.0 - 1.0;
+    gl_Position = vec4(pos.x, -pos.y, 0.0, 1.0);
+    fragTexCoord = vertexTexCoord;
+}
+"#;
+
+const UI_TEXTURE_FS: &str = r#"
+#version 330 core
+in vec2 fragTexCoord;
+out vec4 finalColor;
+uniform sampler2D texture0;
+void main() {
+    finalColor = texture(texture0, fragTexCoord);
+}
+"#;
+
 fn draw_rect(shader: &Shader, x: f32, y: f32, w: f32, h: f32, color: [u8; 4], screen_width: f32, screen_height: f32) {
     let v = [
         x, y, 0.0,  x + w, y, 0.0,  x + w, y + h, 0.0,
@@ -371,6 +403,26 @@ fn draw_texture_quad(texture: &Texture2D) {
         0.0, 0.0,  1.0, 1.0,  0.0, 1.0,
     ];
     let mesh = renderer::Mesh::new(&v, Some(&t), None, None);
+    texture.bind(0);
+    mesh.draw();
+}
+
+fn draw_texture_ui(texture: &Texture2D, x: f32, y: f32, w: f32, h: f32, shader: &Shader, screen_width: f32, screen_height: f32) {
+    draw_texture_ui_uv(texture, x, y, w, h, 0.0, 0.0, 1.0, 1.0, shader, screen_width, screen_height);
+}
+
+fn draw_texture_ui_uv(texture: &Texture2D, x: f32, y: f32, w: f32, h: f32, u: f32, v: f32, uw: f32, vh: f32, shader: &Shader, screen_width: f32, screen_height: f32) {
+    let verts = [
+        x, y, 0.0,  x + w, y, 0.0,  x + w, y + h, 0.0,
+        x, y, 0.0,  x + w, y + h, 0.0,  x, y + h, 0.0,
+    ];
+    let texs = [
+        u, v,  u + uw, v,  u + uw, v + vh,
+        u, v,  u + uw, v + vh,  u, v + vh,
+    ];
+    let mesh = renderer::Mesh::new(&verts, Some(&texs), None, None);
+    shader.bind();
+    shader.set_vec2(shader.get_uniform_location("uScreenSize"), glam::Vec2::new(screen_width, screen_height));
     texture.bind(0);
     mesh.draw();
 }
@@ -483,6 +535,17 @@ impl Player {
             }
         }
         false
+    }
+    pub fn intersects_block(&self, bx: i32, by: i32, bz: i32) -> bool {
+        let w = 0.3; // Slightly larger for safety
+        let player_min = self.position - Vec3::new(w, 0.0, w);
+        let player_max = self.position + Vec3::new(w, 1.8, w);
+        let block_min = Vec3::new(bx as f32, by as f32, bz as f32);
+        let block_max = block_min + Vec3::ONE;
+        
+        player_max.x > block_min.x && player_min.x < block_max.x &&
+        player_max.y > block_min.y && player_min.y < block_max.y &&
+        player_max.z > block_min.z && player_min.z < block_max.z
     }
     fn update(&mut self, world: &World, move_input: Vec3, dt: f32, is_sprinting: bool, is_jumping: bool, is_sneaking: bool, current_time: f64) {
         if self.inventory_open { return; }
@@ -666,12 +729,45 @@ fn draw_bubble(shader: &Shader, x: f32, y: f32, size: f32, screen_width: f32, sc
     }
 }
 
-fn explode(world: &mut World, x: i32, y: i32, z: i32, radius: i32) {
-    let r2 = radius * radius;
-    for dx in -radius..=radius {
-        for dy in -radius..=radius {
-            for dz in -radius..=radius {
-                if dx*dx + dy*dy + dz*dz <= r2 {
+fn explode(world: &mut World, x: i32, y: i32, z: i32, initial_radius: i32, is_nuke: bool) {
+    let mut total_radius = initial_radius as f32;
+    let mut nuke_count = 1;
+
+    if is_nuke {
+        // Exponential Multiplication: Check adjacent blocks for more Nukes
+        let mut queue = vec![(x, y, z)];
+        let mut checked = std::collections::HashSet::new();
+        checked.insert((x, y, z));
+
+        while let Some((qx, qy, qz)) = queue.pop() {
+            let neighbors = [(1,0,0), (-1,0,0), (0,1,0), (0,-1,0), (0,0,1), (0,0,-1)];
+            for (dx, dy, dz) in neighbors {
+                let nx = qx + dx; let ny = qy + dy; let nz = qz + dz;
+                if !checked.contains(&(nx, ny, nz)) {
+                    if world.get_block(nx, ny, nz) == BlockType::Nuke {
+                        world.set_block(nx, ny, nz, BlockType::Air);
+                        nuke_count += 1;
+                        queue.push((nx, ny, nz));
+                        checked.insert((nx, ny, nz));
+                    }
+                }
+            }
+        }
+        
+        // Radius = BASE * 1.5^(nuke_count - 1) up to a reasonable cap
+        total_radius = initial_radius as f32 * 1.5f32.powi(nuke_count - 1);
+        if total_radius > 150.0 { total_radius = 150.0; } // Cap for performance
+    }
+
+    let r_int = total_radius as i32;
+    let r2 = total_radius * total_radius;
+    
+    // Perform destruction
+    for dx in -r_int..=r_int {
+        for dy in -r_int..=r_int {
+            for dz in -r_int..=r_int {
+                let dist_sq = (dx*dx + dy*dy + dz*dz) as f32;
+                if dist_sq <= r2 {
                     let bx = x + dx; let by = y + dy; let bz = z + dz;
                     let b = world.get_block(bx, by, bz);
                     if b != BlockType::Air && b != BlockType::Bedrock {
@@ -680,6 +776,71 @@ fn explode(world: &mut World, x: i32, y: i32, z: i32, radius: i32) {
                 }
             }
         }
+    }
+
+    // Spawn Particles (Shockwave/Flash)
+    // 1. Core Shockwave
+    world.particles.push(crate::block::Particle {
+        position: Vec3::new(x as f32 + 0.1, y as f32 + 0.1, z as f32 + 0.1), // Offset slightly to avoid z-fight with ground
+        velocity: Vec3::ZERO,
+        life: 0.5,
+        max_life: 0.5,
+        scale: total_radius * 2.0,
+    });
+
+    // 2. Flying debris/smoke
+    let particle_count = if is_nuke { 60 } else { 15 };
+    for _ in 0..particle_count {
+        let mut rng = rand::thread_rng();
+        let vx = rng.gen_range(-30.0..30.0);
+        let vy = rng.gen_range(-10.0..40.0);
+        let vz = rng.gen_range(-30.0..30.0);
+        world.particles.push(crate::block::Particle {
+            position: Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
+            velocity: Vec3::new(vx, vy, vz),
+            life: rng.gen_range(0.5..2.0),
+            max_life: 2.0,
+            scale: rng.gen_range(1.0..4.0),
+        });
+    }
+}
+
+fn draw_pause_menu(ui_shader: &Shader, sw: f32, sh: f32) {
+    // 1. Full-screen tint
+    draw_rect(ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 150], sw, sh);
+
+    // 2. Buttons (Left Column)
+    let btn_w = 260.0; let btn_h = 42.0; let btn_x = 60.0;
+    let btn_y_start = sh / 2.0 - 100.0;
+    
+    for i in 0..4 {
+        let y = btn_y_start + i as f32 * (btn_h + 10.0);
+        // Shadow/Border
+        draw_rect(ui_shader, btn_x - 2.0, y - 2.0, btn_w + 4.0, btn_h + 4.0, [0, 0, 0, 255], sw, sh);
+        // Base
+        draw_rect(ui_shader, btn_x, y, btn_w, btn_h, [198, 198, 198, 255], sw, sh);
+        // Inset
+        draw_rect(ui_shader, btn_x + 2.0, y + 2.0, btn_w - 4.0, btn_h - 4.0, [139, 139, 139, 255], sw, sh);
+    }
+
+    // 3. Right Panel (Friends / Session)
+    let panel_w = 400.0; let panel_h = sh - 100.0;
+    let panel_x = sw - panel_w - 60.0;
+    let panel_y = 50.0;
+    
+    // Panel background
+    draw_rect(ui_shader, panel_x - 2.0, panel_y - 2.0, panel_w + 4.0, panel_h + 4.0, [0, 0, 0, 255], sw, sh);
+    draw_rect(ui_shader, panel_x, panel_y, panel_w, panel_h, [49, 49, 49, 220], sw, sh);
+    
+    // Header
+    draw_rect(ui_shader, panel_x, panel_y, panel_w, 50.0, [85, 85, 85, 255], sw, sh);
+    
+    // Placeholder Friends
+    for i in 0..5 {
+        let py = panel_y + 70.0 + i as f32 * 70.0;
+        draw_rect(ui_shader, panel_x + 15.0, py, panel_w - 30.0, 60.0, [70, 70, 70, 255], sw, sh);
+        // Avatar placeholder
+        draw_rect(ui_shader, panel_x + 25.0, py + 10.0, 40.0, 40.0, [200, 200, 200, 255], sw, sh);
     }
 }
 
@@ -708,11 +869,13 @@ fn main() { // Entry point
     let flat_shader = Shader::new(FLAT_VS, FLAT_FS).expect("Failed to compile FLAT shader");
     let ui_shader = Shader::new(UI_VS, UI_FS).expect("Failed to compile UI shader");
     let texture_shader = Shader::new(TEXTURE_VS, TEXTURE_FS).expect("Failed to compile TEXTURE shader");
+    let texture_ui_shader = Shader::new(UI_TEXTURE_VS, UI_TEXTURE_FS).expect("Failed to compile UI TEXTURE shader");
     let color_shader = Shader::new(TEXTURE_VS, COLOR_FS).expect("Failed to compile COLOR shader");
     let target = RenderTexture2D::new(RENDER_WIDTH, RENDER_HEIGHT);
+    let logo_texture = Texture2D::from_file("assets/logo.png");
+    
+    let mut game_state = GameState::Loading;
     let mut spawn_y = 150.0;
-    world.update(Vec3::new(32.5, 0.0, 32.5), 0.0); 
-    for y in (0..255).rev() { if world.get_block(32, y, 32) != BlockType::Air { spawn_y = y as f32 + 2.0; break; } }
     let mut inv_slots = [None::<ItemStack>; 45];
     inv_slots[0] = Some(ItemStack::new(BlockType::Nuke, 64));
     inv_slots[1] = Some(ItemStack::new(BlockType::FlintAndSteel, 1));
@@ -741,14 +904,74 @@ fn main() { // Entry point
             fps_frames = 0;
             fps_last_time = current_time;
             window.set_title(&format!("VoxelPopuli Rust - {:.0} FPS", fps));
-            println!("FPS: {:.0}", fps);
         }
         glfw.poll_events();
+
+        if game_state == GameState::Loading {
+            // Update world incrementally
+            world.update(Vec3::new(32.5, 0.0, 32.5), current_time as f32);
+            if !world.is_loading {
+                for y in (0..255).rev() { if world.get_block(32, y, 32) != BlockType::Air { spawn_y = y as f32 + 2.0; break; } }
+                player.position = Vec3::new(32.5, spawn_y, 32.5);
+                game_state = GameState::Playing;
+            }
+
+            let (win_sw, win_sh) = window.get_size();
+            let sw = win_sw as f32; let sh = win_sh as f32;
+
+            // Render Loading Screen
+            unsafe {
+                gl::Viewport(0, 0, win_sw as i32, win_sh as i32);
+                gl::ClearColor(0.19, 0.19, 0.19, 1.0); // Minecraft Bedrock Gray #313131
+                gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+                gl::Disable(gl::DEPTH_TEST);
+                gl::Disable(gl::CULL_FACE);
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            }
+
+            // 1. Logo
+            let logo_w = 400.0; let logo_h = 400.0; // Assuming 1:1 or similar, adjust if needed
+            draw_texture_ui(&logo_texture, (sw - logo_w)/2.0, sh/2.0 - logo_h/2.0 - 50.0, logo_w, logo_h, &texture_ui_shader, sw, sh);
+
+            // 2. Progress Bar
+            let bar_w = 400.0; let bar_h = 10.0;
+            let bar_x = (sw - bar_w) / 2.0;
+            let bar_y = sh / 2.0 + 20.0;
+            
+            // Background of bar
+            draw_rect(&ui_shader, bar_x - 2.0, bar_y - 2.0, bar_w + 4.0, bar_h + 4.0, [255, 255, 255, 255], sw, sh); // Border
+            draw_rect(&ui_shader, bar_x, bar_y, bar_w, bar_h, [49, 49, 49, 255], sw, sh); // Bar BG
+            
+            // Progress
+            let total_chunks = (VIEW_DISTANCE * 2 + 1) as f32 * (VIEW_DISTANCE * 2 + 1) as f32;
+            let progress = (world.chunks_generated_count as f32 / total_chunks).clamp(0.0, 1.0);
+            draw_rect(&ui_shader, bar_x, bar_y, bar_w * progress, bar_h, [255, 255, 255, 255], sw, sh);
+
+            // 3. Spinner (Just a rotating dash/slash)
+            let spin_chars = ["|", "/", "-", "\\"];
+            let _spin_idx = (current_time * 10.0) as usize % 4;
+            // No text renderer yet, so we'll just skip the % text for now or implement a primitive one.
+            // Let's at least show the bar and logo.
+
+            unsafe { gl::Enable(gl::DEPTH_TEST); }
+            window.swap_buffers();
+            continue;
+        }
         for (_, event) in glfw::flush_messages(&events) {
             match event {
                 glfw::WindowEvent::Size(width, height) => { unsafe { gl::Viewport(0, 0, width, height); } }
-                glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => { window.set_should_close(true) }
+                glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
+                    if game_state == GameState::Playing {
+                        game_state = GameState::Paused;
+                        window.set_cursor_mode(glfw::CursorMode::Normal);
+                    } else if game_state == GameState::Paused {
+                        game_state = GameState::Playing;
+                        window.set_cursor_mode(glfw::CursorMode::Disabled);
+                    }
+                }
                 glfw::WindowEvent::Key(Key::E, _, Action::Press, _) => {
+                    if game_state != GameState::Playing { continue; }
                     player.inventory_open = !player.inventory_open;
                     if player.inventory_open {
                         window.set_cursor_mode(glfw::CursorMode::Normal);
@@ -782,7 +1005,7 @@ fn main() { // Entry point
                 }
 
                 glfw::WindowEvent::CursorPos(x, y) => {
-                    if !player.inventory_open {
+                    if game_state == GameState::Playing && !player.inventory_open {
                         let dx = (x - last_cursor_pos.0) as f32; let dy = (y - last_cursor_pos.1) as f32;
                         camera_angle.x -= dx * 0.003; camera_angle.y -= dy * 0.003;
                         camera_angle.y = camera_angle.y.clamp(-1.56, 1.56);
@@ -793,6 +1016,7 @@ fn main() { // Entry point
                     let left  = button == glfw::MouseButtonLeft;
                     let right = button == glfw::MouseButtonRight;
                     let shift = mods.contains(glfw::Modifiers::Shift);
+                    
                     if player.inventory_open && action == Action::Press {
                         let (win_w, win_h) = window.get_framebuffer_size();
                         let (sw, sh) = (win_w as f32, win_h as f32);
@@ -801,7 +1025,26 @@ fn main() { // Entry point
                         if let Some(slot) = slot_at_pos(mx, my, px, py) {
                             inv_click(&mut inv_slots, &mut inv_cursor, slot, right && !left, shift);
                         }
-                    } else if !player.inventory_open && action == Action::Press {
+                    } else if game_state == GameState::Paused && action == Action::Press && left {
+                        let inner_win_size = window.get_size();
+                        let sw = inner_win_size.0 as f32; let sh = inner_win_size.1 as f32;
+                        let mx = last_cursor_pos.0 as f32; let my = last_cursor_pos.1 as f32;
+                        
+                        let btn_w = 260.0; let btn_h = 42.0; let btn_x = 60.0;
+                        let btn_y_start = sh / 2.0 - 100.0;
+                        
+                        for i in 0..4 {
+                            let y = btn_y_start + i as f32 * (btn_h + 10.0);
+                            if mx >= btn_x && mx <= btn_x + btn_w && my >= y && my <= y + btn_h {
+                                if i == 0 { // Resume
+                                    game_state = GameState::Playing;
+                                    window.set_cursor_mode(glfw::CursorMode::Disabled);
+                                } else if i == 3 { // Save & Quit
+                                    window.set_should_close(true);
+                                }
+                            }
+                        }
+                    } else if game_state == GameState::Playing && !player.inventory_open && action == Action::Press {
                         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
                         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
                                 if left {
@@ -821,18 +1064,26 @@ fn main() { // Entry point
                                                 let target = world.get_block(res.x, res.y, res.z);
                                                 if target == BlockType::TNT {
                                                     world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                                    explode(&mut world, res.x, res.y, res.z, 4);
+                                                    world.explosives.push(crate::block::ActiveExplosive {
+                                                        position: Vec3::new(res.x as f32, res.y as f32, res.z as f32),
+                                                        fuse: 4.0,
+                                                        block_type: BlockType::TNT,
+                                                    });
                                                     continue;
                                                 } else if target == BlockType::Nuke {
                                                     world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                                    explode(&mut world, res.x, res.y, res.z, 20);
+                                                    world.explosives.push(crate::block::ActiveExplosive {
+                                                        position: Vec3::new(res.x as f32, res.y as f32, res.z as f32),
+                                                        fuse: 4.0,
+                                                        block_type: BlockType::Nuke,
+                                                    });
                                                     continue;
                                                 }
                                             }
                                             
                                             if !s.block.is_item() {
                                                 let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                                                if world.get_block(nx, ny, nz) == BlockType::Air {
+                                                if world.get_block(nx, ny, nz) == BlockType::Air && !player.intersects_block(nx, ny, nz) {
                                                     world.set_block(nx, ny, nz, s.block);
                                                     s.count -= 1;
                                                     if s.count == 0 { inv_slots[player.selected_slot] = None; }
@@ -859,7 +1110,7 @@ fn main() { // Entry point
                 const LOOK_SPEED: f32 = 3.0;
 
                 // Right stick: camera look
-                if !player.inventory_open {
+                if game_state == GameState::Playing && !player.inventory_open {
                     let rx = gs.get_axis(GamepadAxis::AxisRightX);
                     let ry = gs.get_axis(GamepadAxis::AxisRightY);
                     let rx = if rx.abs() > DEADZONE { rx } else { 0.0 };
@@ -915,11 +1166,19 @@ fn main() { // Entry point
                                         let target = world.get_block(res.x, res.y, res.z);
                                         if target == BlockType::TNT {
                                             world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                            explode(&mut world, res.x, res.y, res.z, 4);
+                                            world.explosives.push(crate::block::ActiveExplosive {
+                                                position: Vec3::new(res.x as f32, res.y as f32, res.z as f32),
+                                                fuse: 4.0,
+                                                block_type: BlockType::TNT,
+                                            });
                                             prev_gp_lt = lt; continue;
                                         } else if target == BlockType::Nuke {
                                             world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                            explode(&mut world, res.x, res.y, res.z, 20);
+                                            world.explosives.push(crate::block::ActiveExplosive {
+                                                position: Vec3::new(res.x as f32, res.y as f32, res.z as f32),
+                                                fuse: 4.0,
+                                                block_type: BlockType::Nuke,
+                                            });
                                             prev_gp_lt = lt; continue;
                                         }
                                     }
@@ -964,7 +1223,7 @@ fn main() { // Entry point
         let forward = Vec3::new(camera_angle.x.sin(), 0.0, camera_angle.x.cos());
         let right = forward.cross(Vec3::Y);
         let mut move_dir = Vec3::ZERO;
-        if !player.inventory_open {
+        if game_state == GameState::Playing && !player.inventory_open {
             if window.get_key(Key::W) == Action::Press { move_dir += forward; }
             if window.get_key(Key::S) == Action::Press { move_dir -= forward; }
             if window.get_key(Key::A) == Action::Press { move_dir -= right; }
@@ -977,8 +1236,23 @@ fn main() { // Entry point
         let is_sneaking  = window.get_key(Key::LeftShift)   == Action::Press || gp_sneak;
         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
-        player.update(&world, move_dir, delta_time, is_sprinting, is_jumping, is_sneaking, current_time);
-        world.update(player.position, current_time as f32);
+        
+        if game_state == GameState::Playing {
+            player.update(&world, move_dir, delta_time, is_sprinting, is_jumping, is_sneaking, current_time);
+            world.update(player.position, current_time as f32);
+            world.update_water();
+        }
+        
+        // --- Process Detonations ---
+        let dets = std::mem::take(&mut world.detonations);
+        for (pos, btype) in dets {
+            let (radius, is_nuke) = match btype {
+                BlockType::Nuke => (20, true),
+                _ => (4, false),
+            };
+            explode(&mut world, pos.x as i32, pos.y as i32, pos.z as i32, radius, is_nuke);
+        }
+
         world.update_clouds(player.position, current_time as f32);
         let (sun_angle, sun_y) = { let a = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI; (a, a.sin()) };
         let sun_dir = glam::Vec3::new(0.0, sun_y, sun_angle.cos());
@@ -1009,7 +1283,13 @@ fn main() { // Entry point
         shader.set_vec3(shader.get_uniform_location("viewPos"), eye_pos);
         shader.set_vec4(shader.get_uniform_location("skyCol"), sky_c);
         let frustum = world::Frustum::from_matrix(&mvp);
-        world.render_opaque(&frustum); world.render_clouds(&flat_shader, &mvp);
+        world.render_opaque(&frustum); 
+        
+        // Render Explosives and Particles
+        world.render_explosives(&shader, &mvp, current_time as f32);
+        world.render_particles(&shader, &mvp);
+
+        world.render_clouds(&flat_shader, &mvp);
         shader.bind(); world.render_transparent(&frustum);
         RenderTexture2D::unbind();
         let (win_width, win_height) = window.get_framebuffer_size();
@@ -1046,8 +1326,14 @@ fn main() { // Entry point
                 draw_rect(&ui_shader, rx+36.0, ry-2.0, 2.0, 40.0, [255,255,255,255], sw, sh);
             }
             if let Some(s) = inv_slots[i] {
-                let mut c = get_block_ui_color(s.block); c[3] = 255;
-                draw_rect(&ui_shader, rx + 4.0, ry + 4.0, 28.0, 28.0, c, sw, sh);
+                if s.block == BlockType::TNT {
+                    draw_texture_ui_uv(world.atlas.as_ref().unwrap(), rx + 4.0, ry + 4.0, 28.0, 28.0, 0.25, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                } else if s.block == BlockType::Nuke {
+                    draw_texture_ui_uv(world.atlas.as_ref().unwrap(), rx + 4.0, ry + 4.0, 28.0, 28.0, 0.3125, 0.125, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                } else {
+                    let mut c = get_block_ui_color(s.block); c[3] = 255;
+                    draw_rect(&ui_shader, rx + 4.0, ry + 4.0, 28.0, 28.0, c, sw, sh);
+                }
             }
         }
         // Crosshair (hidden when inventory is open)
@@ -1101,8 +1387,14 @@ fn main() { // Entry point
                 let c = armor_labels[i];
                 draw_rect(&ui_shader, sx+8.0, sy+8.0, 20.0, 20.0, c, sw, sh);
                 if let Some(s) = inv_slots[36+i] {
-                    let mut bc = get_block_ui_color(s.block); bc[3] = 255;
-                    draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
+                    if s.block == BlockType::TNT {
+                        draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.25, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                    } else if s.block == BlockType::Nuke {
+                        draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.3125, 0.125, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                    } else {
+                        let mut bc = get_block_ui_color(s.block); bc[3] = 255;
+                        draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
+                    }
                 }
             }
 
@@ -1114,8 +1406,14 @@ fn main() { // Entry point
                 draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, sw, sh);
                 draw_rect(&ui_shader, sx+2.0, sy+2.0, sw2-4.0, sh2-4.0, [75,65,58,200], sw, sh);
                 if let Some(s) = inv_slots[i] {
-                    let mut bc = get_block_ui_color(s.block); bc[3] = 255;
-                    draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
+                    if s.block == BlockType::TNT {
+                        draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.25, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                    } else if s.block == BlockType::Nuke {
+                        draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.3125, 0.125, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                    } else {
+                        let mut bc = get_block_ui_color(s.block); bc[3] = 255;
+                        draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
+                    }
                 }
             }
             // Arrow → between craft and output
@@ -1129,20 +1427,32 @@ fn main() { // Entry point
                 draw_rect(&ui_shader, sx-2.0, sy-2.0, sw2+4.0, sh2+4.0, [55,45,35,255], sw, sh);
                 draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, sw, sh);
                 if let Some(s) = inv_slots[44] {
-                    let mut bc = get_block_ui_color(s.block); bc[3] = 255;
-                    draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
+                    if s.block == BlockType::TNT {
+                        draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.25, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                    } else if s.block == BlockType::Nuke {
+                        draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.3125, 0.125, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                    } else {
+                        let mut bc = get_block_ui_color(s.block); bc[3] = 255;
+                        draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
+                    }
                 }
             }
 
             // ── Helper closure to draw a slot
             let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
-            let draw_slot = |shader: &Shader, sx: f32, sy: f32, ss: f32, item: Option<ItemStack>, hov: bool, sw: f32, sh: f32| {
+            let draw_slot = |shader: &Shader, tex_shader: &Shader, atlas: &Texture2D, sx: f32, sy: f32, ss: f32, item: Option<ItemStack>, hov: bool, sw: f32, sh: f32| {
                 let bg = if hov && item.is_some() { [145,130,110,255] } else { [100,88,78,255] };
                 draw_rect(shader, sx, sy, ss, ss, bg, sw, sh);
                 draw_rect(shader, sx+2.0, sy+2.0, ss-4.0, ss-4.0, [75,65,55,200], sw, sh);
                 if let Some(s) = item {
-                    let mut bc = get_block_ui_color(s.block); bc[3] = 255;
-                    draw_rect(shader, sx+4.0, sy+4.0, ss-8.0, ss-8.0, bc, sw, sh);
+                    if s.block == BlockType::TNT {
+                        draw_texture_ui_uv(atlas, sx+4.0, sy+4.0, ss-8.0, ss-8.0, 0.25, 0.0625, 0.0625, 0.0625, tex_shader, sw, sh);
+                    } else if s.block == BlockType::Nuke {
+                        draw_texture_ui_uv(atlas, sx+4.0, sy+4.0, ss-8.0, ss-8.0, 0.3125, 0.125, 0.0625, 0.0625, tex_shader, sw, sh);
+                    } else {
+                        let mut bc = get_block_ui_color(s.block); bc[3] = 255;
+                        draw_rect(shader, sx+4.0, sy+4.0, ss-8.0, ss-8.0, bc, sw, sh);
+                    }
                     // Count dots (up to 8 = 64)
                     let dots = ((s.count as f32 / 8.0).ceil() as usize).clamp(1, 8);
                     let dsz = 4.0; let dgap = 2.0;
@@ -1159,7 +1469,7 @@ fn main() { // Entry point
             for slot in 9..36usize {
                 let (sx, sy, ss, _) = slot_rect(slot, px, py);
                 let hov = mx>=sx && mx<sx+ss && my>=sy && my<sy+ss;
-                draw_slot(&ui_shader, sx, sy, ss, inv_slots[slot], hov, sw, sh);
+                draw_slot(&ui_shader, &texture_ui_shader, world.atlas.as_ref().unwrap(), sx, sy, ss, inv_slots[slot], hov, sw, sh);
             }
             // ── Hotbar row in inventory (slots 0-8)
             for slot in 0..9usize {
@@ -1169,13 +1479,19 @@ fn main() { // Entry point
                 if player.selected_slot == slot {
                     draw_rect(&ui_shader, sx-2.0, sy-2.0, ss+4.0, ss+4.0, [255,255,255,180], sw, sh);
                 }
-                draw_slot(&ui_shader, sx, sy, ss, inv_slots[slot], hov, sw, sh);
+                draw_slot(&ui_shader, &texture_ui_shader, world.atlas.as_ref().unwrap(), sx, sy, ss, inv_slots[slot], hov, sw, sh);
             }
 
             // ── Cursor item (held on mouse)
             if let Some(c) = inv_cursor {
-                let mut bc = get_block_ui_color(c.block); bc[3] = 220;
-                draw_rect(&ui_shader, mx - 14.0, my - 14.0, 28.0, 28.0, bc, sw, sh);
+                if c.block == BlockType::TNT {
+                    draw_texture_ui_uv(world.atlas.as_ref().unwrap(), mx - 14.0, my - 14.0, 28.0, 28.0, 0.25, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                } else if c.block == BlockType::Nuke {
+                    draw_texture_ui_uv(world.atlas.as_ref().unwrap(), mx - 14.0, my - 14.0, 28.0, 28.0, 0.3125, 0.125, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                } else {
+                    let mut bc = get_block_ui_color(c.block); bc[3] = 220;
+                    draw_rect(&ui_shader, mx - 14.0, my - 14.0, 28.0, 28.0, bc, sw, sh);
+                }
                 // Count dots
                 let dots = ((c.count as f32 / 8.0).ceil() as usize).clamp(1, 8);
                 let dsz = 4.0; let dgap = 2.0;
@@ -1216,6 +1532,11 @@ fn main() { // Entry point
                     draw_bubble(&ui_shader, rx, oy, bubble_size, sw, sh, empty);
                 }
             }
+        }
+
+        if game_state == GameState::Paused {
+            let (win_width, win_height) = window.get_size();
+            draw_pause_menu(&ui_shader, win_width as f32, win_height as f32);
         }
 
         unsafe { gl::Enable(gl::DEPTH_TEST); gl::Enable(gl::CULL_FACE); }

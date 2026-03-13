@@ -1,3 +1,21 @@
+use glam::Vec3;
+
+#[derive(Clone, Copy, Debug)]
+pub struct ActiveExplosive {
+    pub position: Vec3,
+    pub fuse: f32, // remaining time in seconds
+    pub block_type: BlockType,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Particle {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub life: f32,
+    pub max_life: f32,
+    pub scale: f32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum BlockType {
@@ -64,6 +82,13 @@ impl BlockType {
         match self {
             BlockType::RawIron | BlockType::IronIngot | BlockType::FlintAndSteel => true,
             _ => false,
+        }
+    }
+
+    pub fn is_solid(&self) -> bool {
+        match self {
+            BlockType::Air | BlockType::Water | BlockType::SnowLayer => false,
+            _ => !self.is_item(),
         }
     }
 }
