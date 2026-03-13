@@ -7,6 +7,15 @@ mod world;
 
 use block::BlockType;
 use world::World;
+
+const INVENTORY_BLOCKS: [BlockType; 10] = [
+    BlockType::Grass,    BlockType::Dirt,     BlockType::Stone,   BlockType::OakLog,    BlockType::OakLeaves,
+    BlockType::Sand,     BlockType::Gravel,   BlockType::CoalOre, BlockType::SpruceLog, BlockType::SpruceLeaves,
+];
+
+fn inv_idx(block: BlockType) -> Option<usize> {
+    INVENTORY_BLOCKS.iter().position(|&b| b == block)
+}
 use renderer::{Shader, Texture2D, RenderTexture2D};
 use glam::{Vec2, Vec3, Mat4};
 
@@ -519,7 +528,7 @@ fn main() {
     world.update(Vec3::new(32.5, 0.0, 32.5), 0.0); 
     for y in (0..255).rev() { if world.get_block(32, y, 32) != BlockType::Air { spawn_y = y as f32 + 2.0; break; } }
     let mut hotbar = [BlockType::Air; 10];
-    let mut hotbar_counts = [0u32; 10];
+    let mut inv_counts = [0u32; 10]; // counts indexed by INVENTORY_BLOCKS
     let mut player = Player { position: Vec3::new(32.5, spawn_y, 32.5), velocity: Vec3::ZERO, grounded: false, air_seconds: 15.0, inventory_open: false, selected_slot: 0, health: 20, flying: false, last_space_release: 0.0, space_was_pressed: false };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
@@ -551,39 +560,61 @@ fn main() {
             match event {
                 glfw::WindowEvent::Size(width, height) => { unsafe { gl::Viewport(0, 0, width, height); } }
                 glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => { window.set_should_close(true) }
-                glfw::WindowEvent::Key(Key::E, _, Action::Press, _) => {}
+                glfw::WindowEvent::Key(Key::E, _, Action::Press, _) => {
+                    player.inventory_open = !player.inventory_open;
+                    if player.inventory_open {
+                        window.set_cursor_mode(glfw::CursorMode::Normal);
+                    } else {
+                        window.set_cursor_mode(glfw::CursorMode::Disabled);
+                    }
+                }
 
                 glfw::WindowEvent::CursorPos(x, y) => {
                     if !player.inventory_open {
                         let dx = (x - last_cursor_pos.0) as f32; let dy = (y - last_cursor_pos.1) as f32;
-                        last_cursor_pos = (x, y); camera_angle.x -= dx * 0.003; camera_angle.y -= dy * 0.003;
+                        camera_angle.x -= dx * 0.003; camera_angle.y -= dy * 0.003;
                         camera_angle.y = camera_angle.y.clamp(-1.56, 1.56);
                     }
+                    last_cursor_pos = (x, y);
                 }
                 glfw::WindowEvent::MouseButton(button, Action::Press, _) => {
-                    if !player.inventory_open {
+                    if player.inventory_open {
+                        // Inventory click: assign clicked block type to selected hotbar slot
+                        if button == glfw::MouseButtonLeft {
+                            let (win_w, win_h) = window.get_framebuffer_size();
+                            let sw = win_w as f32; let sh = win_h as f32;
+                            let slot_size = 70.0f32; let cols = 5usize;
+                            let grid_w = cols as f32 * (slot_size + 10.0) - 10.0;
+                            let grid_h = 2.0 * (slot_size + 10.0) - 10.0;
+                            let inv_x = (sw - grid_w) / 2.0;
+                            let inv_y = (sh - grid_h) / 2.0;
+                            let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
+                            for i in 0..10usize {
+                                let col = (i % cols) as f32; let row = (i / cols) as f32;
+                                let sx = inv_x + col * (slot_size + 10.0);
+                                let sy = inv_y + row * (slot_size + 10.0);
+                                if mx >= sx && mx < sx + slot_size && my >= sy && my < sy + slot_size {
+                                    if inv_counts[i] > 0 {
+                                        hotbar[player.selected_slot] = INVENTORY_BLOCKS[i];
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
                         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
                         let look_dir = Vec3::new(camera_angle.y.cos() * camera_angle.x.sin(), camera_angle.y.sin(), camera_angle.y.cos() * camera_angle.x.cos());
                         if button == glfw::MouseButtonLeft {
                             let res = world.raycast(eye_pos, look_dir, 8.0);
                             if res.hit {
                                 let broken_block = world.get_block(res.x, res.y, res.z);
-                                if broken_block != BlockType::Air && broken_block != BlockType::Water {
-                                    // Add block to hotbar (simple stacking)
-                                    let mut added = false;
-                                    for i in 0..10 {
-                                        if hotbar[i] == broken_block && hotbar_counts[i] > 0 {
-                                            hotbar_counts[i] += 1;
-                                            added = true;
-                                            break;
-                                        }
-                                    }
-                                    if !added {
-                                        for i in 0..10 {
-                                            if hotbar_counts[i] == 0 {
-                                                hotbar[i] = broken_block;
-                                                hotbar_counts[i] = 1;
-                                                break;
+                                if broken_block != BlockType::Air && broken_block != BlockType::Water && broken_block != BlockType::Bedrock {
+                                    if let Some(idx) = inv_idx(broken_block) {
+                                        inv_counts[idx] += 1;
+                                        // Auto-assign to hotbar if not already there
+                                        if !hotbar.iter().any(|&b| b == broken_block) {
+                                            for slot in hotbar.iter_mut() {
+                                                if *slot == BlockType::Air { *slot = broken_block; break; }
                                             }
                                         }
                                     }
@@ -597,11 +628,10 @@ fn main() {
                                 if world.get_block(nx, ny, nz) == BlockType::Air {
                                     let slot = player.selected_slot;
                                     let b = hotbar[slot];
-                                    if b != BlockType::Air && hotbar_counts[slot] > 0 {
-                                        world.set_block(nx, ny, nz, b);
-                                        hotbar_counts[slot] -= 1;
-                                        if hotbar_counts[slot] == 0 {
-                                            hotbar[slot] = BlockType::Air;
+                                    if let Some(idx) = inv_idx(b) {
+                                        if inv_counts[idx] > 0 {
+                                            world.set_block(nx, ny, nz, b);
+                                            inv_counts[idx] -= 1;
                                         }
                                     }
                                 }
@@ -667,17 +697,12 @@ fn main() {
                             let res = world.raycast(gp_eye, gp_look, 8.0);
                             if res.hit {
                                 let broken = world.get_block(res.x, res.y, res.z);
-                                if broken != BlockType::Air && broken != BlockType::Water {
-                                    let mut added = false;
-                                    for i in 0..10 {
-                                        if hotbar[i] == broken && hotbar_counts[i] > 0 {
-                                            hotbar_counts[i] += 1; added = true; break;
-                                        }
-                                    }
-                                    if !added {
-                                        for i in 0..10 {
-                                            if hotbar_counts[i] == 0 {
-                                                hotbar[i] = broken; hotbar_counts[i] = 1; break;
+                                if broken != BlockType::Air && broken != BlockType::Water && broken != BlockType::Bedrock {
+                                    if let Some(idx) = inv_idx(broken) {
+                                        inv_counts[idx] += 1;
+                                        if !hotbar.iter().any(|&b| b == broken) {
+                                            for slot in hotbar.iter_mut() {
+                                                if *slot == BlockType::Air { *slot = broken; break; }
                                             }
                                         }
                                     }
@@ -692,10 +717,11 @@ fn main() {
                                 if world.get_block(nx, ny, nz) == BlockType::Air {
                                     let slot = player.selected_slot;
                                     let b = hotbar[slot];
-                                    if b != BlockType::Air && hotbar_counts[slot] > 0 {
-                                        world.set_block(nx, ny, nz, b);
-                                        hotbar_counts[slot] -= 1;
-                                        if hotbar_counts[slot] == 0 { hotbar[slot] = BlockType::Air; }
+                                    if let Some(idx) = inv_idx(b) {
+                                        if inv_counts[idx] > 0 {
+                                            world.set_block(nx, ny, nz, b);
+                                            inv_counts[idx] -= 1;
+                                        }
                                     }
                                 }
                             }
@@ -796,14 +822,90 @@ fn main() {
             let rx = hbx + i as f32 * 40.0; let ry = sh - 45.0;
             let color = if player.selected_slot == i { [255, 255, 255, 255] } else { [100, 100, 100, 255] };
             draw_rect(&ui_shader, rx, ry, 35.0, 35.0, color, sw, sh);
-            let b = hotbar[i]; if b != BlockType::Air { 
+            let b = hotbar[i];
+            let count = if b != BlockType::Air { inv_idx(b).map(|j| inv_counts[j]).unwrap_or(0) } else { 0 };
+            if count > 0 {
                 let mut block_color = get_block_ui_color(b);
-                block_color[3] = 255; // Force maximum opacity
-                draw_rect(&ui_shader, rx + 5.0, ry + 5.0, 25.0, 25.0, block_color, sw, sh); 
+                block_color[3] = 255;
+                draw_rect(&ui_shader, rx + 5.0, ry + 5.0, 25.0, 25.0, block_color, sw, sh);
+            } else if b != BlockType::Air {
+                // Slot assigned but empty: dim indicator
+                let mut block_color = get_block_ui_color(b);
+                block_color[0] /= 3; block_color[1] /= 3; block_color[2] /= 3; block_color[3] = 180;
+                draw_rect(&ui_shader, rx + 5.0, ry + 5.0, 25.0, 25.0, block_color, sw, sh);
             }
         }
-        // Always draw crosshair; no creative inventory screen
-        draw_rect(&ui_shader, sw/2.0 - 2.0, sh/2.0 - 2.0, 4.0, 4.4, [255, 255, 255, 255], sw, sh);
+        // Crosshair (hidden when inventory is open)
+        if !player.inventory_open {
+            draw_rect(&ui_shader, sw/2.0 - 2.0, sh/2.0 - 2.0, 4.0, 4.4, [255, 255, 255, 255], sw, sh);
+        }
+
+        // Inventory overlay
+        if player.inventory_open {
+            // Dim the screen
+            draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.0, 0.0, 0.65));
+            unsafe { gl::Disable(gl::DEPTH_TEST); gl::Enable(gl::BLEND); gl::Disable(gl::CULL_FACE); }
+            ui_shader.bind();
+            ui_shader.set_vec2(ui_shader.get_uniform_location("uScreenSize"), glam::Vec2::new(sw, sh));
+
+            let slot_size = 70.0f32;
+            let gap = 10.0f32;
+            let cols = 5usize;
+            let grid_w = cols as f32 * (slot_size + gap) - gap;
+            let grid_h = 2.0 * (slot_size + gap) - gap;
+            let inv_x = (sw - grid_w) / 2.0;
+            let inv_y = (sh - grid_h) / 2.0;
+
+            // Panel background
+            let pad = 20.0;
+            draw_rect(&ui_shader, inv_x - pad, inv_y - pad, grid_w + pad*2.0, grid_h + pad*2.0, [30, 30, 30, 220], sw, sh);
+            draw_rect(&ui_shader, inv_x - pad - 2.0, inv_y - pad - 2.0, grid_w + pad*2.0 + 4.0, grid_h + pad*2.0 + 4.0, [80, 80, 80, 255], sw, sh);
+            draw_rect(&ui_shader, inv_x - pad, inv_y - pad, grid_w + pad*2.0, grid_h + pad*2.0, [30, 30, 30, 220], sw, sh);
+
+            let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
+            for i in 0..10usize {
+                let col = (i % cols) as f32; let row = (i / cols) as f32;
+                let sx = inv_x + col * (slot_size + gap);
+                let sy = inv_y + row * (slot_size + gap);
+
+                let hovered = mx >= sx && mx < sx + slot_size && my >= sy && my < sy + slot_size;
+                let has_items = inv_counts[i] > 0;
+                let assigned_to_selected = hotbar[player.selected_slot] == INVENTORY_BLOCKS[i];
+
+                // Slot background
+                let bg = if assigned_to_selected { [60, 60, 80, 220] } else { [45, 45, 45, 200] };
+                draw_rect(&ui_shader, sx, sy, slot_size, slot_size, bg, sw, sh);
+
+                // Border
+                let border_color = if hovered && has_items { [255, 220, 50, 255] }
+                    else if assigned_to_selected { [120, 120, 200, 255] }
+                    else { [70, 70, 70, 255] };
+                let bw = 2.0;
+                draw_rect(&ui_shader, sx, sy, slot_size, bw, border_color, sw, sh);
+                draw_rect(&ui_shader, sx, sy + slot_size - bw, slot_size, bw, border_color, sw, sh);
+                draw_rect(&ui_shader, sx, sy, bw, slot_size, border_color, sw, sh);
+                draw_rect(&ui_shader, sx + slot_size - bw, sy, bw, slot_size, border_color, sw, sh);
+
+                // Block color swatch
+                let mut block_color = get_block_ui_color(INVENTORY_BLOCKS[i]);
+                if !has_items { block_color[0] /= 4; block_color[1] /= 4; block_color[2] /= 4; block_color[3] = 120; }
+                let inner = slot_size - 20.0;
+                draw_rect(&ui_shader, sx + 10.0, sy + 10.0, inner, inner, block_color, sw, sh);
+
+                // Count indicator: small dots in bottom-right (up to 5 dots = many)
+                if has_items {
+                    let dots = (inv_counts[i] as usize).min(5);
+                    let dot_size = 6.0; let dot_gap = 3.0;
+                    let dots_w = dots as f32 * (dot_size + dot_gap) - dot_gap;
+                    let dot_x0 = sx + slot_size - dots_w - 4.0;
+                    let dot_y = sy + slot_size - dot_size - 4.0;
+                    for d in 0..dots {
+                        let dx = dot_x0 + d as f32 * (dot_size + dot_gap);
+                        draw_rect(&ui_shader, dx, dot_y, dot_size, dot_size, [255, 255, 255, 200], sw, sh);
+                    }
+                }
+            }
+        }
 
         // Draw Health and Oxygen
         if !player.inventory_open {
