@@ -4,10 +4,10 @@ mod chunk;
 mod noise;
 mod renderer;
 mod world;
+mod explosion;
 
 use block::BlockType;
 use crate::world::{World, VIEW_DISTANCE};
-use rand::Rng;
 use glam::{Vec2, Vec3, Mat4};
 
 #[derive(PartialEq)]
@@ -140,8 +140,8 @@ use renderer::{Shader, Texture2D, RenderTexture2D};
 
 // const WINDOW_WIDTH: u32 = 1920;
 // const WINDOW_HEIGHT: u32 = 1080;
-const RENDER_WIDTH: i32 = 1125;
-const RENDER_HEIGHT: i32 = 633;
+const RENDER_WIDTH: i32 = 750;
+const RENDER_HEIGHT: i32 = 422;
 
 #[derive(Debug)]
 struct WindowState {
@@ -744,81 +744,9 @@ fn draw_bubble(shader: &Shader, x: f32, y: f32, size: f32, screen_width: f32, sc
     }
 }
 
-fn explode(world: &mut World, x: i32, y: i32, z: i32, initial_radius: i32, is_nuke: bool) {
-    let mut total_radius = initial_radius as f32;
-    let mut nuke_count = 1;
+// explode function moved to explosion.rs
 
-    if is_nuke {
-        // Exponential Multiplication: Check adjacent blocks for more Nukes
-        let mut queue = vec![(x, y, z)];
-        let mut checked = std::collections::HashSet::new();
-        checked.insert((x, y, z));
-
-        while let Some((qx, qy, qz)) = queue.pop() {
-            let neighbors = [(1,0,0), (-1,0,0), (0,1,0), (0,-1,0), (0,0,1), (0,0,-1)];
-            for (dx, dy, dz) in neighbors {
-                let nx = qx + dx; let ny = qy + dy; let nz = qz + dz;
-                if !checked.contains(&(nx, ny, nz)) {
-                    if world.get_block(nx, ny, nz) == BlockType::Nuke {
-                        world.set_block(nx, ny, nz, BlockType::Air);
-                        nuke_count += 1;
-                        queue.push((nx, ny, nz));
-                        checked.insert((nx, ny, nz));
-                    }
-                }
-            }
-        }
-        
-        // Radius = BASE * 1.5^(nuke_count - 1) up to a reasonable cap
-        total_radius = initial_radius as f32 * 1.5f32.powi(nuke_count - 1);
-        if total_radius > 150.0 { total_radius = 150.0; } // Cap for performance
-    }
-
-    let r_int = total_radius as i32;
-    let r2 = total_radius * total_radius;
-    
-    // Perform destruction
-    for dx in -r_int..=r_int {
-        for dy in -r_int..=r_int {
-            for dz in -r_int..=r_int {
-                let dist_sq = (dx*dx + dy*dy + dz*dz) as f32;
-                if dist_sq <= r2 {
-                    let bx = x + dx; let by = y + dy; let bz = z + dz;
-                    let b = world.get_block(bx, by, bz);
-                    if b != BlockType::Air && b != BlockType::Bedrock {
-                        world.set_block(bx, by, bz, BlockType::Air);
-                    }
-                }
-            }
-        }
-    }
-
-    // Spawn Particles (Shockwave/Flash)
-    // 1. Core Shockwave
-    world.particles.push(crate::block::Particle {
-        position: Vec3::new(x as f32 + 0.1, y as f32 + 0.1, z as f32 + 0.1), // Offset slightly to avoid z-fight with ground
-        velocity: Vec3::ZERO,
-        life: 0.5,
-        max_life: 0.5,
-        scale: total_radius * 2.0,
-    });
-
-    // 2. Flying debris/smoke
-    let particle_count = if is_nuke { 60 } else { 15 };
-    for _ in 0..particle_count {
-        let mut rng = rand::thread_rng();
-        let vx = rng.gen_range(-30.0..30.0);
-        let vy = rng.gen_range(-10.0..40.0);
-        let vz = rng.gen_range(-30.0..30.0);
-        world.particles.push(crate::block::Particle {
-            position: Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
-            velocity: Vec3::new(vx, vy, vz),
-            life: rng.gen_range(0.5..2.0),
-            max_life: 2.0,
-            scale: rng.gen_range(1.0..4.0),
-        });
-    }
-}
+// Cleanup old particle code
 
 fn draw_pause_menu(ui_shader: &Shader, tex_shader: &Shader, font_tex: &Texture2D, sw: f32, sh: f32) {
     // 1. Full-screen tint
@@ -924,6 +852,10 @@ fn main() { // Entry point
     let logo_texture = Texture2D::from_file("assets/logo.png");
     let font_texture = Texture2D::from_file("assets/font.png");
     
+    let mut is_fullscreen = false;
+    let mut win_pos = (state.x, state.y);
+    let mut win_size = (state.width, state.height);
+
     let mut game_state = GameState::Loading;
     let mut spawn_y = 150.0;
     let mut inv_slots = [None::<ItemStack>; 45];
@@ -1029,6 +961,22 @@ fn main() { // Entry point
                         // Return cursor item to inventory on close
                         if let Some(c) = inv_cursor { inv_add(&mut inv_slots, c.block, c.count); inv_cursor = None; }
                         window.set_cursor_mode(glfw::CursorMode::Disabled);
+                    }
+                }
+                glfw::WindowEvent::Key(Key::F11, _, Action::Press, _) => {
+                    is_fullscreen = !is_fullscreen;
+                    if is_fullscreen {
+                        win_pos = window.get_pos();
+                        let (w, h) = window.get_size();
+                        win_size = (w as u32, h as u32);
+                        glfw.with_primary_monitor(|_, m| {
+                            if let Some(monitor) = m {
+                                let video_mode = monitor.get_video_mode().unwrap();
+                                window.set_monitor(glfw::WindowMode::FullScreen(monitor), 0, 0, video_mode.width, video_mode.height, Some(video_mode.refresh_rate));
+                            }
+                        });
+                    } else {
+                        window.set_monitor(glfw::WindowMode::Windowed, win_pos.0, win_pos.1, win_size.0, win_size.1, None);
                     }
                 }
                 // Hotbar selection: keys 1-9
@@ -1300,7 +1248,7 @@ fn main() { // Entry point
                 BlockType::Nuke => (20, true),
                 _ => (4, false),
             };
-            explode(&mut world, pos.x as i32, pos.y as i32, pos.z as i32, radius, is_nuke);
+            explosion::explode(&mut world, pos.x as i32, pos.y as i32, pos.z as i32, radius, is_nuke);
         }
 
         world.update_clouds(player.position, current_time as f32);
@@ -1380,6 +1328,8 @@ fn main() { // Entry point
                     draw_texture_ui_uv(world.atlas.as_ref().unwrap(), rx + 4.0, ry + 4.0, 28.0, 28.0, 0.25, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
                 } else if s.block == BlockType::Nuke {
                     draw_texture_ui_uv(world.atlas.as_ref().unwrap(), rx + 4.0, ry + 4.0, 28.0, 28.0, 0.3125, 0.125, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                } else if s.block == BlockType::FlintAndSteel {
+                    draw_texture_ui_uv(world.atlas.as_ref().unwrap(), rx + 4.0, ry + 4.0, 28.0, 28.0, 0.5625, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
                 } else {
                     let mut c = get_block_ui_color(s.block); c[3] = 255;
                     draw_rect(&ui_shader, rx + 4.0, ry + 4.0, 28.0, 28.0, c, sw, sh);
@@ -1460,6 +1410,8 @@ fn main() { // Entry point
                         draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.25, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
                     } else if s.block == BlockType::Nuke {
                         draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.3125, 0.125, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                    } else if s.block == BlockType::FlintAndSteel {
+                        draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.5625, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
                     } else {
                         let mut bc = get_block_ui_color(s.block); bc[3] = 255;
                         draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
@@ -1481,6 +1433,8 @@ fn main() { // Entry point
                         draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.25, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
                     } else if s.block == BlockType::Nuke {
                         draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.3125, 0.125, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                    } else if s.block == BlockType::FlintAndSteel {
+                        draw_texture_ui_uv(world.atlas.as_ref().unwrap(), sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, 0.5625, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
                     } else {
                         let mut bc = get_block_ui_color(s.block); bc[3] = 255;
                         draw_rect(&ui_shader, sx+4.0, sy+4.0, sw2-8.0, sh2-8.0, bc, sw, sh);
@@ -1499,6 +1453,8 @@ fn main() { // Entry point
                         draw_texture_ui_uv(atlas, sx+4.0, sy+4.0, ss-8.0, ss-8.0, 0.25, 0.0625, 0.0625, 0.0625, tex_shader, sw, sh);
                     } else if s.block == BlockType::Nuke {
                         draw_texture_ui_uv(atlas, sx+4.0, sy+4.0, ss-8.0, ss-8.0, 0.3125, 0.125, 0.0625, 0.0625, tex_shader, sw, sh);
+                    } else if s.block == BlockType::FlintAndSteel {
+                        draw_texture_ui_uv(atlas, sx+4.0, sy+4.0, ss-8.0, ss-8.0, 0.5625, 0.0625, 0.0625, 0.0625, tex_shader, sw, sh);
                     } else {
                         let mut bc = get_block_ui_color(s.block); bc[3] = 255;
                         draw_rect(shader, sx+4.0, sy+4.0, ss-8.0, ss-8.0, bc, sw, sh);
@@ -1538,6 +1494,8 @@ fn main() { // Entry point
                     draw_texture_ui_uv(world.atlas.as_ref().unwrap(), mx - 14.0, my - 14.0, 28.0, 28.0, 0.25, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
                 } else if c.block == BlockType::Nuke {
                     draw_texture_ui_uv(world.atlas.as_ref().unwrap(), mx - 14.0, my - 14.0, 28.0, 28.0, 0.3125, 0.125, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
+                } else if c.block == BlockType::FlintAndSteel {
+                    draw_texture_ui_uv(world.atlas.as_ref().unwrap(), mx - 14.0, my - 14.0, 28.0, 28.0, 0.5625, 0.0625, 0.0625, 0.0625, &texture_ui_shader, sw, sh);
                 } else {
                     let mut bc = get_block_ui_color(c.block); bc[3] = 220;
                     draw_rect(&ui_shader, mx - 14.0, my - 14.0, 28.0, 28.0, bc, sw, sh);

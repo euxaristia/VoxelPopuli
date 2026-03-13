@@ -37,16 +37,24 @@ pub const CHUNK_HEIGHT: usize = 256;
 pub const CHUNK_DEPTH: usize = 16;
 pub const WATER_VERTEX_ALPHA: u8 = 240;
 
+pub struct MeshData {
+    pub v: Vec<f32>,
+    pub t: Vec<f32>,
+    pub n: Vec<f32>,
+    pub c: Vec<u8>,
+}
+
 pub struct Chunk {
     pub blocks: Box<[[[BlockType; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
     pub light: Box<[[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
     pub mesh_opaque: Option<Mesh>,
     pub mesh_transparent: Option<Mesh>,
+    pub pending_mesh_opaque: Option<MeshData>,
+    pub pending_mesh_transparent: Option<MeshData>,
     pub dirty: bool,
+    pub meshing_in_progress: bool,
     pub x: i32,
     pub z: i32,
-    pub min_y: usize,
-    pub max_y: usize,
 }
 
 impl Chunk {
@@ -56,11 +64,12 @@ impl Chunk {
             light: Box::new([[[0; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
             mesh_opaque: None,
             mesh_transparent: None,
+            pending_mesh_opaque: None,
+            pending_mesh_transparent: None,
             dirty: true,
+            meshing_in_progress: false,
             x,
             z,
-            min_y: CHUNK_HEIGHT,
-            max_y: 0,
         }
     }
 
@@ -542,8 +551,7 @@ impl Chunk {
         }
     }
 
-    pub fn build_mesh(&mut self, world: &crate::world::World) {
-        self.calculate_lighting();
+    pub fn calculate_mesh_data(&self, world: &crate::world::World) -> (MeshData, MeshData) {
         let mut v_op = Vec::new();
         let mut t_op = Vec::new();
         let mut n_op = Vec::new();
@@ -554,17 +562,14 @@ impl Chunk {
         let mut n_tr = Vec::new();
         let mut c_tr = Vec::new();
 
-
-
-
         let mut current_min_y = CHUNK_HEIGHT;
         let mut current_max_y = 0;
 
         // Cache neighbor chunks
-        let n_px = world.get_chunk(self.x + 1, self.z);
-        let n_nx = world.get_chunk(self.x - 1, self.z);
-        let n_pz = world.get_chunk(self.x, self.z + 1);
-        let n_nz = world.get_chunk(self.x, self.z - 1);
+        let n_px = world.get_chunk_ptr(self.x + 1, self.z);
+        let n_nx = world.get_chunk_ptr(self.x - 1, self.z);
+        let n_pz = world.get_chunk_ptr(self.x, self.z + 1);
+        let n_nz = world.get_chunk_ptr(self.x, self.z - 1);
 
         let should_draw_face = |current: BlockType, neighbor: BlockType| -> bool {
             if neighbor == BlockType::Air { return true; }
@@ -588,13 +593,13 @@ impl Chunk {
             
             // Check neighbor chunks if out of bounds
             if cx < 0 {
-                return n_nx.map_or(BlockType::Air, |c| c.blocks[(CHUNK_WIDTH as i32 + cx) as usize][wy as usize][if cz >= 0 && cz < CHUNK_DEPTH as i32 {cz as usize} else {0}]);
+                return unsafe { n_nx.map_or(BlockType::Air, |c| (*c).blocks[(CHUNK_WIDTH as i32 + cx) as usize][wy as usize][if cz >= 0 && cz < CHUNK_DEPTH as i32 {cz as usize} else {0}]) };
             } else if cx >= CHUNK_WIDTH as i32 {
-                return n_px.map_or(BlockType::Air, |c| c.blocks[(cx - CHUNK_WIDTH as i32) as usize][wy as usize][if cz >= 0 && cz < CHUNK_DEPTH as i32 {cz as usize} else {0}]);
+                return unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[(cx - CHUNK_WIDTH as i32) as usize][wy as usize][if cz >= 0 && cz < CHUNK_DEPTH as i32 {cz as usize} else {0}]) };
             } else if cz < 0 {
-                return n_nz.map_or(BlockType::Air, |c| c.blocks[cx as usize][wy as usize][(CHUNK_DEPTH as i32 + cz) as usize]);
+                return unsafe { n_nz.map_or(BlockType::Air, |c| (*c).blocks[cx as usize][wy as usize][(CHUNK_DEPTH as i32 + cz) as usize]) };
             } else if cz >= CHUNK_DEPTH as i32 {
-                return n_pz.map_or(BlockType::Air, |c| c.blocks[cx as usize][wy as usize][(cz - CHUNK_DEPTH as i32) as usize]);
+                return unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[cx as usize][wy as usize][(cz - CHUNK_DEPTH as i32) as usize]) };
             }
             BlockType::Air
         };
@@ -628,13 +633,13 @@ impl Chunk {
             
             // Check neighbor chunks if out of bounds
             if cx < 0 {
-                return n_nx.map_or(15, |c| c.light[(CHUNK_WIDTH as i32 + cx) as usize][wy as usize][if cz >= 0 && cz < CHUNK_DEPTH as i32 {cz as usize} else {0}]);
+                return unsafe { n_nx.map_or(15, |c| (*c).light[(CHUNK_WIDTH as i32 + cx) as usize][wy as usize][if cz >= 0 && cz < CHUNK_DEPTH as i32 {cz as usize} else {0}]) };
             } else if cx >= CHUNK_WIDTH as i32 {
-                return n_px.map_or(15, |c| c.light[(cx - CHUNK_WIDTH as i32) as usize][wy as usize][if cz >= 0 && cz < CHUNK_DEPTH as i32 {cz as usize} else {0}]);
+                return unsafe { n_px.map_or(15, |c| (*c).light[(cx - CHUNK_WIDTH as i32) as usize][wy as usize][if cz >= 0 && cz < CHUNK_DEPTH as i32 {cz as usize} else {0}]) };
             } else if cz < 0 {
-                return n_nz.map_or(15, |c| c.light[cx as usize][wy as usize][(CHUNK_DEPTH as i32 + cz) as usize]);
+                return unsafe { n_nz.map_or(15, |c| (*c).light[cx as usize][wy as usize][(CHUNK_DEPTH as i32 + cz) as usize]) };
             } else if cz >= CHUNK_DEPTH as i32 {
-                return n_pz.map_or(15, |c| c.light[cx as usize][wy as usize][(cz - CHUNK_DEPTH as i32) as usize]);
+                return unsafe { n_pz.map_or(15, |c| (*c).light[cx as usize][wy as usize][(cz - CHUNK_DEPTH as i32) as usize]) };
             }
             15
         };
@@ -824,7 +829,7 @@ impl Chunk {
 
                     // Sides
                     // Z+
-                    let neighbor_zp = if z < CHUNK_DEPTH - 1 { self.blocks[x][y][z + 1] } else { n_pz.map_or(BlockType::Air, |c| c.blocks[x][y][0]) };
+                    let neighbor_zp = if z < CHUNK_DEPTH - 1 { self.blocks[x][y][z + 1] } else { unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[x][y][0]) } };
                     if should_draw_face(block, neighbor_zp) {
                         let l_00 = is_solid(get_block_safe(wx - 1, wy - 1, wz + 1));
                         let l_10 = is_solid(get_block_safe(wx,     wy - 1, wz + 1));
@@ -869,7 +874,7 @@ impl Chunk {
                         c.extend_from_slice(&[c00, c00, c00, a, c10, c10, c10, a, c11, c11, c11, a, c00, c00, c00, a, c11, c11, c11, a, c01, c01, c01, a]);
                     }
                     // Z-
-                    let neighbor_zn = if z > 0 { self.blocks[x][y][z - 1] } else { n_nz.map_or(BlockType::Air, |c| c.blocks[x][y][CHUNK_DEPTH - 1]) };
+                    let neighbor_zn = if z > 0 { self.blocks[x][y][z - 1] } else { unsafe { n_nz.map_or(BlockType::Air, |c| (*c).blocks[x][y][CHUNK_DEPTH - 1]) } };
                     if should_draw_face(block, neighbor_zn) {
                         let l_00 = is_solid(get_block_safe(wx + 1, wy - 1, wz - 1));
                         let l_10 = is_solid(get_block_safe(wx,     wy - 1, wz - 1));
@@ -914,7 +919,7 @@ impl Chunk {
                         c.extend_from_slice(&[c00, c00, c00, a, c10, c10, c10, a, c11, c11, c11, a, c00, c00, c00, a, c11, c11, c11, a, c01, c01, c01, a]);
                     }
                     // X+
-                    let neighbor_xp = if x < CHUNK_WIDTH - 1 { self.blocks[x + 1][y][z] } else { n_px.map_or(BlockType::Air, |c| c.blocks[0][y][z]) };
+                    let neighbor_xp = if x < CHUNK_WIDTH - 1 { self.blocks[x + 1][y][z] } else { unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[0][y][z]) } };
                     if should_draw_face(block, neighbor_xp) {
                         let l_00 = is_solid(get_block_safe(wx + 1, wy - 1, wz + 1));
                         let l_10 = is_solid(get_block_safe(wx + 1, wy - 1, wz    ));
@@ -959,7 +964,7 @@ impl Chunk {
                         c.extend_from_slice(&[c00, c00, c00, a, c10, c10, c10, a, c11, c11, c11, a, c00, c00, c00, a, c11, c11, c11, a, c01, c01, c01, a]);
                     }
                     // X-
-                    let neighbor_xn = if x > 0 { self.blocks[x - 1][y][z] } else { n_nx.map_or(BlockType::Air, |c| c.blocks[CHUNK_WIDTH - 1][y][z]) };
+                    let neighbor_xn = if x > 0 { self.blocks[x - 1][y][z] } else { unsafe { n_nx.map_or(BlockType::Air, |c| (*c).blocks[CHUNK_WIDTH - 1][y][z]) } };
                     if should_draw_face(block, neighbor_xn) {
                         let l_00 = is_solid(get_block_safe(wx - 1, wy - 1, wz - 1));
                         let l_10 = is_solid(get_block_safe(wx - 1, wy - 1, wz    ));
@@ -1007,10 +1012,16 @@ impl Chunk {
             }
         }
 
-        self.mesh_opaque = if v_op.is_empty() { None } else { Some(Mesh::new(&v_op, Some(&t_op), Some(&n_op), Some(&c_op))) };
-        self.mesh_transparent = if v_tr.is_empty() { None } else { Some(Mesh::new(&v_tr, Some(&t_tr), Some(&n_tr), Some(&c_tr))) };
-        self.min_y = current_min_y;
-        self.max_y = current_max_y;
+        (
+            MeshData { v: v_op, t: t_op, n: n_op, c: c_op },
+            MeshData { v: v_tr, t: t_tr, n: n_tr, c: c_tr }
+        )
+    }
+
+    pub fn upload_mesh(&mut self, opaque: MeshData, transparent: MeshData) {
+        self.mesh_opaque = if opaque.v.is_empty() { None } else { Some(Mesh::new(&opaque.v, Some(&opaque.t), Some(&opaque.n), Some(&opaque.c))) };
+        self.mesh_transparent = if transparent.v.is_empty() { None } else { Some(Mesh::new(&transparent.v, Some(&transparent.t), Some(&transparent.n), Some(&transparent.c))) };
         self.dirty = false;
+        self.meshing_in_progress = false;
     }
 }

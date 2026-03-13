@@ -131,11 +131,16 @@ impl Texture2D {
             );
             gl::GenerateMipmap(gl::TEXTURE_2D);
             if gl::GetError() != gl::NO_ERROR {
-                // Just in case, fall back to NEAREST if mipmaps fail
                 gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
             }
         }
         Self { id, width, height }
+    }
+
+    pub fn from_file(path: &str) -> Self {
+        let img = image::open(path).expect("Failed to load image").to_rgba8();
+        let (width, height) = img.dimensions();
+        Self::from_data(&img, width as i32, height as i32)
     }
 
     #[allow(dead_code)]

@@ -1,4 +1,5 @@
 use crate::chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT};
+use std::collections::HashMap;
 use crate::block::BlockType;
 use crate::renderer::{Mesh, Texture2D, Shader};
 use crate::renderer;
@@ -8,13 +9,7 @@ pub const VIEW_DISTANCE: i32 = 35;
 pub const POOL_WIDTH: i32 = VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
 
-#[derive(Clone, Copy)]
-pub struct WorldEdit {
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
-    pub block: BlockType,
-}
+// WorldEdit removed in favor of HashMap edits
 
 pub struct RaycastResult {
     pub hit: bool,
@@ -80,7 +75,7 @@ pub struct World {
     pub star_model: Option<Mesh>,
     pub last_cloud_pos: Vec3,
     pub last_cloud_update_time: f32,
-    pub edits: Vec<WorldEdit>,
+    pub edits: HashMap<(i32, i32, i32), BlockType>,
     pub suppress_edit_recording: bool,
     pub last_pcx: i32,
     pub last_pcz: i32,
@@ -108,7 +103,7 @@ impl World {
             star_model: None,
             last_cloud_pos: Vec3::new(-999999.0, -999999.0, -999999.0),
             last_cloud_update_time: -999.0,
-            edits: Vec::new(),
+            edits: HashMap::new(),
             suppress_edit_recording: false,
             last_pcx: -999999,
             last_pcz: -999999,
@@ -196,9 +191,22 @@ impl World {
         None
     }
 
+    pub fn get_chunk_ptr(&self, cx: i32, cz: i32) -> Option<*const Chunk> {
+        let index = self.get_pool_index(cx, cz);
+        if let Some(chunk) = &self.chunks[index] {
+            if chunk.x == cx && chunk.z == cz {
+                return Some(chunk.as_ref() as *const Chunk);
+            }
+        }
+        None
+    }
+
     pub fn get_block(&self, x: i32, y: i32, z: i32) -> BlockType {
         if y < 0 || y >= CHUNK_HEIGHT as i32 {
             return BlockType::Air;
+        }
+        if let Some(b) = self.edits.get(&(x, y, z)) {
+            return *b;
         }
         let cx = x.div_euclid(CHUNK_WIDTH as i32);
         let cz = z.div_euclid(CHUNK_DEPTH as i32);
@@ -216,11 +224,7 @@ impl World {
         if y < 0 || y >= CHUNK_HEIGHT as i32 { return; }
         
         if !self.suppress_edit_recording {
-            if let Some(pos) = self.edits.iter().position(|e| e.x == x && e.y == y && e.z == z) {
-                self.edits[pos].block = block;
-            } else {
-                self.edits.push(WorldEdit { x, y, z, block });
-            }
+            self.edits.insert((x, y, z), block);
         }
 
         let cx = x.div_euclid(CHUNK_WIDTH as i32);
@@ -230,7 +234,7 @@ impl World {
 
         if let Some(chunk) = self.get_chunk_mut(cx, cz) {
             chunk.set_block(bx, y as usize, bz, block);
-            if !chunk.dirty {
+            if !chunk.dirty && !chunk.meshing_in_progress {
                 chunk.dirty = true;
                 self.dirty_count += 1;
             }
@@ -251,7 +255,7 @@ impl World {
             
             for (nx, nz) in neighbors {
                 if let Some(nc) = self.get_chunk_mut(nx, nz) {
-                    if !nc.dirty {
+                    if !nc.dirty && !nc.meshing_in_progress {
                         nc.dirty = true;
                         self.dirty_count += 1;
                     }
@@ -267,11 +271,11 @@ impl World {
         let chunk_end_z = chunk_start_z + CHUNK_DEPTH as i32;
 
         let edits = self.edits.clone();
-        for edit in edits {
-            if edit.x >= chunk_start_x && edit.x < chunk_end_x && 
-               edit.z >= chunk_start_z && edit.z < chunk_end_z {
+        for ((ex, ey, ez), block) in edits {
+            if ex >= chunk_start_x && ex < chunk_end_x && 
+               ez >= chunk_start_z && ez < chunk_end_z {
                 self.suppress_edit_recording = true;
-                self.set_block(edit.x, edit.y, edit.z, edit.block);
+                self.set_block(ex, ey, ez, block);
                 self.suppress_edit_recording = false;
             }
         }
@@ -310,7 +314,30 @@ impl World {
             draw_block(6, 1, 230, 230, 230); // IronBlock
             draw_block(7, 1, 210, 160, 130); // RawIron item
             draw_block(8, 1, 245, 245, 245); // IronIngot item
-            draw_block(9, 1, 180, 180, 190); // Flint & Steel item
+            
+            // Authentic Flint & Steel (hand-drawn pixels from image)
+            let fs_p: [(u8,u8,u8,u8); 256] = [
+                (0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),
+                (0,0,0,0),(0,0,0,0),(46,46,46,255),(46,46,46,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),
+                (0,0,0,0),(46,46,46,255),(153,153,153,255),(180,180,180,255),(153,153,153,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),
+                (0,0,0,0),(46,46,46,255),(153,153,153,255),(180,180,180,255),(180,180,180,255),(153,153,153,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),
+                (46,46,46,255),(120,120,120,255),(153,153,153,255),(180,180,180,255),(153,153,153,255),(120,120,120,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),
+                (46,46,46,255),(120,120,120,255),(153,153,153,255),(46,46,46,255),(46,46,46,255),(46,46,46,255),(153,153,153,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),
+                (46,46,46,255),(120,120,120,255),(120,120,120,255),(46,46,46,255),(0,0,0,0),(46,46,46,255),(153,153,153,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),
+                (46,46,46,255),(46,46,46,255),(46,46,46,255),(46,46,46,255),(0,0,0,0),(46,46,46,255),(153,153,153,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(46,46,46,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),
+                (0,0,0,0),(0,0,0,0),(46,46,46,255),(46,46,46,255),(46,46,46,255),(46,46,46,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(46,46,46,255),(60,60,60,255),(60,60,60,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(0,0,0,0),
+                (0,0,0,0),(0,0,0,0),(0,0,0,0),(46,46,46,255),(153,153,153,255),(153,153,153,255),(46,46,46,255),(0,0,0,0),(46,46,46,255),(60,60,60,255),(100,100,100,255),(100,100,100,255),(60,60,60,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),
+                (0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(46,46,46,255),(46,46,46,255),(46,46,46,255),(0,0,0,0),(46,46,46,255),(100,100,100,255),(153,153,153,255),(110,110,110,255),(60,60,60,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),
+                (0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(46,46,46,255),(46,46,46,255),(120,120,120,255),(60,60,60,255),(100,100,100,255),(60,60,60,255),(46,46,46,255),(15,15,15,255),(46,46,46,255),(0,0,0,0),
+                (0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(46,46,46,255),(46,46,46,255),(60,60,60,255),(60,60,60,255),(60,60,60,255),(60,60,60,255),(46,46,46,255),(15,15,15,255),(15,15,15,255),(46,46,46,255),(46,46,46,255),
+                (0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(46,46,46,255),(60,60,60,255),(60,60,60,255),(60,60,60,255),(60,60,60,255),(46,46,46,255),(15,15,15,255),(15,15,15,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),
+                (0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(46,46,46,255),(60,60,60,255),(60,60,60,255),(46,46,46,255),(15,15,15,255),(15,15,15,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(0,0,0,0),
+                (0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0),(46,46,46,255),(46,46,46,255),(46,46,46,255),(46,46,46,255),(46,46,46,255),(0,0,0,0),(0,0,0,0),(0,0,0,0),(0,0,0,0)
+            ];
+            for y in 0..16 { for x in 0..16 {
+                let (r,g,b,a) = fs_p[y*16+x];
+                if a > 0 { draw_pixel(9*16+x as i32, 1*16+y as i32, r, g, b, a); }
+            }}
         }
 
         // IronOre: Stone with pinkish-tan spots
@@ -522,11 +549,25 @@ impl World {
         }
 
         // --- Prioritized Meshing ---
-        // Collect all dirty chunks and sort them by distance to player.
+        // 1. Collect finished meshes from background and upload
+        let mut uploads_this_frame = 0;
+        for i in 0..CHUNK_POOL_SIZE {
+            if let Some(chunk) = &mut self.chunks[i] {
+                if chunk.meshing_in_progress {
+                    if let (Some(opaque), Some(trans)) = (chunk.pending_mesh_opaque.take(), chunk.pending_mesh_transparent.take()) {
+                        chunk.upload_mesh(opaque, trans);
+                        uploads_this_frame += 1;
+                        if uploads_this_frame >= 2 { break; } // Limit uploads to prevent GPU pipeline stalls
+                    }
+                }
+            }
+        }
+
+        // 2. Scan for dirty chunks and dispatch to background
         let mut dirty_indices = Vec::new();
         for i in 0..CHUNK_POOL_SIZE {
             if let Some(chunk) = &self.chunks[i] {
-                if chunk.dirty {
+                if chunk.dirty && !chunk.meshing_in_progress {
                     let dx = chunk.x as f32 * CHUNK_WIDTH as f32 + 8.0 - player_pos.x;
                     let dz = chunk.z as f32 * CHUNK_DEPTH as f32 + 8.0 - player_pos.z;
                     let dist_sq = dx*dx + dz*dz;
@@ -536,18 +577,41 @@ impl World {
         }
         dirty_indices.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let mut builds_this_frame = 0;
+        let mut dispatches_this_frame = 0;
         for (index, _) in dirty_indices {
+            // We need to move the chunk data or a reference to a thread.
+            // Since self is &mut World here, we can't easily send &World to rayon without unsafe or wrapping.
+            // However, we can use unsafe to pass a raw pointer of World to the threads, 
+            // knowing that chunks being meshed are immutable during that phase.
+            
+            let world_ptr = self as *const World as usize;
             if let Some(chunk) = &mut self.chunks[index] {
                 chunk.dirty = false;
+                chunk.meshing_in_progress = true;
                 self.dirty_count -= 1;
                 
-                let mut chunk_to_build = self.chunks[index].take().unwrap();
-                chunk_to_build.build_mesh(self);
-                self.chunks[index] = Some(chunk_to_build);
-
-                builds_this_frame += 1;
-                if builds_this_frame >= 4 { break; }
+                // Use unsafe to share World pointer across threads for meshing.
+                // This is safe because:
+                // 1. Chunks that are being meshed are not modified until upload_mesh (on main thread).
+                // 2. World edits are only modified on the main thread.
+                // 3. Neighbors are accessed via read-only pointer.
+                
+                let chunk_ptr = chunk.as_mut() as *mut Chunk as usize;
+                rayon::spawn(move || {
+                    let w = unsafe { &*(world_ptr as *const World) };
+                    let c = unsafe { &mut *(chunk_ptr as *mut Chunk) };
+                    
+                    c.calculate_lighting();
+                    let (op, tr) = c.calculate_mesh_data(w);
+                    
+                    // Store the results back in the chunk
+                    // Note: We use a block here to ensure the results are ready for the main thread.
+                    c.pending_mesh_opaque = Some(op);
+                    c.pending_mesh_transparent = Some(tr);
+                });
+                
+                dispatches_this_frame += 1;
+                if dispatches_this_frame >= 16 { break; } // Dispatch many since user has 20 cores
             }
         }
 
