@@ -1,4 +1,4 @@
-use crate::chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT};
+use crate::chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT, water_is_source, water_is_falling, water_decay, water_level_from_decay};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use crate::block::BlockType;
@@ -89,6 +89,7 @@ pub struct World {
     pub chunks_generated_count: i32,
     pub active_water: std::collections::HashSet<(i32, i32, i32)>,
     pub active_falling: std::collections::HashSet<(i32, i32, i32)>,
+    pub water_tick_timer: f32,
 }
 
 impl World {
@@ -117,6 +118,7 @@ impl World {
             chunks_generated_count: 0,
             active_water: std::collections::HashSet::new(),
             active_falling: std::collections::HashSet::new(),
+            water_tick_timer: 0.0,
         }
     }
 
@@ -714,7 +716,7 @@ impl World {
         }
 
         // --- Physics Simulation ---
-        self.update_water();
+        self.update_water(_time);
         self.update_falling_blocks();
     }
 
@@ -738,14 +740,13 @@ impl World {
         let bx = x.rem_euclid(CHUNK_WIDTH as i32) as usize;
         let bz = z.rem_euclid(CHUNK_DEPTH as i32) as usize;
 
-        let mut needs_activation = false;
         if let Some(chunk) = self.get_chunk_mut(cx, cz) {
+            let old_level = chunk.liquid_levels[bx][y as usize][bz];
+            if old_level == level { return; }
             chunk.liquid_levels[bx][y as usize][bz] = level;
-            // Also sync the block type
             if level > 0 {
                 if chunk.blocks[bx][y as usize][bz] != BlockType::Water {
                     chunk.blocks[bx][y as usize][bz] = BlockType::Water;
-                    needs_activation = true;
                 }
             } else {
                 if chunk.blocks[bx][y as usize][bz] == BlockType::Water {
@@ -757,61 +758,186 @@ impl World {
                 self.dirty_count += 1;
             }
         }
-        
-        if needs_activation {
-            self.active_water.insert((x, y, z));
+    }
+
+    fn schedule_water_neighbors(&mut self, x: i32, y: i32, z: i32) {
+        for &(dx, dy, dz) in &[(1i32,0i32,0i32), (-1,0,0), (0,1,0), (0,-1,0), (0,0,1), (0,0,-1)] {
+            let (nx, ny, nz) = (x + dx, y + dy, z + dz);
+            if self.get_block(nx, ny, nz) == BlockType::Water {
+                self.active_water.insert((nx, ny, nz));
+            }
         }
     }
 
-    pub fn update_water(&mut self) {
+    // MC 1.0: Find the smallest flow decay among horizontal neighbors and above
+    fn calc_flow_decay(&self, x: i32, y: i32, z: i32) -> i32 {
+        let mut min_decay: i32 = 1000;
+        for &(dx, dz) in &[(1i32,0i32), (-1,0), (0,1), (0,-1)] {
+            let nl = self.get_liquid_level(x + dx, y, z + dz);
+            if nl == 0 { continue; }
+            let nd = if water_is_source(nl) || water_is_falling(nl) { 0 } else { water_decay(nl) as i32 };
+            if nd < min_decay { min_decay = nd; }
+        }
+        // Water falling from above acts as source
+        if self.get_liquid_level(x, y + 1, z) > 0 {
+            min_decay = 0;
+        }
+        if min_decay >= 1000 { return -1; }
+        let new_decay = min_decay + 1;
+        if new_decay > 7 { -1 } else { new_decay }
+    }
+
+    // MC 1.0: Pathfind toward nearest drop-off within 4 blocks
+    fn get_flow_directions(&self, x: i32, y: i32, z: i32) -> [bool; 4] {
+        let dirs: [(i32,i32); 4] = [(1,0), (-1,0), (0,1), (0,-1)];
+        let mut costs = [1000i32; 4];
+        for (dir_idx, &(dx, dz)) in dirs.iter().enumerate() {
+            let (nx, nz) = (x + dx, z + dz);
+            let nb = self.get_block(nx, y, nz);
+            if nb.is_solid() { continue; }
+            if nb == BlockType::Water && water_is_source(self.get_liquid_level(nx, y, nz)) { continue; }
+            if y > 0 && !self.get_block(nx, y - 1, nz).is_solid() {
+                costs[dir_idx] = 0;
+            } else {
+                costs[dir_idx] = self.find_drop_cost(nx, y, nz, 1, dir_idx);
+            }
+        }
+        let min_cost = *costs.iter().min().unwrap();
+        if min_cost >= 1000 {
+            // No drops found — flow in all non-blocked directions
+            let mut result = [false; 4];
+            for (i, &(dx, dz)) in dirs.iter().enumerate() {
+                result[i] = !self.get_block(x + dx, y, z + dz).is_solid();
+            }
+            return result;
+        }
+        [costs[0] == min_cost, costs[1] == min_cost, costs[2] == min_cost, costs[3] == min_cost]
+    }
+
+    fn find_drop_cost(&self, x: i32, y: i32, z: i32, depth: i32, from_dir: usize) -> i32 {
+        if depth > 4 { return 1000; }
+        let opposite = [1usize, 0, 3, 2];
+        let dirs: [(i32,i32); 4] = [(1,0), (-1,0), (0,1), (0,-1)];
+        let mut min_cost = 1000;
+        for (dir_idx, &(dx, dz)) in dirs.iter().enumerate() {
+            if dir_idx == opposite[from_dir] { continue; }
+            let (nx, nz) = (x + dx, z + dz);
+            let nb = self.get_block(nx, y, nz);
+            if nb.is_solid() { continue; }
+            if nb == BlockType::Water && water_is_source(self.get_liquid_level(nx, y, nz)) { continue; }
+            if y > 0 && !self.get_block(nx, y - 1, nz).is_solid() {
+                return depth;
+            }
+            let cost = self.find_drop_cost(nx, y, nz, depth + 1, dir_idx);
+            if cost < min_cost { min_cost = cost; }
+        }
+        min_cost
+    }
+
+    // MC 1.0 water physics: tick-based, level decay, infinite source, pathfinding
+    pub fn update_water(&mut self, dt: f32) {
+        self.water_tick_timer += dt;
+        if self.water_tick_timer < 0.25 { return; }
+        self.water_tick_timer -= 0.25;
+
         if self.active_water.is_empty() { return; }
         let to_process: Vec<(i32, i32, i32)> = self.active_water.drain().collect();
-        
-        let mut processed = 0;
-        for (x, y, z) in to_process.iter().copied() {
+
+        let mut processed = 0usize;
+        for &(x, y, z) in &to_process {
             let level = self.get_liquid_level(x, y, z);
             if level == 0 { continue; }
-            
-            // 1. DLU Flow: DOWN
-            if y > 0 {
-                let below_block = self.get_block(x, y - 1, z);
-                if below_block == BlockType::Air || below_block == BlockType::Water {
-                    let below_level = self.get_liquid_level(x, y - 1, z);
-                    if below_level < 64 {
-                        let transfer = (64 - below_level).min(level);
-                        self.set_liquid_level(x, y, z, level - transfer);
-                        self.set_liquid_level(x, y - 1, z, below_level + transfer);
-                        self.active_water.insert((x, y - 1, z));
-                        if level - transfer > 0 { self.active_water.insert((x, y, z)); }
+
+            let is_src = water_is_source(level);
+
+            // 1. Infinite water source: non-source with 2+ horizontal source neighbors → become source
+            if !is_src {
+                let mut source_count = 0;
+                for &(dx, dz) in &[(1i32,0i32), (-1,0), (0,1), (0,-1)] {
+                    if water_is_source(self.get_liquid_level(x + dx, y, z + dz)) {
+                        source_count += 1;
+                    }
+                }
+                if source_count >= 2 {
+                    let below = self.get_block(x, y - 1, z);
+                    if below.is_solid() || (below == BlockType::Water && water_is_source(self.get_liquid_level(x, y - 1, z))) {
+                        self.set_liquid_level(x, y, z, 1); // become source
+                        self.schedule_water_neighbors(x, y, z);
                         processed += 1;
                         continue;
                     }
                 }
             }
-            
-            // 2. DLU Flow: SIDEWAYS (Equalize)
-            let neighbors = [(x + 1, y, z), (x - 1, y, z), (x, y, z + 1), (x, y, z - 1)];
-            // Basic shuffling for less deterministic flow
-            for (nx, ny, nz) in neighbors {
-                let nb = self.get_block(nx, ny, nz);
-                if nb == BlockType::Air || nb == BlockType::Water {
-                    let nl = self.get_liquid_level(nx, ny, nz);
-                    if nl < level - 1 { // -1 to prevent oscillation
-                        let diff = level - nl;
-                        let transfer = (diff / 2).max(1);
-                        self.set_liquid_level(x, y, z, level - transfer);
-                        self.set_liquid_level(nx, ny, nz, nl + transfer);
-                        self.active_water.insert((nx, ny, nz));
-                        self.active_water.insert((x, y, z));
-                        break;
+
+            // 2. Recalculate flow decay for non-source blocks
+            if !is_src {
+                let new_decay = self.calc_flow_decay(x, y, z);
+                if new_decay < 0 {
+                    self.set_liquid_level(x, y, z, 0);
+                    self.schedule_water_neighbors(x, y, z);
+                    processed += 1;
+                    continue;
+                }
+                let new_level = water_level_from_decay(new_decay as u8, false);
+                if new_level != level {
+                    self.set_liquid_level(x, y, z, new_level);
+                }
+            }
+
+            // Re-read level after possible changes
+            let level = self.get_liquid_level(x, y, z);
+            if level == 0 { processed += 1; continue; }
+            let decay = water_decay(level);
+            let is_src = water_is_source(level);
+
+            // 3. Flow downward
+            if y > 0 {
+                let below = self.get_block(x, y - 1, z);
+                if !below.is_solid() {
+                    let falling_level = water_level_from_decay(decay, true);
+                    if below == BlockType::Air {
+                        self.set_liquid_level(x, y - 1, z, falling_level);
+                        self.active_water.insert((x, y - 1, z));
+                    } else if below == BlockType::Water {
+                        let bl = self.get_liquid_level(x, y - 1, z);
+                        if !water_is_source(bl) && !water_is_falling(bl) {
+                            self.set_liquid_level(x, y - 1, z, falling_level);
+                            self.active_water.insert((x, y - 1, z));
+                        }
                     }
                 }
             }
-            
+
+            // 4. Spread horizontally (MC 1.0: source spreads at decay 1, flowing at decay+1)
+            if decay < 7 || is_src {
+                let spread_decay = if is_src { 1u8 } else { decay + 1 };
+                let spread_level = water_level_from_decay(spread_decay, false);
+                let flow_dirs = self.get_flow_directions(x, y, z);
+                let dirs: [(i32,i32); 4] = [(1,0), (-1,0), (0,1), (0,-1)];
+                for (dir_idx, &(dx, dz)) in dirs.iter().enumerate() {
+                    if !flow_dirs[dir_idx] { continue; }
+                    let (nx, nz) = (x + dx, z + dz);
+                    let nb = self.get_block(nx, y, nz);
+                    if nb.is_solid() { continue; }
+                    if nb == BlockType::Air {
+                        self.set_liquid_level(nx, y, nz, spread_level);
+                        self.active_water.insert((nx, y, nz));
+                    } else if nb == BlockType::Water {
+                        let nl = self.get_liquid_level(nx, y, nz);
+                        if !water_is_source(nl) && nl > spread_level {
+                            self.set_liquid_level(nx, y, nz, spread_level);
+                            self.active_water.insert((nx, y, nz));
+                        }
+                    }
+                }
+            }
+
             processed += 1;
-            if processed > 1000 { 
-                self.active_water.extend(to_process.into_iter().skip(processed));
-                break; 
+            if processed > 2000 {
+                for &pos in &to_process[processed..] {
+                    self.active_water.insert(pos);
+                }
+                break;
             }
         }
     }
@@ -920,7 +1046,8 @@ impl World {
         unsafe {
             gl::Enable(gl::BLEND);
             gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::Enable(gl::CULL_FACE);
+            gl::DepthMask(gl::FALSE); // Don't write depth for water — prevents z-fighting at shared edges
+            gl::Enable(gl::CULL_FACE); // Cull back faces; underwater view handled by overlay
         }
         for chunk_opt in &self.chunks {
             if let Some(chunk) = chunk_opt {
@@ -929,6 +1056,7 @@ impl World {
                 if frustum.is_box_visible(min, max) { if let Some(mesh) = &chunk.mesh_water { mesh.draw(); } }
             }
         }
+        unsafe { gl::DepthMask(gl::TRUE); }
     }
 
     pub fn render_clouds(&self, shader: &Shader, mvp: &Mat4) {

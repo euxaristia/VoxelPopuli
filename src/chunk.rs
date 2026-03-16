@@ -35,7 +35,38 @@ pub fn get_biome(world_x: f32, world_z: f32) -> Biome {
 pub const CHUNK_WIDTH: usize = 16;
 pub const CHUNK_HEIGHT: usize = 256;
 pub const CHUNK_DEPTH: usize = 16;
-pub const WATER_VERTEX_ALPHA: u8 = 120;
+pub const WATER_VERTEX_ALPHA: u8 = 180;
+
+// MC 1.0 water level encoding:
+// 0 = no water
+// 1 = source (MC metadata 0) — permanent, strongest
+// 2..=8 = flowing (MC metadata 1..7) — higher = weaker
+// 9..=16 = falling water (same decay levels but falling)
+pub const WATER_SOURCE: u8 = 1;
+pub const WATER_FALL_BIT: u8 = 8;
+
+pub fn water_is_source(level: u8) -> bool { level == WATER_SOURCE }
+pub fn water_is_falling(level: u8) -> bool { level >= 9 && level <= 16 }
+pub fn water_decay(level: u8) -> u8 {
+    if level == 0 { 0 } else { (level - 1) & 7 }
+}
+#[allow(dead_code)]
+pub fn water_height(level: u8) -> f32 {
+    if level == 0 { return 0.0; }
+    if level > WATER_FALL_BIT { return 1.0; } // falling
+    let decay = water_decay(level);
+    (8 - decay) as f32 / 9.0
+}
+// Height used for meshing: returns 1.0 for source blocks to eliminate gap artifacts
+pub fn water_render_height(level: u8) -> f32 {
+    if level == 0 { return 0.0; }
+    if level > WATER_FALL_BIT || level == WATER_SOURCE { return 1.0; }
+    let decay = water_decay(level);
+    (8 - decay) as f32 / 9.0
+}
+pub fn water_level_from_decay(decay: u8, falling: bool) -> u8 {
+    if falling { WATER_FALL_BIT + decay + 1 } else { decay + 1 }
+}
 
 pub struct MeshData {
     pub v: Vec<f32>,
@@ -148,7 +179,7 @@ impl Chunk {
                     };
                     self.blocks[x][y][z] = b;
                     if b == BlockType::Water {
-                        self.liquid_levels[x][y][z] = 64;
+                        self.liquid_levels[x][y][z] = WATER_SOURCE;
                     }
                 }
             }
@@ -549,7 +580,7 @@ impl Chunk {
         if x < CHUNK_WIDTH && y < CHUNK_HEIGHT && z < CHUNK_DEPTH {
             self.blocks[x][y][z] = block;
             if block == BlockType::Water {
-                self.liquid_levels[x][y][z] = 64;
+                self.liquid_levels[x][y][z] = WATER_SOURCE;
             } else {
                 self.liquid_levels[x][y][z] = 0;
             }
@@ -671,7 +702,7 @@ impl Chunk {
                     if block == BlockType::Water {
                         let level = self.liquid_levels[x][y][z];
                         if level == 0 { continue; }
-                        
+
                         let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
                         let wy = y as i32;
                         let wz = z as i32 + self.z * CHUNK_DEPTH as i32;
@@ -681,118 +712,108 @@ impl Chunk {
                         let u1 = (tx + 1) as f32 * ts - pad;
                         let v1 = (ty + 1) as f32 * ts - pad;
 
-                        if level == 64 {
-                            // FAST PATH: Full block meshing
-                            // Top
-                            let neighbor_top = if y < CHUNK_HEIGHT - 1 { self.blocks[x][y + 1][z] } else { BlockType::Air };
-                            if neighbor_top != BlockType::Water {
-                                v_wa.extend_from_slice(&[fx, fy + 1.0, fz, fx, fy + 1.0, fz + 1.0, fx + 1.0, fy + 1.0, fz + 1.0, fx, fy + 1.0, fz, fx + 1.0, fy + 1.0, fz + 1.0, fx + 1.0, fy + 1.0, fz]);
-                                t_wa.extend_from_slice(&[u0, v0, u0, v1, u1, v1, u0, v0, u1, v1, u1, v0]);
-                                for _ in 0..6 { n_wa.extend_from_slice(&[0.0, 1.0, 0.0]); }
-                                let c_val = (255.0 * calc_light_f(get_light_safe(wx, wy + 1, wz))) as u8;
-                                for _ in 0..6 { c_wa.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
-                            }
-                            // Bottom
-                            let neighbor_bottom = if y > 0 { self.blocks[x][y - 1][z] } else { BlockType::Bedrock };
-                            if neighbor_bottom != BlockType::Water {
-                                v_wa.extend_from_slice(&[fx, fy, fz, fx + 1.0, fy, fz + 1.0, fx, fy, fz + 1.0, fx, fy, fz, fx + 1.0, fy, fz, fx + 1.0, fy, fz + 1.0]);
-                                t_wa.extend_from_slice(&[u0, v0, u1, v1, u0, v1, u0, v0, u1, v0, u1, v1]);
-                                for _ in 0..6 { n_wa.extend_from_slice(&[0.0, -1.0, 0.0]); }
-                                let shade = (255.0 * 0.5 * calc_light_f(get_light_safe(wx, wy - 1, wz))) as u8;
-                                for _ in 0..6 { c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]); }
-                            }
-                            // Sides
-                            let neighbors = [
-                                (if z < CHUNK_DEPTH - 1 { self.blocks[x][y][z + 1] } else { unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[x][y][0]) } }, [0.0, 0.0, 1.0], 0.6),
-                                (if z > 0 { self.blocks[x][y][z - 1] } else { unsafe { n_nz.map_or(BlockType::Air, |c| (*c).blocks[x][y][CHUNK_DEPTH - 1]) } }, [0.0, 0.0, -1.0], 0.6),
-                                (if x < CHUNK_WIDTH - 1 { self.blocks[x + 1][y][z] } else { unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[0][y][z]) } }, [1.0, 0.0, 0.0], 0.8),
-                                (if x > 0 { self.blocks[x - 1][y][z] } else { unsafe { n_nx.map_or(BlockType::Air, |c| (*c).blocks[CHUNK_WIDTH - 1][y][z]) } }, [-1.0, 0.0, 0.0], 0.8),
-                            ];
-                            for (neighbor, norm, s_mul) in neighbors {
-                                if neighbor != BlockType::Water {
-                                    let nx = wx + norm[0] as i32; let ny = wy; let nz = wz + norm[2] as i32;
-                                    if norm[2] > 0.5 { // Z+
-                                        v_wa.extend_from_slice(&[fx, fy, fz + 1.0, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + 1.0, fz + 1.0, fx, fy, fz + 1.0, fx + 1.0, fy + 1.0, fz + 1.0, fx, fy + 1.0, fz + 1.0]);
-                                    } else if norm[2] < -0.5 { // Z-
-                                        v_wa.extend_from_slice(&[fx + 1.0, fy, fz, fx, fy, fz, fx, fy + 1.0, fz, fx + 1.0, fy, fz, fx, fy + 1.0, fz, fx + 1.0, fy + 1.0, fz]);
-                                    } else if norm[0] > 0.5 { // X+
-                                        v_wa.extend_from_slice(&[fx + 1.0, fy, fz + 1.0, fx + 1.0, fy, fz, fx + 1.0, fy + 1.0, fz, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + 1.0, fz, fx + 1.0, fy + 1.0, fz + 1.0]);
-                                    } else { // X-
-                                        v_wa.extend_from_slice(&[fx, fy, fz, fx, fy, fz + 1.0, fx, fy + 1.0, fz + 1.0, fx, fy, fz, fx, fy + 1.0, fz + 1.0, fx, fy + 1.0, fz]);
+                        // MC 1.0 corner height averaging for smooth water surface
+                        let corner_h = |cx: i32, cz: i32| -> f32 {
+                            let mut total = 0.0f32;
+                            let mut count = 0i32;
+                            for ddx in [-1i32, 0] {
+                                for ddz in [-1i32, 0] {
+                                    let bx = cx + ddx;
+                                    let bz = cz + ddz;
+                                    if world.get_block(bx, wy + 1, bz) == BlockType::Water {
+                                        return 1.0;
                                     }
-                                    t_wa.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
-                                    for _ in 0..6 { n_wa.extend_from_slice(&norm); }
-                                    let shade = (255.0 * s_mul * calc_light_f(get_light_safe(nx, ny, nz))) as u8;
-                                    for _ in 0..6 { c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]); }
+                                    let b = world.get_block(bx, wy, bz);
+                                    if b == BlockType::Water {
+                                        let l = world.get_liquid_level(bx, wy, bz);
+                                        total += water_render_height(l);
+                                        count += 1;
+                                    } else if !b.is_solid() {
+                                        count += 1;
+                                    }
                                 }
                             }
-                            continue;
+                            if count == 0 { 0.0 } else { total / count as f32 }
+                        };
+
+                        let h00 = corner_h(wx, wz);         // (x, z) corner
+                        let h10 = corner_h(wx + 1, wz);     // (x+1, z) corner
+                        let h11 = corner_h(wx + 1, wz + 1); // (x+1, z+1) corner
+                        let h01 = corner_h(wx, wz + 1);     // (x, z+1) corner
+
+                        // Top face
+                        let neighbor_top = if y < CHUNK_HEIGHT - 1 { self.blocks[x][y + 1][z] } else { BlockType::Air };
+                        if neighbor_top != BlockType::Water {
+                            v_wa.extend_from_slice(&[
+                                fx, fy + h00, fz,
+                                fx, fy + h01, fz + 1.0,
+                                fx + 1.0, fy + h11, fz + 1.0,
+                                fx, fy + h00, fz,
+                                fx + 1.0, fy + h11, fz + 1.0,
+                                fx + 1.0, fy + h10, fz,
+                            ]);
+                            t_wa.extend_from_slice(&[u0, v0, u0, v1, u1, v1, u0, v0, u1, v1, u1, v0]);
+                            for _ in 0..6 { n_wa.extend_from_slice(&[0.0, 1.0, 0.0]); }
+                            let c_val = (255.0 * calc_light_f(get_light_safe(wx, wy + 1, wz))) as u8;
+                            for _ in 0..6 { c_wa.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
                         }
-
-                        // SLOW PATH: Sub-voxel meshing
-                        let sub_size = 0.25f32;
-                        let ts_sub = ts * 0.25; 
-
-                        for sy in 0..4 {
-                            for sx in 0..4 {
-                                for sz in 0..4 {
-                                    let sub_idx = (sy * 16 + sx * 4 + sz) as u8;
-                                    if sub_idx >= level { continue; }
-                                    let sfx = fx + sx as f32 * sub_size;
-                                    let sfy = fy + sy as f32 * sub_size;
-                                    let sfz = fz + sz as f32 * sub_size;
-                                    
-                                    let draw_top = sy == 3 || (sub_idx + 16 >= level);
-                                    if draw_top {
-                                        v_wa.extend_from_slice(&[sfx, sfy + sub_size, sfz, sfx, sfy + sub_size, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz + sub_size, sfx, sfy + sub_size, sfz, sfx + sub_size, sfy + sub_size, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz]);
-                                        t_wa.extend_from_slice(&[u0, v0, u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0, v0, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0]);
-                                        for _ in 0..6 { n_wa.extend_from_slice(&[0.0, 1.0, 0.0]); }
-                                        let c_val = (255.0 * calc_light_f(get_light_safe(wx, wy + 1, wz))) as u8;
-                                        for _ in 0..6 { c_wa.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
-                                    }
-                                    
-                                    if sx == 3 {
-                                        let nx = get_block_safe(wx + 1, wy, wz);
-                                        if nx != BlockType::Water {
-                                            v_wa.extend_from_slice(&[sfx + sub_size, sfy, sfz + sub_size, sfx + sub_size, sfy, sfz, sfx + sub_size, sfy + sub_size, sfz, sfx + sub_size, sfy, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz, sfx + sub_size, sfy + sub_size, sfz + sub_size]);
-                                            t_wa.extend_from_slice(&[u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0, u0, v0 + ts_sub, u0 + ts_sub, v0, u0, v0]);
-                                            for _ in 0..6 { n_wa.extend_from_slice(&[1.0, 0.0, 0.0]); }
-                                            let c_val = (255.0 * 0.8 * calc_light_f(get_light_safe(wx + 1, wy, wz))) as u8;
-                                            for _ in 0..6 { c_wa.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
-                                        }
-                                    }
-                                    if sx == 0 {
-                                        let nx = get_block_safe(wx - 1, wy, wz);
-                                        if nx != BlockType::Water {
-                                            v_wa.extend_from_slice(&[sfx, sfy, sfz, sfx, sfy, sfz + sub_size, sfx, sfy + sub_size, sfz + sub_size, sfx, sfy, sfz, sfx, sfy + sub_size, sfz + sub_size, sfx, sfy + sub_size, sfz]);
-                                            t_wa.extend_from_slice(&[u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0, u0, v0 + ts_sub, u0 + ts_sub, v0, u0, v0]);
-                                            for _ in 0..6 { n_wa.extend_from_slice(&[-1.0, 0.0, 0.0]); }
-                                            let c_val = (255.0 * 0.8 * calc_light_f(get_light_safe(wx - 1, wy, wz))) as u8;
-                                            for _ in 0..6 { c_wa.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
-                                        }
-                                    }
-                                    if sz == 3 {
-                                        let nz = get_block_safe(wx, wy, wz + 1);
-                                        if nz != BlockType::Water {
-                                            v_wa.extend_from_slice(&[sfx, sfy, sfz + sub_size, sfx + sub_size, sfy, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz + sub_size, sfx, sfy, sfz + sub_size, sfx + sub_size, sfy + sub_size, sfz + sub_size, sfx, sfy + sub_size, sfz + sub_size]);
-                                            t_wa.extend_from_slice(&[u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0, u0, v0 + ts_sub, u0 + ts_sub, v0, u0, v0]);
-                                            for _ in 0..6 { n_wa.extend_from_slice(&[0.0, 0.0, 1.0]); }
-                                            let c_val = (255.0 * 0.6 * calc_light_f(get_light_safe(wx, wy, wz + 1))) as u8;
-                                            for _ in 0..6 { c_wa.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
-                                        }
-                                    }
-                                    if sz == 0 {
-                                        let nz = get_block_safe(wx, wy, wz - 1);
-                                        if nz != BlockType::Water {
-                                            v_wa.extend_from_slice(&[sfx + sub_size, sfy, sfz, sfx, sfy, sfz, sfx, sfy + sub_size, sfz, sfx + sub_size, sfy, sfz, sfx, sfy + sub_size, sfz, sfx + sub_size, sfy + sub_size, sfz]);
-                                            t_wa.extend_from_slice(&[u0, v0 + ts_sub, u0 + ts_sub, v0 + ts_sub, u0 + ts_sub, v0, u0, v0 + ts_sub, u0 + ts_sub, v0, u0, v0]);
-                                            for _ in 0..6 { n_wa.extend_from_slice(&[0.0, 0.0, -1.0]); }
-                                            let c_val = (255.0 * 0.6 * calc_light_f(get_light_safe(wx, wy, wz - 1))) as u8;
-                                            for _ in 0..6 { c_wa.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]); }
-                                        }
-                                    }
-                                }
-                            }
+                        // Bottom face
+                        let neighbor_bottom = if y > 0 { self.blocks[x][y - 1][z] } else { BlockType::Bedrock };
+                        if neighbor_bottom != BlockType::Water {
+                            v_wa.extend_from_slice(&[fx, fy, fz, fx + 1.0, fy, fz + 1.0, fx, fy, fz + 1.0, fx, fy, fz, fx + 1.0, fy, fz, fx + 1.0, fy, fz + 1.0]);
+                            t_wa.extend_from_slice(&[u0, v0, u1, v1, u0, v1, u0, v0, u1, v0, u1, v1]);
+                            for _ in 0..6 { n_wa.extend_from_slice(&[0.0, -1.0, 0.0]); }
+                            let shade = (255.0 * 0.5 * calc_light_f(get_light_safe(wx, wy - 1, wz))) as u8;
+                            for _ in 0..6 { c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]); }
+                        }
+                        // Side faces with MC-style corner heights
+                        // Z+ face
+                        let n_zpb = if z < CHUNK_DEPTH - 1 { self.blocks[x][y][z + 1] } else { unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[x][y][0]) } };
+                        if n_zpb != BlockType::Water {
+                            v_wa.extend_from_slice(&[
+                                fx, fy, fz + 1.0, fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + h11, fz + 1.0,
+                                fx, fy, fz + 1.0, fx + 1.0, fy + h11, fz + 1.0, fx, fy + h01, fz + 1.0,
+                            ]);
+                            t_wa.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
+                            for _ in 0..6 { n_wa.extend_from_slice(&[0.0, 0.0, 1.0]); }
+                            let shade = (255.0 * 0.6 * calc_light_f(get_light_safe(wx, wy, wz + 1))) as u8;
+                            for _ in 0..6 { c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]); }
+                        }
+                        // Z- face
+                        let n_znb = if z > 0 { self.blocks[x][y][z - 1] } else { unsafe { n_nz.map_or(BlockType::Air, |c| (*c).blocks[x][y][CHUNK_DEPTH - 1]) } };
+                        if n_znb != BlockType::Water {
+                            v_wa.extend_from_slice(&[
+                                fx + 1.0, fy, fz, fx, fy, fz, fx, fy + h00, fz,
+                                fx + 1.0, fy, fz, fx, fy + h00, fz, fx + 1.0, fy + h10, fz,
+                            ]);
+                            t_wa.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
+                            for _ in 0..6 { n_wa.extend_from_slice(&[0.0, 0.0, -1.0]); }
+                            let shade = (255.0 * 0.6 * calc_light_f(get_light_safe(wx, wy, wz - 1))) as u8;
+                            for _ in 0..6 { c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]); }
+                        }
+                        // X+ face
+                        let n_xpb = if x < CHUNK_WIDTH - 1 { self.blocks[x + 1][y][z] } else { unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[0][y][z]) } };
+                        if n_xpb != BlockType::Water {
+                            v_wa.extend_from_slice(&[
+                                fx + 1.0, fy, fz + 1.0, fx + 1.0, fy, fz, fx + 1.0, fy + h10, fz,
+                                fx + 1.0, fy, fz + 1.0, fx + 1.0, fy + h10, fz, fx + 1.0, fy + h11, fz + 1.0,
+                            ]);
+                            t_wa.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
+                            for _ in 0..6 { n_wa.extend_from_slice(&[1.0, 0.0, 0.0]); }
+                            let shade = (255.0 * 0.8 * calc_light_f(get_light_safe(wx + 1, wy, wz))) as u8;
+                            for _ in 0..6 { c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]); }
+                        }
+                        // X- face
+                        let n_xnb = if x > 0 { self.blocks[x - 1][y][z] } else { unsafe { n_nx.map_or(BlockType::Air, |c| (*c).blocks[CHUNK_WIDTH - 1][y][z]) } };
+                        if n_xnb != BlockType::Water {
+                            v_wa.extend_from_slice(&[
+                                fx, fy, fz, fx, fy, fz + 1.0, fx, fy + h01, fz + 1.0,
+                                fx, fy, fz, fx, fy + h01, fz + 1.0, fx, fy + h00, fz,
+                            ]);
+                            t_wa.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
+                            for _ in 0..6 { n_wa.extend_from_slice(&[-1.0, 0.0, 0.0]); }
+                            let shade = (255.0 * 0.8 * calc_light_f(get_light_safe(wx - 1, wy, wz))) as u8;
+                            for _ in 0..6 { c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]); }
                         }
                         continue;
                     }
