@@ -613,8 +613,8 @@ impl World {
         let mut uploads_this_frame = 0;
         for (index, _) in ready_indices {
             if let Some(chunk) = &mut self.chunks[index] {
-                if let (Some(opaque), Some(trans)) = (chunk.pending_mesh_opaque.take(), chunk.pending_mesh_transparent.take()) {
-                    chunk.upload_mesh(opaque, trans);
+                if let (Some(opaque), Some(trans), Some(water)) = (chunk.pending_mesh_opaque.take(), chunk.pending_mesh_transparent.take(), chunk.pending_mesh_water.take()) {
+                    chunk.upload_mesh(opaque, trans, water);
                     uploads_this_frame += 1;
                     if uploads_this_frame >= 12 { break; } // Increased limit for high-end hardware
                 }
@@ -663,12 +663,13 @@ impl World {
                     let c = unsafe { &mut *(chunk_ptr as *mut Chunk) };
                     
                     c.calculate_lighting();
-                    let (op, tr) = c.calculate_mesh_data(w);
+                    let (op, tr, wa) = c.calculate_mesh_data(w);
                     
                     // Store the results back in the chunk
                     // Note: We use a block here to ensure the results are ready for the main thread.
                     c.pending_mesh_opaque = Some(op);
                     c.pending_mesh_transparent = Some(tr);
+                    c.pending_mesh_water = Some(wa);
                 });
                 
                 dispatches_this_frame += 1;
@@ -911,6 +912,21 @@ impl World {
                 let min = Vec3::new(chunk.x as f32 * CHUNK_WIDTH as f32, 0.0, chunk.z as f32 * CHUNK_DEPTH as f32);
                 let max = Vec3::new(min.x + CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, min.z + CHUNK_DEPTH as f32);
                 if frustum.is_box_visible(min, max) { if let Some(mesh) = &chunk.mesh_transparent { mesh.draw(); } }
+            }
+        }
+    }
+
+    pub fn render_water(&self, frustum: &Frustum) {
+        unsafe {
+            gl::Enable(gl::BLEND);
+            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            gl::Enable(gl::CULL_FACE);
+        }
+        for chunk_opt in &self.chunks {
+            if let Some(chunk) = chunk_opt {
+                let min = Vec3::new(chunk.x as f32 * CHUNK_WIDTH as f32, 0.0, chunk.z as f32 * CHUNK_DEPTH as f32);
+                let max = Vec3::new(min.x + CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, min.z + CHUNK_DEPTH as f32);
+                if frustum.is_box_visible(min, max) { if let Some(mesh) = &chunk.mesh_water { mesh.draw(); } }
             }
         }
     }
