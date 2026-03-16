@@ -265,17 +265,27 @@ layout(location = 2) in vec3 vertexNormal;
 layout(location = 3) in vec4 vertexColor;
 
 uniform mat4 uMVP;
+uniform mat4 uModel;
 uniform float uTime;
 
 out vec4 fragColor;
 out vec2 fragTexCoord;
+out vec3 fragPos;
 out vec3 fragNormal;
 
 void main() {
     fragColor = vertexColor;
     fragTexCoord = vertexTexCoord;
-    fragNormal = vertexNormal;
-    gl_Position = uMVP * vec4(vertexPosition, 1.0);
+
+    vec3 pos = vertexPosition;
+    // Slight vertex animation for waves
+    float wave = sin(uTime * 2.5 + pos.x * 1.5 + pos.z * 1.5) * 0.05;
+    pos.y += wave;
+
+    fragPos = (uModel * vec4(pos, 1.0)).xyz;
+    fragNormal = normalize((uModel * vec4(vertexNormal, 0.0)).xyz);
+
+    gl_Position = uMVP * vec4(pos, 1.0);
 }
 "#;
 
@@ -283,42 +293,41 @@ const WATER_FS: &str = r#"
 #version 330 core
 in vec4 fragColor;
 in vec2 fragTexCoord;
+in vec3 fragPos;
 in vec3 fragNormal;
 
 uniform sampler2D texture0;
+uniform vec3 sunDir;
+uniform vec3 viewPos;
 uniform float uTime;
+uniform vec4 skyCol;
 
 out vec4 finalColor;
 
 void main() {
-    // Tile params: 16x16 atlas, water at (13, 12)
-    float ts = 1.0 / 16.0;
-    float pad = 0.5 / 256.0;
-    vec2 tileMin = vec2(13.0 * ts + pad, 12.0 * ts + pad);
-    vec2 tileMax = vec2(14.0 * ts - pad, 13.0 * ts - pad);
-    vec2 tileSize = tileMax - tileMin;
+    vec4 texelColor = texture(texture0, fragTexCoord);
 
-    // Convert to local [0,1] within tile
-    vec2 local = (fragTexCoord - tileMin) / tileSize;
+    vec3 N = normalize(fragNormal);
+    vec3 V = normalize(viewPos - fragPos);
+    vec3 L = normalize(sunDir);
+    vec3 R = reflect(-L, N);
 
-    // MC 1.0 style: animate texture UVs
-    if (fragNormal.y > 0.5 || fragNormal.y < -0.5) {
-        // Top/bottom face: still water — subtle ripple
-        float t = uTime * 0.8;
-        local.x += sin(t + local.y * 6.2832) * 0.3;
-        local.y += cos(t * 0.7 + local.x * 6.2832) * 0.3;
-    } else {
-        // Side face: flowing water — scroll downward
-        local.y -= uTime * 1.5;
-    }
+    // Ambient + Diffuse
+    float diff = max(dot(N, L), 0.0);
+    vec3 diffuse = texelColor.rgb * fragColor.rgb * (diff * 0.7 + 0.3);
 
-    // Wrap within tile using fract, then convert back to atlas coords
-    local = fract(local);
-    vec2 uv = tileMin + local * tileSize;
+    // Specular (Sparkle/Highlights)
+    float spec = pow(max(dot(V, R), 0.0), 32.0);
+    vec3 specular = vec3(1.0) * spec * 0.6;
 
-    vec4 texel = texture(texture0, uv);
-    vec3 color = texel.rgb * fragColor.rgb;
-    finalColor = vec4(color, fragColor.a);
+    // Fresnel-ish transparency
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+    float alpha = mix(fragColor.a, 1.0, fresnel * 0.5);
+
+    // Simple shore foam / depth effect simulation
+    vec3 color = mix(diffuse, vec3(0.1, 0.4, 0.8), 0.2) + specular;
+
+    finalColor = vec4(color, alpha);
 }
 "#;
 
@@ -1388,10 +1397,14 @@ fn main() { // Entry point
         world.render_clouds(&flat_shader, &mvp);
         shader.bind(); world.render_transparent(&frustum);
 
-        // Render MC 1.0 Water
+        // Render Water
         water_shader.bind();
         water_shader.set_mat4(water_shader.get_uniform_location("uMVP"), &mvp);
+        water_shader.set_mat4(water_shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
         water_shader.set_float(water_shader.get_uniform_location("uTime"), current_time as f32);
+        water_shader.set_vec3(water_shader.get_uniform_location("sunDir"), sun_dir);
+        water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), eye_pos);
+        water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), sky_c);
         world.render_water(&frustum);
         RenderTexture2D::unbind();
         let (win_width, win_height) = window.get_framebuffer_size();
