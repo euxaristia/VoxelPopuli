@@ -902,6 +902,7 @@ fn main() { // Entry point
                                   050000004c050000e60d0000ff070000,PS5 Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b10,leftshoulder:b4,leftstick:b11,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b12,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b2,y:b3,platform:Linux,");
     glfw.window_hint(glfw::WindowHint::ContextVersion(3, 3));
     glfw.window_hint(glfw::WindowHint::OpenGlProfile(glfw::OpenGlProfileHint::Core));
+    glfw.window_hint(glfw::WindowHint::AutoIconify(false));
     #[cfg(target_os = "macos")]
     glfw.window_hint(glfw::WindowHint::OpenGlForwardCompat(true));
     let (mut window, events) = glfw.create_window(state.width, state.height, "VoxelPopuli Rust", glfw::WindowMode::Windowed).expect("Failed to create GLFW window.");
@@ -1060,10 +1061,22 @@ fn main() { // Entry point
                         glfw.with_primary_monitor(|_, m| {
                             if let Some(monitor) = m {
                                 let video_mode = monitor.get_video_mode().unwrap();
-                                window.set_monitor(glfw::WindowMode::FullScreen(monitor), 0, 0, video_mode.width, video_mode.height, Some(video_mode.refresh_rate));
+                                #[cfg(target_os = "linux")]
+                                {
+                                    window.set_decorated(false);
+                                    window.set_monitor(glfw::WindowMode::Windowed, 0, 0, video_mode.width, video_mode.height, Some(video_mode.refresh_rate));
+                                }
+                                #[cfg(not(target_os = "linux"))]
+                                {
+                                    window.set_monitor(glfw::WindowMode::FullScreen(monitor), 0, 0, video_mode.width, video_mode.height, Some(video_mode.refresh_rate));
+                                }
                             }
                         });
                     } else {
+                        #[cfg(target_os = "linux")]
+                        {
+                            window.set_decorated(true);
+                        }
                         window.set_monitor(glfw::WindowMode::Windowed, win_pos.0, win_pos.1, win_size.0, win_size.1, None);
                     }
                 }
