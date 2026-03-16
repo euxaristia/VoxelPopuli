@@ -257,6 +257,82 @@ void main() {
 }
 "#;
 
+const WATER_VS: &str = r#"
+#version 330 core
+layout(location = 0) in vec3 vertexPosition;
+layout(location = 1) in vec2 vertexTexCoord;
+layout(location = 2) in vec3 vertexNormal;
+layout(location = 3) in vec4 vertexColor;
+
+uniform mat4 uMVP;
+uniform mat4 uModel;
+uniform float uTime;
+
+out vec4 fragColor;
+out vec2 fragTexCoord;
+out vec3 fragPos;
+out vec3 fragNormal;
+
+void main() {
+    fragColor = vertexColor;
+    fragTexCoord = vertexTexCoord;
+    
+    vec3 pos = vertexPosition;
+    // Slight vertex animation for waves
+    float wave = sin(uTime * 2.5 + pos.x * 1.5 + pos.z * 1.5) * 0.05;
+    pos.y += wave;
+    
+    fragPos = (uModel * vec4(pos, 1.0)).xyz;
+    // Re-calculate normal based on wave if needed, but for now use vertex normal
+    fragNormal = normalize((uModel * vec4(vertexNormal, 0.0)).xyz);
+    
+    gl_Position = uMVP * vec4(pos, 1.0);
+}
+"#;
+
+const WATER_FS: &str = r#"
+#version 330 core
+in vec4 fragColor;
+in vec2 fragTexCoord;
+in vec3 fragPos;
+in vec3 fragNormal;
+
+uniform sampler2D texture0;
+uniform vec3 sunDir;
+uniform vec3 viewPos;
+uniform float uTime;
+uniform vec4 skyCol;
+
+out vec4 finalColor;
+
+void main() {
+    vec4 texelColor = texture(texture0, fragTexCoord);
+    
+    vec3 N = normalize(fragNormal);
+    vec3 V = normalize(viewPos - fragPos);
+    vec3 L = normalize(sunDir);
+    vec3 R = reflect(-L, N);
+    
+    // Ambient + Diffuse
+    float diff = max(dot(N, L), 0.0);
+    vec3 diffuse = texelColor.rgb * fragColor.rgb * (diff * 0.7 + 0.3);
+    
+    // Specular (Sparkle/Highlights)
+    float spec = pow(max(dot(V, R), 0.0), 32.0);
+    vec3 specular = vec3(1.0) * spec * 0.6;
+    
+    // Fresnel-ish transparency
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+    float alpha = mix(fragColor.a, 1.0, fresnel * 0.5);
+    
+    // Simple shore foam / depth effect simulation
+    // Since we don't have depth texture easily, we just use a subtle color shift
+    vec3 color = mix(diffuse, vec3(0.1, 0.4, 0.8), 0.2) + specular;
+    
+    finalColor = vec4(color, alpha);
+}
+"#;
+
 const FLAT_VS: &str = r#"
 #version 330 core
 layout(location = 0) in vec3 vertexPosition;
@@ -821,6 +897,9 @@ fn draw_pause_menu(ui_shader: &Shader, tex_shader: &Shader, font_tex: &Texture2D
 fn main() { // Entry point
     let state = WindowState::load();
     let mut glfw = glfw::init(glfw::log_errors).unwrap();
+    // Add DualSense mappings for Linux
+    glfw.update_gamepad_mappings("030000004c050000e60d000011010000,PS5 Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b10,leftshoulder:b4,leftstick:b11,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b12,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b2,y:b3,platform:Linux,\n\
+                                  050000004c050000e60d0000ff070000,PS5 Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b10,leftshoulder:b4,leftstick:b11,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b12,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b2,y:b3,platform:Linux,");
     glfw.window_hint(glfw::WindowHint::ContextVersion(3, 3));
     glfw.window_hint(glfw::WindowHint::OpenGlProfile(glfw::OpenGlProfileHint::Core));
     #[cfg(target_os = "macos")]
@@ -840,6 +919,7 @@ fn main() { // Entry point
     }
     let mut world = World::new(); world.generate_atlas(); world.init_celestial();
     let shader = Shader::new(PS1_VS, PS1_FS).expect("Failed to compile PS1 shader");
+    let water_shader = Shader::new(WATER_VS, WATER_FS).expect("Failed to compile water shader");
     let flat_shader = Shader::new(FLAT_VS, FLAT_FS).expect("Failed to compile FLAT shader");
     let ui_shader = Shader::new(UI_VS, UI_FS).expect("Failed to compile UI shader");
     let texture_shader = Shader::new(TEXTURE_VS, TEXTURE_FS).expect("Failed to compile TEXTURE shader");
@@ -1109,87 +1189,98 @@ fn main() { // Entry point
         let mut gp_sprint = false;
         let mut gp_lx = 0.0f32;
         let mut gp_ly = 0.0f32;
-        let gp_joystick = glfw.get_joystick(JoystickId::Joystick1);
-        if gp_joystick.is_present() {
-            if let Some(gs) = gp_joystick.get_gamepad_state() {
-                const DEADZONE: f32 = 0.15;
-                const LOOK_SPEED: f32 = 3.0;
-
-                // Right stick: camera look
-                if game_state == GameState::Playing && !player.inventory_open {
-                    let rx = gs.get_axis(GamepadAxis::AxisRightX);
-                    let ry = gs.get_axis(GamepadAxis::AxisRightY);
-                    let rx = if rx.abs() > DEADZONE { rx } else { 0.0 };
-                    let ry = if ry.abs() > DEADZONE { ry } else { 0.0 };
-                    camera_angle.x -= rx * LOOK_SPEED * delta_time;
-                    camera_angle.y -= ry * LOOK_SPEED * delta_time;
-                    camera_angle.y = camera_angle.y.clamp(-1.56, 1.56);
+        let mut gp_gs: Option<glfw::GamepadState> = None;
+        for i in 0..16 {
+            let jid = match i {
+                0 => JoystickId::Joystick1, 1 => JoystickId::Joystick2, 2 => JoystickId::Joystick3, 3 => JoystickId::Joystick4,
+                4 => JoystickId::Joystick5, 5 => JoystickId::Joystick6, 6 => JoystickId::Joystick7, 7 => JoystickId::Joystick8,
+                8 => JoystickId::Joystick9, 9 => JoystickId::Joystick10, 10 => JoystickId::Joystick11, 11 => JoystickId::Joystick12,
+                12 => JoystickId::Joystick13, 13 => JoystickId::Joystick14, 14 => JoystickId::Joystick15, 15 => JoystickId::Joystick16,
+                _ => unreachable!(),
+            };
+            let js = glfw.get_joystick(jid);
+            if js.is_present() {
+                if let Some(gs) = js.get_gamepad_state() {
+                    gp_gs = Some(gs);
+                    break;
                 }
+            }
+        }
 
-                // Left stick: movement (captured for use below)
-                {
-                    let lx = gs.get_axis(GamepadAxis::AxisLeftX);
-                    let ly = gs.get_axis(GamepadAxis::AxisLeftY);
-                    gp_lx = if lx.abs() > DEADZONE { lx } else { 0.0 };
-                    gp_ly = if ly.abs() > DEADZONE { ly } else { 0.0 };
-                }
+        if let Some(gs) = gp_gs {
+            const DEADZONE: f32 = 0.15;
+            const LOOK_SPEED: f32 = 3.0;
 
-                // Buttons: A=jump, B=sneak/descend, L3=sprint
-                gp_jump  = gs.get_button_state(GamepadButton::ButtonA)         == Action::Press;
-                gp_sneak = gs.get_button_state(GamepadButton::ButtonB)         == Action::Press;
-                gp_sprint= gs.get_button_state(GamepadButton::ButtonLeftThumb) == Action::Press;
+            // Right stick: camera look
+            if game_state == GameState::Playing && !player.inventory_open {
+                let rx = gs.get_axis(GamepadAxis::AxisRightX);
+                let ry = gs.get_axis(GamepadAxis::AxisRightY);
+                let rx = if rx.abs() > DEADZONE { rx } else { 0.0 };
+                let ry = if ry.abs() > DEADZONE { ry } else { 0.0 };
+                camera_angle.x -= rx * LOOK_SPEED * delta_time;
+                camera_angle.y -= ry * LOOK_SPEED * delta_time;
+                camera_angle.y = camera_angle.y.clamp(-1.56, 1.56);
+            }
 
-                // Triggers: RT=break block, LT=place block (on press edge)
-                let rt = gs.get_axis(GamepadAxis::AxisRightTrigger);
-                let lt = gs.get_axis(GamepadAxis::AxisLeftTrigger);
+            // Left stick: movement (captured for use below)
+            {
+                let lx = gs.get_axis(GamepadAxis::AxisLeftX);
+                let ly = gs.get_axis(GamepadAxis::AxisLeftY);
+                gp_lx = if lx.abs() > DEADZONE { lx } else { 0.0 };
+                gp_ly = if ly.abs() > DEADZONE { ly } else { 0.0 };
+            }
 
-                if !player.inventory_open {
-                    let gp_break = rt > 0.5 && prev_gp_rt <= 0.5;
-                    let gp_place = lt > 0.5 && prev_gp_lt <= 0.5;
+            // Buttons: A=jump, B=sneak/descend, L3=sprint
+            gp_jump  = gs.get_button_state(GamepadButton::ButtonA)         == Action::Press;
+            gp_sneak = gs.get_button_state(GamepadButton::ButtonB)         == Action::Press;
+            gp_sprint= gs.get_button_state(GamepadButton::ButtonLeftThumb) == Action::Press;
 
-                    if gp_break || gp_place {
-                        let gp_eye  = player.position + Vec3::new(0.0, 1.6, 0.0);
-                        let gp_look = Vec3::new(
-                            camera_angle.y.cos() * camera_angle.x.sin(),
-                            camera_angle.y.sin(),
-                            camera_angle.y.cos() * camera_angle.x.cos(),
-                        );
-                        if gp_break {
-                            let res = world.raycast(gp_eye, gp_look, 8.0);
-                            if res.hit {
-                                let broken = world.get_block(res.x, res.y, res.z);
-                                if broken != BlockType::Air && broken != BlockType::Water && broken != BlockType::Bedrock {
-                                    inv_add(&mut inv_slots, broken, 1);
-                                }
-                                world.set_block(res.x, res.y, res.z, BlockType::Air);
+            // Triggers: RT=break block, LT=place block (on press edge)
+            let rt = gs.get_axis(GamepadAxis::AxisRightTrigger);
+            let lt = gs.get_axis(GamepadAxis::AxisLeftTrigger);
+
+            if !player.inventory_open {
+                let gp_break = rt > 0.5 && prev_gp_rt <= 0.5;
+                let gp_place = lt > 0.5 && prev_gp_lt <= 0.5;
+
+                if gp_break || gp_place {
+                    let gp_eye  = player.position + Vec3::new(0.0, 1.6, 0.0);
+                    let gp_look = Vec3::new(
+                        camera_angle.y.cos() * camera_angle.x.sin(),
+                        camera_angle.y.sin(),
+                        camera_angle.y.cos() * camera_angle.x.cos(),
+                    );
+                    if gp_break {
+                        let res = world.raycast(gp_eye, gp_look, 8.0);
+                        if res.hit {
+                            let broken = world.get_block(res.x, res.y, res.z);
+                            if broken != BlockType::Air && broken != BlockType::Water && broken != BlockType::Bedrock {
+                                inv_add(&mut inv_slots, broken, 1);
                             }
+                            world.set_block(res.x, res.y, res.z, BlockType::Air);
                         }
-                        if gp_place {
-                            let res = world.raycast(gp_eye, gp_look, 8.0);
-                            if res.hit {
-                                if let Some(s) = &mut inv_slots[player.selected_slot] {
-                                    if s.block == BlockType::FlintAndSteel {
-                                        let target = world.get_block(res.x, res.y, res.z);
-                                        if target == BlockType::TNT {
-                                            world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                            world.explosives.push(crate::block::ActiveExplosive {
-                                                position: Vec3::new(res.x as f32, res.y as f32, res.z as f32),
-                                                fuse: 4.0,
-                                                block_type: BlockType::TNT,
-                                            });
-                                            prev_gp_lt = lt; continue;
-                                        } else if target == BlockType::Nuke {
-                                            world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                            world.explosives.push(crate::block::ActiveExplosive {
-                                                position: Vec3::new(res.x as f32, res.y as f32, res.z as f32),
-                                                fuse: 4.0,
-                                                block_type: BlockType::Nuke,
-                                            });
-                                            prev_gp_lt = lt; continue;
-                                        }
-                                    }
-
-                                    if !s.block.is_item() {
+                    }
+                    if gp_place {
+                        let res = world.raycast(gp_eye, gp_look, 8.0);
+                        if res.hit {
+                            if let Some(s) = &mut inv_slots[player.selected_slot] {
+                                if s.block == BlockType::FlintAndSteel {
+                                    let target = world.get_block(res.x, res.y, res.z);
+                                    if target == BlockType::TNT {
+                                        world.set_block(res.x, res.y, res.z, BlockType::Air);
+                                        world.explosives.push(crate::block::ActiveExplosive {
+                                            position: Vec3::new(res.x as f32, res.y as f32, res.z as f32),
+                                            fuse: 4.0,
+                                            block_type: BlockType::TNT,
+                                        });
+                                    } else if target == BlockType::Nuke {
+                                        world.set_block(res.x, res.y, res.z, BlockType::Air);
+                                        world.explosives.push(crate::block::ActiveExplosive {
+                                            position: Vec3::new(res.x as f32, res.y as f32, res.z as f32),
+                                            fuse: 4.0,
+                                            block_type: BlockType::Nuke,
+                                        });
+                                    } else if !s.block.is_item() {
                                         let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
                                         if world.get_block(nx, ny, nz) == BlockType::Air {
                                             world.set_block(nx, ny, nz, s.block);
@@ -1197,33 +1288,40 @@ fn main() { // Entry point
                                             if s.count == 0 { inv_slots[player.selected_slot] = None; }
                                         }
                                     }
+                                } else if !s.block.is_item() {
+                                    let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+                                    if world.get_block(nx, ny, nz) == BlockType::Air {
+                                        world.set_block(nx, ny, nz, s.block);
+                                        s.count -= 1;
+                                        if s.count == 0 { inv_slots[player.selected_slot] = None; }
+                                    }
                                 }
                             }
                         }
                     }
                 }
-
-                prev_gp_rt = rt;
-                prev_gp_lt = lt;
-
-                // D-Pad + bumpers: hotbar slot selection
-                let dpad_r = gs.get_button_state(GamepadButton::ButtonDpadRight) == Action::Press;
-                let dpad_l = gs.get_button_state(GamepadButton::ButtonDpadLeft)  == Action::Press;
-                let rb     = gs.get_button_state(GamepadButton::ButtonRightBumper) == Action::Press;
-                let lb     = gs.get_button_state(GamepadButton::ButtonLeftBumper)  == Action::Press;
-
-                if (dpad_r && !prev_gp_dpad_right) || (rb && !prev_gp_rb) {
-                    player.selected_slot = (player.selected_slot + 1) % 9;
-                }
-                if (dpad_l && !prev_gp_dpad_left) || (lb && !prev_gp_lb) {
-                    player.selected_slot = (player.selected_slot + 8) % 9;
-                }
-
-                prev_gp_dpad_right = dpad_r;
-                prev_gp_dpad_left  = dpad_l;
-                prev_gp_rb = rb;
-                prev_gp_lb = lb;
             }
+
+            prev_gp_rt = rt;
+            prev_gp_lt = lt;
+
+            // D-Pad + bumpers: hotbar slot selection
+            let dpad_r = gs.get_button_state(GamepadButton::ButtonDpadRight) == Action::Press;
+            let dpad_l = gs.get_button_state(GamepadButton::ButtonDpadLeft)  == Action::Press;
+            let rb     = gs.get_button_state(GamepadButton::ButtonRightBumper) == Action::Press;
+            let lb     = gs.get_button_state(GamepadButton::ButtonLeftBumper)  == Action::Press;
+
+            if (dpad_r && !prev_gp_dpad_right) || (rb && !prev_gp_rb) {
+                player.selected_slot = (player.selected_slot + 1) % 9;
+            }
+            if (dpad_l && !prev_gp_dpad_left) || (lb && !prev_gp_lb) {
+                player.selected_slot = (player.selected_slot + 8) % 9;
+            }
+
+            prev_gp_dpad_right = dpad_r;
+            prev_gp_dpad_left  = dpad_l;
+            prev_gp_rb = rb;
+            prev_gp_lb = lb;
         }
 
         let forward = Vec3::new(camera_angle.x.sin(), 0.0, camera_angle.x.cos());
@@ -1287,6 +1385,16 @@ fn main() { // Entry point
 
         world.render_clouds(&flat_shader, &mvp);
         shader.bind(); world.render_transparent(&frustum);
+
+        // Render Cinematic Water
+        water_shader.bind();
+        water_shader.set_mat4(water_shader.get_uniform_location("uMVP"), &mvp);
+        water_shader.set_mat4(water_shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+        water_shader.set_float(water_shader.get_uniform_location("uTime"), current_time as f32);
+        water_shader.set_vec3(water_shader.get_uniform_location("sunDir"), sun_dir);
+        water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), eye_pos);
+        water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), sky_c);
+        world.render_water(&frustum);
         RenderTexture2D::unbind();
         let (win_width, win_height) = window.get_framebuffer_size();
         unsafe { gl::Viewport(0, 0, win_width, win_height); gl::ClearColor(0.0, 0.0, 0.0, 1.0); gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT); }
