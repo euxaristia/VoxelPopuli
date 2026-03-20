@@ -90,6 +90,8 @@ pub struct World {
     pub active_water: std::collections::HashSet<(i32, i32, i32)>,
     pub active_falling: std::collections::HashSet<(i32, i32, i32)>,
     pub water_tick_timer: f32,
+    pub visible_chunks: Vec<usize>,
+    pub meshing_in_flight: i32,
 }
 
 impl World {
@@ -119,6 +121,8 @@ impl World {
             active_water: std::collections::HashSet::new(),
             active_falling: std::collections::HashSet::new(),
             water_tick_timer: 0.0,
+            visible_chunks: Vec::new(),
+            meshing_in_flight: 0,
         }
     }
 
@@ -596,86 +600,70 @@ impl World {
         }
 
         // --- Prioritized Meshing ---
-        // --- Prioritized Meshing ---
-        // 1. Collect and Prioritize finished meshes for GPU upload
-        let mut ready_indices = Vec::new();
-        for i in 0..CHUNK_POOL_SIZE {
-            if let Some(chunk) = &self.chunks[i] {
-                if chunk.meshing_in_progress && chunk.pending_mesh_opaque.is_some() {
-                    let dx = chunk.x as f32 * CHUNK_WIDTH as f32 + 8.0 - player_pos.x;
-                    let dz = chunk.z as f32 * CHUNK_DEPTH as f32 + 8.0 - player_pos.z;
-                    let dist_sq = dx*dx + dz*dz;
-                    ready_indices.push((i, dist_sq));
+        // 1. Collect and upload finished meshes to GPU (skip scan if nothing in flight)
+        if self.meshing_in_flight > 0 {
+            let mut ready_indices = Vec::new();
+            for i in 0..CHUNK_POOL_SIZE {
+                if let Some(chunk) = &self.chunks[i] {
+                    if chunk.meshing_in_progress && chunk.pending_mesh_opaque.is_some() {
+                        let dx = chunk.x as f32 * CHUNK_WIDTH as f32 + 8.0 - player_pos.x;
+                        let dz = chunk.z as f32 * CHUNK_DEPTH as f32 + 8.0 - player_pos.z;
+                        let dist_sq = dx*dx + dz*dz;
+                        ready_indices.push((i, dist_sq));
+                    }
                 }
             }
-        }
-        // Sort by distance (asc) so closest chunks are uploaded first
-        ready_indices.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            ready_indices.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let mut uploads_this_frame = 0;
-        for (index, _) in ready_indices {
-            if let Some(chunk) = &mut self.chunks[index] {
-                if let (Some(opaque), Some(trans), Some(water)) = (chunk.pending_mesh_opaque.take(), chunk.pending_mesh_transparent.take(), chunk.pending_mesh_water.take()) {
-                    chunk.upload_mesh(opaque, trans, water);
-                    uploads_this_frame += 1;
-                    if uploads_this_frame >= 12 { break; } // Increased limit for high-end hardware
+            for (index, _) in ready_indices {
+                if let Some(chunk) = &mut self.chunks[index] {
+                    if let (Some(opaque), Some(trans), Some(water)) = (chunk.pending_mesh_opaque.take(), chunk.pending_mesh_transparent.take(), chunk.pending_mesh_water.take()) {
+                        chunk.upload_mesh(opaque, trans, water);
+                        self.meshing_in_flight -= 1;
+                    }
                 }
             }
         }
 
-        // 2. Scan for dirty chunks and dispatch to background
-        // Detonation Guard: Do not dispatch new meshing tasks if an explosion is currently modifying the world.
-        // This ensures background threads see a stable snapshot of the terrain.
-        if self.detonations.is_empty() {
+        // 2. Scan for dirty chunks and dispatch to background (skip if nothing dirty)
+        if self.dirty_count > 0 && self.detonations.is_empty() {
             let mut dirty_indices = Vec::new();
-        for i in 0..CHUNK_POOL_SIZE {
-            if let Some(chunk) = &self.chunks[i] {
-                if chunk.dirty && !chunk.meshing_in_progress {
-                    let dx = chunk.x as f32 * CHUNK_WIDTH as f32 + 8.0 - player_pos.x;
-                    let dz = chunk.z as f32 * CHUNK_DEPTH as f32 + 8.0 - player_pos.z;
-                    let dist_sq = dx*dx + dz*dz;
-                    dirty_indices.push((i, dist_sq));
+            for i in 0..CHUNK_POOL_SIZE {
+                if let Some(chunk) = &self.chunks[i] {
+                    if chunk.dirty && !chunk.meshing_in_progress {
+                        let dx = chunk.x as f32 * CHUNK_WIDTH as f32 + 8.0 - player_pos.x;
+                        let dz = chunk.z as f32 * CHUNK_DEPTH as f32 + 8.0 - player_pos.z;
+                        let dist_sq = dx*dx + dz*dz;
+                        dirty_indices.push((i, dist_sq));
+                    }
                 }
             }
-        }
-        dirty_indices.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            dirty_indices.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut dispatches_this_frame = 0;
         for (index, _) in dirty_indices {
-            // We need to move the chunk data or a reference to a thread.
-            // Since self is &mut World here, we can't easily send &World to rayon without unsafe or wrapping.
-            // However, we can use unsafe to pass a raw pointer of World to the threads, 
-            // knowing that chunks being meshed are immutable during that phase.
-            
             let world_ptr = self as *const World as usize;
             if let Some(chunk) = &mut self.chunks[index] {
                 chunk.dirty = false;
                 chunk.meshing_in_progress = true;
                 self.dirty_count -= 1;
-                
-                // Use unsafe to share World pointer across threads for meshing.
-                // This is safe because:
-                // 1. Chunks that are being meshed are not modified until upload_mesh (on main thread).
-                // 2. World edits are only modified on the main thread.
-                // 3. Neighbors are accessed via read-only pointer.
-                
+                self.meshing_in_flight += 1;
+
                 let chunk_ptr = chunk.as_mut() as *mut Chunk as usize;
                 rayon::spawn(move || {
                     let w = unsafe { &*(world_ptr as *const World) };
                     let c = unsafe { &mut *(chunk_ptr as *mut Chunk) };
-                    
+
                     c.calculate_lighting();
                     let (op, tr, wa) = c.calculate_mesh_data(w);
-                    
-                    // Store the results back in the chunk
-                    // Note: We use a block here to ensure the results are ready for the main thread.
+
                     c.pending_mesh_opaque = Some(op);
                     c.pending_mesh_transparent = Some(tr);
                     c.pending_mesh_water = Some(wa);
                 });
-                
+
                 dispatches_this_frame += 1;
-                if dispatches_this_frame >= 16 { break; } // Dispatch many since user has 20 cores
+                if dispatches_this_frame >= 16 { break; }
             }
         }
     }
@@ -1032,8 +1020,8 @@ impl World {
 
     pub fn update_clouds(&mut self, player_pos: Vec3, time: f32) {
         let dist = self.last_cloud_pos.distance(player_pos);
-        let time_passed = (time - self.last_cloud_update_time) > 0.5;
-        if dist < 32.0 && !time_passed && self.cloud_model.is_some() { return; }
+        let time_passed = (time - self.last_cloud_update_time) > 5.0;
+        if dist < 128.0 && !time_passed && self.cloud_model.is_some() { return; }
         self.cloud_model = None; self.last_cloud_pos = player_pos; self.last_cloud_update_time = time;
         let cloud_height = 200.0; let cloud_size = 16.0; let range = 64;
         let start_x = (player_pos.x / cloud_size).floor() as i32 - range;
@@ -1065,44 +1053,51 @@ impl World {
         if !v.is_empty() { self.cloud_model = Some(Mesh::new(&v, None, Some(&n), Some(&c))); }
     }
 
-    pub fn render_opaque(&self, frustum: &Frustum) {
+    pub fn compute_visible_chunks(&mut self, frustum: &Frustum) {
+        self.visible_chunks.clear();
+        for (i, chunk_opt) in self.chunks.iter().enumerate() {
+            if let Some(chunk) = chunk_opt {
+                let min = Vec3::new(chunk.x as f32 * CHUNK_WIDTH as f32, 0.0, chunk.z as f32 * CHUNK_DEPTH as f32);
+                let max = Vec3::new(min.x + CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, min.z + CHUNK_DEPTH as f32);
+                if frustum.is_box_visible(min, max) {
+                    self.visible_chunks.push(i);
+                }
+            }
+        }
+    }
+
+    pub fn render_opaque(&self, _frustum: &Frustum) {
         if let Some(atlas) = &self.atlas { atlas.bind(0); }
-        for chunk_opt in &self.chunks {
-            if let Some(chunk) = chunk_opt {
-                let min = Vec3::new(chunk.x as f32 * CHUNK_WIDTH as f32, 0.0, chunk.z as f32 * CHUNK_DEPTH as f32);
-                let max = Vec3::new(min.x + CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, min.z + CHUNK_DEPTH as f32);
-                if frustum.is_box_visible(min, max) { if let Some(mesh) = &chunk.mesh_opaque { mesh.draw(); } }
+        for &i in &self.visible_chunks {
+            if let Some(chunk) = &self.chunks[i] {
+                if let Some(mesh) = &chunk.mesh_opaque { mesh.draw(); }
             }
         }
     }
 
-    pub fn render_transparent(&self, frustum: &Frustum) {
+    pub fn render_transparent(&self, _frustum: &Frustum) {
         unsafe {
             gl::Enable(gl::BLEND);
             gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::Enable(gl::CULL_FACE); // Re-enable to hide backfaces for "Real 3D" look
+            gl::Enable(gl::CULL_FACE);
         }
-        for chunk_opt in &self.chunks {
-            if let Some(chunk) = chunk_opt {
-                let min = Vec3::new(chunk.x as f32 * CHUNK_WIDTH as f32, 0.0, chunk.z as f32 * CHUNK_DEPTH as f32);
-                let max = Vec3::new(min.x + CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, min.z + CHUNK_DEPTH as f32);
-                if frustum.is_box_visible(min, max) { if let Some(mesh) = &chunk.mesh_transparent { mesh.draw(); } }
+        for &i in &self.visible_chunks {
+            if let Some(chunk) = &self.chunks[i] {
+                if let Some(mesh) = &chunk.mesh_transparent { mesh.draw(); }
             }
         }
     }
 
-    pub fn render_water(&self, frustum: &Frustum) {
+    pub fn render_water(&self, _frustum: &Frustum) {
         unsafe {
             gl::Enable(gl::BLEND);
             gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::DepthMask(gl::FALSE); // Don't write depth for water — prevents z-fighting at shared edges
-            gl::Enable(gl::CULL_FACE); // Cull back faces; underwater view handled by overlay
+            gl::DepthMask(gl::FALSE);
+            gl::Enable(gl::CULL_FACE);
         }
-        for chunk_opt in &self.chunks {
-            if let Some(chunk) = chunk_opt {
-                let min = Vec3::new(chunk.x as f32 * CHUNK_WIDTH as f32, 0.0, chunk.z as f32 * CHUNK_DEPTH as f32);
-                let max = Vec3::new(min.x + CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, min.z + CHUNK_DEPTH as f32);
-                if frustum.is_box_visible(min, max) { if let Some(mesh) = &chunk.mesh_water { mesh.draw(); } }
+        for &i in &self.visible_chunks {
+            if let Some(chunk) = &self.chunks[i] {
+                if let Some(mesh) = &chunk.mesh_water { mesh.draw(); }
             }
         }
         unsafe { gl::DepthMask(gl::TRUE); }

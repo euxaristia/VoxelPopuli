@@ -1389,6 +1389,7 @@ fn main() { // Entry point
         shader.set_vec3(shader.get_uniform_location("viewPos"), eye_pos);
         shader.set_vec4(shader.get_uniform_location("skyCol"), sky_c);
         let frustum = world::Frustum::from_matrix(&mvp);
+        world.compute_visible_chunks(&frustum);
         world.render_opaque(&frustum); 
         
         // Render Explosives and Particles
