@@ -2,6 +2,7 @@ use crate::block::BlockType;
 use crate::noise::perlin_2d;
 use crate::renderer::Mesh;
 use rand::RngExt;
+use std::collections::VecDeque;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Biome {
@@ -526,50 +527,43 @@ impl Chunk {
             }
         }
 
-        // Horizontal Light Propagation (Flood Fill)
-        let mut light_changed = true;
-        let mut iterations = 0;
-        let max_iterations = 14;
+        // Horizontal Light Propagation (BFS queue — no cloning, visits only lit blocks)
+        let mut queue = VecDeque::new();
+        for x in 0..CHUNK_WIDTH {
+            for y in 0..CHUNK_HEIGHT {
+                for z in 0..CHUNK_DEPTH {
+                    if self.light[x][y][z] > 1 {
+                        queue.push_back((x, y, z));
+                    }
+                }
+            }
+        }
 
-        while light_changed && iterations < max_iterations {
-            light_changed = false;
-            iterations += 1;
+        while let Some((x, y, z)) = queue.pop_front() {
+            let current_light = self.light[x][y][z];
+            let drop_light = current_light.saturating_sub(1);
+            if drop_light == 0 { continue; }
 
-            let old_light = self.light.clone();
+            let neighbors: [(i32, i32, i32); 6] = [
+                (x as i32 + 1, y as i32, z as i32),
+                (x as i32 - 1, y as i32, z as i32),
+                (x as i32, y as i32 + 1, z as i32),
+                (x as i32, y as i32 - 1, z as i32),
+                (x as i32, y as i32, z as i32 + 1),
+                (x as i32, y as i32, z as i32 - 1),
+            ];
 
-            for x in 0..CHUNK_WIDTH {
-                for y in 0..CHUNK_HEIGHT {
-                    for z in 0..CHUNK_DEPTH {
-                        let current_light = old_light[x][y][z];
-                        if current_light == 0 { continue; }
+            for (nx, ny, nz) in neighbors {
+                if nx >= 0 && nx < CHUNK_WIDTH as i32 && ny >= 0 && ny < CHUNK_HEIGHT as i32 && nz >= 0 && nz < CHUNK_DEPTH as i32 {
+                    let (ux, uy, uz) = (nx as usize, ny as usize, nz as usize);
+                    let occluding = match self.blocks[ux][uy][uz] {
+                        BlockType::Air | BlockType::Water | BlockType::OakLeaves | BlockType::SpruceLeaves | BlockType::SnowLayer => false,
+                        _ => true,
+                    };
 
-                        let drop_light = current_light.saturating_sub(1);
-                        if drop_light == 0 { continue; }
-
-                        let neighbors = [
-                            (x as i32 + 1, y as i32, z as i32),
-                            (x as i32 - 1, y as i32, z as i32),
-                            (x as i32, y as i32 + 1, z as i32),
-                            (x as i32, y as i32 - 1, z as i32),
-                            (x as i32, y as i32, z as i32 + 1),
-                            (x as i32, y as i32, z as i32 - 1),
-                        ];
-
-                        for (nx, ny, nz) in neighbors {
-                            if nx >= 0 && nx < CHUNK_WIDTH as i32 && ny >= 0 && ny < CHUNK_HEIGHT as i32 && nz >= 0 && nz < CHUNK_DEPTH as i32 {
-                                let occluding = match self.blocks[nx as usize][ny as usize][nz as usize] {
-                                    BlockType::Air | BlockType::Water | BlockType::OakLeaves | BlockType::SpruceLeaves | BlockType::SnowLayer => false,
-                                    _ => true,
-                                };
-
-                                if !occluding && old_light[nx as usize][ny as usize][nz as usize] < drop_light {
-                                    if self.light[nx as usize][ny as usize][nz as usize] < drop_light {
-                                        self.light[nx as usize][ny as usize][nz as usize] = drop_light;
-                                        light_changed = true;
-                                    }
-                                }
-                            }
-                        }
+                    if !occluding && self.light[ux][uy][uz] < drop_light {
+                        self.light[ux][uy][uz] = drop_light;
+                        queue.push_back((ux, uy, uz));
                     }
                 }
             }
@@ -677,14 +671,14 @@ impl Chunk {
 
         let calc_light_f = |light_val: u8| -> f32 {
             let l = light_val as f32;
-            let mut f = 0.82f32.powf(15.0 - l);
-            if f < 0.05 { f = 0.05; }
+            let mut f = 0.85f32.powf(15.0 - l);
+            if f < 0.1 { f = 0.1; }
             f
         };
 
         let calc_vertex_light = |l0: u8, l1: u8, l2: u8, l3: u8| -> f32 {
             let avg = (calc_light_f(l0) + calc_light_f(l1) + calc_light_f(l2) + calc_light_f(l3)) / 4.0;
-            if avg < 0.05 { 0.05 } else { avg }
+            if avg < 0.1 { 0.1 } else { avg }
         };
 
         for x in 0..CHUNK_WIDTH {
@@ -875,8 +869,8 @@ impl Chunk {
                         let light11 = calc_vertex_light(l_b, ll_21, ll_12, get_light_safe(wx + 1, wy + 1, wz + 1));
 
                         for _ in 0..6 { n.extend_from_slice(&[0.0, 1.0, 0.0]); }
-                        let c00 = (255.0 * light00 * ao00) as u8; let c10 = (255.0 * light10 * ao10) as u8;
-                        let c01 = (255.0 * light01 * ao01) as u8; let c11 = (255.0 * light11 * ao11) as u8;
+                        let c00 = (255.0 * light00 * ao00).max(35.0) as u8; let c10 = (255.0 * light10 * ao10).max(35.0) as u8;
+                        let c01 = (255.0 * light01 * ao01).max(35.0) as u8; let c11 = (255.0 * light11 * ao11).max(35.0) as u8;
                         c.extend_from_slice(&[c00, c00, c00, 255, c01, c01, c01, 255, c11, c11, c11, 255, c00, c00, c00, 255, c11, c11, c11, 255, c10, c10, c10, 255]);
                     }
 
@@ -887,7 +881,7 @@ impl Chunk {
                         t.extend_from_slice(&[u0, v0, u1, v1, u0, v1, u0, v0, u1, v0, u1, v1]);
                         for _ in 0..6 { n.extend_from_slice(&[0.0, -1.0, 0.0]); }
                         let light = calc_light_f(get_light_safe(wx, wy - 1, wz));
-                        let shade = (255.0 * light * 0.5) as u8;
+                        let shade = (255.0 * light * 0.5).max(35.0) as u8;
                         for _ in 0..6 { c.extend_from_slice(&[shade, shade, shade, 255]); }
                     }
 
@@ -914,7 +908,7 @@ impl Chunk {
                             let l1 = get_light_safe(wx + norm[0] as i32, wy, wz + norm[2] as i32);
                             let l2 = get_light_safe(wx + norm[0] as i32, wy + 1, wz + norm[2] as i32);
                             let light = calc_light_f(l1.max(l2));
-                            let shade = (255.0 * light * s_mul) as u8;
+                            let shade = (255.0 * light * s_mul).max(35.0) as u8;
                             for _ in 0..6 { c.extend_from_slice(&[shade, shade, shade, 255]); }
                         }
                     }

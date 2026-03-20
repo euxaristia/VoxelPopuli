@@ -247,7 +247,8 @@ void main() {
     float timeLight = 0.15 + (sunY * 0.85); // 0.15 at night, 1.0 at noon
     
     vec3 baseColor = texelColor.rgb * fragColor.rgb * colDiffuse.rgb;
-    vec3 color = baseColor * timeLight;
+    vec3 ambient = texelColor.rgb * 0.12; // minimum ambient so caves aren't pure black
+    vec3 color = max(baseColor * timeLight, ambient);
     
     color *= mix(vec3(1.0, 0.9, 0.8), vec3(1.0, 1.0, 1.05), sunY); // slight tinting
     
