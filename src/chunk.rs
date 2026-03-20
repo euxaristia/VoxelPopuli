@@ -1,7 +1,7 @@
 use crate::block::BlockType;
 use crate::noise::perlin_2d;
 use crate::renderer::Mesh;
-use rand::Rng;
+use rand::RngExt;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Biome {
@@ -111,7 +111,7 @@ impl Chunk {
     }
 
     pub fn generate(&mut self) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // PASS 1: Terrain (biome-aware)
         for x in 0..CHUNK_WIDTH {
@@ -189,45 +189,45 @@ impl Chunk {
 
         // PASS 3: Coal Ores
         for _ in 0..150 {
-            let x = rng.gen_range(0..CHUNK_WIDTH) as i32;
-            let y = rng.gen_range(0..CHUNK_HEIGHT) as i32;
-            let z = rng.gen_range(0..CHUNK_DEPTH) as i32;
-            let vein_size = rng.gen_range(1..=17);
+            let x = rng.random_range(0..CHUNK_WIDTH) as i32;
+            let y = rng.random_range(0..CHUNK_HEIGHT) as i32;
+            let z = rng.random_range(0..CHUNK_DEPTH) as i32;
+            let vein_size = rng.random_range(1..=17);
             let mut current_x = x; let mut current_y = y; let mut current_z = z;
             for _ in 0..vein_size {
                 if current_x >= 0 && current_x < CHUNK_WIDTH as i32 && current_z >= 0 && current_z < CHUNK_DEPTH as i32 && current_y >= 0 && current_y < CHUNK_HEIGHT as i32 {
                     let cx = current_x as usize; let cy = current_y as usize; let cz = current_z as usize;
                     if self.blocks[cx][cy][cz] == BlockType::Stone { self.blocks[cx][cy][cz] = BlockType::CoalOre; }
                 }
-                let dir = rng.gen_range(0..6);
+                let dir = rng.random_range(0..6);
                 match dir { 0 => current_x += 1, 1 => current_x -= 1, 2 => current_y += 1, 3 => current_y -= 1, 4 => current_z += 1, 5 => current_z -= 1, _ => {} }
             }
         }
         
         // PASS 3b: Iron Ores (Slightly rarer, deeper)
         for _ in 0..80 {
-            let x = rng.gen_range(0..CHUNK_WIDTH) as i32;
-            let y = rng.gen_range(0..64) as i32;
-            let z = rng.gen_range(0..CHUNK_DEPTH) as i32;
-            let vein_size = rng.gen_range(1..=9);
+            let x = rng.random_range(0..CHUNK_WIDTH) as i32;
+            let y = rng.random_range(0..64) as i32;
+            let z = rng.random_range(0..CHUNK_DEPTH) as i32;
+            let vein_size = rng.random_range(1..=9);
             let mut current_x = x; let mut current_y = y; let mut current_z = z;
             for _ in 0..vein_size {
                 if current_x >= 0 && current_x < CHUNK_WIDTH as i32 && current_z >= 0 && current_z < CHUNK_DEPTH as i32 && current_y >= 0 && current_y < CHUNK_HEIGHT as i32 {
                     let cx = current_x as usize; let cy = current_y as usize; let cz = current_z as usize;
                     if self.blocks[cx][cy][cz] == BlockType::Stone { self.blocks[cx][cy][cz] = BlockType::IronOre; }
                 }
-                let dir = rng.gen_range(0..6);
+                let dir = rng.random_range(0..6);
                 match dir { 0 => current_x += 1, 1 => current_x -= 1, 2 => current_y += 1, 3 => current_y -= 1, 4 => current_z += 1, 5 => current_z -= 1, _ => {} }
             }
         }
 
         // PASS 4: Gravel
         for _ in 0..8 {
-            let x = rng.gen_range(0..CHUNK_WIDTH) as i32;
-            let y = rng.gen_range(64..128) as i32;
-            let z = rng.gen_range(0..CHUNK_DEPTH) as i32;
+            let x = rng.random_range(0..CHUNK_WIDTH) as i32;
+            let y = rng.random_range(64..128) as i32;
+            let z = rng.random_range(0..CHUNK_DEPTH) as i32;
 
-            let vein_size = rng.gen_range(16..=47);
+            let vein_size = rng.random_range(16..=47);
             let mut current_x = x;
             let mut current_y = y;
             let mut current_z = z;
@@ -245,7 +245,7 @@ impl Chunk {
                     }
                 }
 
-                let dir = rng.gen_range(0..6);
+                let dir = rng.random_range(0..6);
                 match dir {
                     0 => current_x += 1,
                     1 => current_x -= 1,
@@ -375,8 +375,8 @@ impl Chunk {
         };
 
         for i in 0..tree_attempts {
-            let x = rng.gen_range(5..CHUNK_WIDTH - 5); // Increased padding
-            let z = rng.gen_range(5..CHUNK_DEPTH - 5);
+            let x = rng.random_range(5..CHUNK_WIDTH - 5); // Increased padding
+            let z = rng.random_range(5..CHUNK_DEPTH - 5);
 
             // Distance check to prevent bunching
             let mut too_close = false;
@@ -515,7 +515,7 @@ impl Chunk {
                 for y in (0..CHUNK_HEIGHT).rev() {
                     let b = self.blocks[x][y][z];
                     match b {
-                        BlockType::Air | BlockType::Water | BlockType::OakLeaves | BlockType::SpruceLeaves => {
+                        BlockType::Air | BlockType::Water | BlockType::OakLeaves | BlockType::SpruceLeaves | BlockType::SnowLayer => {
                             self.light[x][y][z] = sunlight;
                         }
                         _ => {
@@ -558,7 +558,7 @@ impl Chunk {
                         for (nx, ny, nz) in neighbors {
                             if nx >= 0 && nx < CHUNK_WIDTH as i32 && ny >= 0 && ny < CHUNK_HEIGHT as i32 && nz >= 0 && nz < CHUNK_DEPTH as i32 {
                                 let occluding = match self.blocks[nx as usize][ny as usize][nz as usize] {
-                                    BlockType::Air | BlockType::Water | BlockType::OakLeaves | BlockType::SpruceLeaves => false,
+                                    BlockType::Air | BlockType::Water | BlockType::OakLeaves | BlockType::SpruceLeaves | BlockType::SnowLayer => false,
                                     _ => true,
                                 };
 
@@ -848,7 +848,7 @@ impl Chunk {
                     if should_draw_face(block, neighbor_top) {
                         let (mut tu0, mut tv0, mut tu1, mut tv1) = (u0, v0, u1, v1);
                         if block == BlockType::Grass { tu0 = 0.0; tv0 = 0.0; tu1 = ts - pad; tv1 = ts - pad; }
-                        else if block == BlockType::SnowyGrass { tu0 = 10.0 * ts + pad; tv0 = pad; tu1 = 11.0 * ts - pad; tv1 = ts - pad; }
+                        else if block == BlockType::SnowyGrass { tu0 = 9.0 * ts + pad; tv0 = pad; tu1 = 10.0 * ts - pad; tv1 = ts - pad; }
                         else if block == BlockType::OakLog || block == BlockType::SpruceLog { tu0 = 5.0 * ts + pad; tv0 = ts + pad; tu1 = 6.0 * ts - pad; tv1 = 2.0 * ts - pad; }
 
                         let l_00 = is_solid(get_block_safe(wx - 1, wy + 1, wz - 1));
@@ -911,7 +911,9 @@ impl Chunk {
                             }
                             t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);
                             for _ in 0..6 { n.extend_from_slice(norm); }
-                            let light = calc_light_f(get_light_safe(wx + norm[0] as i32, wy, wz + norm[2] as i32));
+                            let l1 = get_light_safe(wx + norm[0] as i32, wy, wz + norm[2] as i32);
+                            let l2 = get_light_safe(wx + norm[0] as i32, wy + 1, wz + norm[2] as i32);
+                            let light = calc_light_f(l1.max(l2));
                             let shade = (255.0 * light * s_mul) as u8;
                             for _ in 0..6 { c.extend_from_slice(&[shade, shade, shade, 255]); }
                         }

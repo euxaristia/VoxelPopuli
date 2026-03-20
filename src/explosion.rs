@@ -1,7 +1,7 @@
 use crate::world::World;
 use crate::block::{BlockType, Particle};
 use glam::Vec3;
-use rand::Rng;
+use rand::RngExt;
 
 pub fn explode(world: &mut World, x: i32, y: i32, z: i32, initial_radius: i32, is_nuke: bool) {
     let mut total_radius = initial_radius as f32;
@@ -75,16 +75,16 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, initial_radius: i32, i
     // 2. Flying debris/smoke
     let particle_count = if is_nuke { 30 } else { 10 };
     for _ in 0..particle_count {
-        let mut rng = rand::thread_rng();
-        let vx = rng.gen_range(-30.0..30.0);
-        let vy = rng.gen_range(5.0..40.0);
-        let vz = rng.gen_range(-30.0..30.0);
+        let mut rng = rand::rng();
+        let vx = rng.random_range(-30.0..30.0);
+        let vy = rng.random_range(5.0..40.0);
+        let vz = rng.random_range(-30.0..30.0);
         world.particles.push(Particle {
             position: Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
             velocity: Vec3::new(vx, vy, vz),
-            life: rng.gen_range(1.0..3.0),
+            life: rng.random_range(1.0..3.0),
             max_life: 3.0,
-            scale: rng.gen_range(0.2..1.5),
+            scale: rng.random_range(0.2..1.5),
         });
     }
 }
