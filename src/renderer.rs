@@ -43,13 +43,20 @@ impl Shader {
         }
 
         let mut success = gl::FALSE as GLint;
-        unsafe { gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success); }
+        unsafe {
+            gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success);
+        }
         if success == gl::FALSE as GLint {
             let mut len = 0;
             unsafe {
                 gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut len);
                 let mut buf = vec![0; len as usize];
-                gl::GetShaderInfoLog(shader, len, ptr::null_mut(), buf.as_mut_ptr() as *mut GLchar);
+                gl::GetShaderInfoLog(
+                    shader,
+                    len,
+                    ptr::null_mut(),
+                    buf.as_mut_ptr() as *mut GLchar,
+                );
                 return Err(String::from_utf8_lossy(&buf).into_owned());
             }
         }
@@ -182,7 +189,12 @@ pub struct Mesh {
 }
 
 impl Mesh {
-    pub fn new(vertices: &[f32], texcoords: Option<&[f32]>, normals: Option<&[f32]>, colors: Option<&[u8]>) -> Self {
+    pub fn new(
+        vertices: &[f32],
+        texcoords: Option<&[f32]>,
+        normals: Option<&[f32]>,
+        colors: Option<&[u8]>,
+    ) -> Self {
         let mut vao = 0;
         let mut vbo = [0; 4];
         let vertex_count = (vertices.len() / 3) as i32;
@@ -197,7 +209,7 @@ impl Mesh {
             gl::BindBuffer(gl::ARRAY_BUFFER, vbo[0]);
             gl::BufferData(
                 gl::ARRAY_BUFFER,
-                (vertices.len() * std::mem::size_of::<f32>()) as isize,
+                std::mem::size_of_val(vertices) as isize,
                 vertices.as_ptr() as *const _,
                 gl::STATIC_DRAW,
             );
@@ -209,7 +221,7 @@ impl Mesh {
                 gl::BindBuffer(gl::ARRAY_BUFFER, vbo[1]);
                 gl::BufferData(
                     gl::ARRAY_BUFFER,
-                    (uvs.len() * std::mem::size_of::<f32>()) as isize,
+                    std::mem::size_of_val(uvs) as isize,
                     uvs.as_ptr() as *const _,
                     gl::STATIC_DRAW,
                 );
@@ -222,7 +234,7 @@ impl Mesh {
                 gl::BindBuffer(gl::ARRAY_BUFFER, vbo[2]);
                 gl::BufferData(
                     gl::ARRAY_BUFFER,
-                    (norms.len() * std::mem::size_of::<f32>()) as isize,
+                    std::mem::size_of_val(norms) as isize,
                     norms.as_ptr() as *const _,
                     gl::STATIC_DRAW,
                 );
@@ -235,7 +247,7 @@ impl Mesh {
                 gl::BindBuffer(gl::ARRAY_BUFFER, vbo[3]);
                 gl::BufferData(
                     gl::ARRAY_BUFFER,
-                    (cols.len() * std::mem::size_of::<u8>()) as isize,
+                    std::mem::size_of_val(cols) as isize,
                     cols.as_ptr() as *const _,
                     gl::STATIC_DRAW,
                 );
@@ -246,11 +258,17 @@ impl Mesh {
             gl::BindVertexArray(0);
         }
 
-        Self { vao, vbo, vertex_count }
+        Self {
+            vao,
+            vbo,
+            vertex_count,
+        }
     }
 
     pub fn draw(&self) {
-        if self.vertex_count == 0 { return; }
+        if self.vertex_count == 0 {
+            return;
+        }
         unsafe {
             gl::BindVertexArray(self.vao);
             gl::DrawArrays(gl::TRIANGLES, 0, self.vertex_count);
@@ -278,7 +296,8 @@ impl RenderTexture2D {
     pub fn new(width: i32, height: i32) -> Self {
         let mut fbo = 0;
         let mut rbo = 0;
-        let texture = Texture2D::from_data(&vec![0u8; (width * height * 4) as usize], width, height);
+        let texture =
+            Texture2D::from_data(&vec![0u8; (width * height * 4) as usize], width, height);
 
         unsafe {
             gl::GenFramebuffers(1, &mut fbo);
