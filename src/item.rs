@@ -290,7 +290,7 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         Wool => (13, 2),
         Bookshelf => (14, 2),
         Sponge => (15, 2),
-        Nuke => (5, 2),
+        Nuke => (6, 7),
         Chest => (0, 7),
         MossyCobblestone => (2, 7),
         LapisOre => (4, 7),

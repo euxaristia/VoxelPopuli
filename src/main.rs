@@ -1,4 +1,5 @@
 use glfw::{Action, Context, GamepadAxis, GamepadButton, JoystickId, Key};
+mod atlas;
 mod block;
 mod chunk;
 mod crafting;
