@@ -549,271 +549,10 @@ impl WindowState {
     }
 }
 
-const PS1_VS: &str = r#"
-#version 330 core
-layout(location = 0) in vec3 vertexPosition;
-layout(location = 1) in vec2 vertexTexCoord;
-layout(location = 2) in vec3 vertexNormal;
-layout(location = 3) in vec4 vertexColor;
-
-uniform mat4 uMVP;
-uniform mat4 uModel;
-uniform float uTime;
-
-out vec4 fragColor;
-out vec2 fragTexCoord;
-out vec3 fragPos;
-out vec3 fragNormal;
-
-void main() {
-    fragColor = vertexColor;
-    fragTexCoord = vertexTexCoord;
-    
-    vec3 pos = vertexPosition;
-    // Simple wave animation for water (alpha 240/255 ~= 0.94)
-    if (vertexColor.a > 0.940 && vertexColor.a < 0.942) {
-        pos.y += sin(uTime * 1.5 + vertexPosition.x * 0.8 + vertexPosition.z * 0.8) * 0.08 - 0.05;
-    }
-    
-    fragPos = (uModel * vec4(pos, 1.0)).xyz;
-    fragNormal = normalize((uModel * vec4(vertexNormal, 0.0)).xyz);
-    
-    gl_Position = uMVP * vec4(pos, 1.0);
+fn load_shader(path: &str) -> String {
+    std::fs::read_to_string(format!("assets/shaders/{path}"))
+        .unwrap_or_else(|e| panic!("Failed to load shader {path}: {e}"))
 }
-"#;
-
-const PS1_FS: &str = r#"
-#version 330 core
-in vec4 fragColor;
-in vec2 fragTexCoord;
-in vec3 fragPos;
-in vec3 fragNormal;
-
-uniform sampler2D texture0;
-uniform vec4 colDiffuse;
-uniform vec3 sunDir;
-uniform vec3 viewPos;
-uniform float time;
-uniform vec4 skyCol;
-
-out vec4 finalColor;
-
-void main() {
-    vec4 texelColor = texture(texture0, fragTexCoord);
-    if (texelColor.a < 0.1) discard;
-    
-    // Global ambient based on sun position (time of day)
-    float sunY = max(0.0, sunDir.y);
-    float timeLight = 0.15 + (sunY * 0.85); // 0.15 at night, 1.0 at noon
-    
-    vec3 baseColor = texelColor.rgb * fragColor.rgb * colDiffuse.rgb;
-    vec3 ambient = texelColor.rgb * 0.12; // minimum ambient so caves aren't pure black
-    vec3 color = max(baseColor * timeLight, ambient);
-    
-    color *= mix(vec3(1.0, 0.9, 0.8), vec3(1.0, 1.0, 1.05), sunY); // slight tinting
-    
-    // Final color output without artificial quantization
-    vec4 c = vec4(color, texelColor.a * fragColor.a * colDiffuse.a);
-    finalColor = c;
-}
-"#;
-
-const WATER_VS: &str = r#"
-#version 330 core
-layout(location = 0) in vec3 vertexPosition;
-layout(location = 1) in vec2 vertexTexCoord;
-layout(location = 2) in vec3 vertexNormal;
-layout(location = 3) in vec4 vertexColor;
-
-uniform mat4 uMVP;
-uniform mat4 uModel;
-uniform float uTime;
-
-out vec4 fragColor;
-out vec2 fragTexCoord;
-out vec3 fragPos;
-out vec3 fragNormal;
-
-void main() {
-    fragColor = vertexColor;
-    fragTexCoord = vertexTexCoord;
-
-    vec3 pos = vertexPosition;
-    // Slight vertex animation for waves
-    float wave = sin(uTime * 2.5 + pos.x * 1.5 + pos.z * 1.5) * 0.05;
-    pos.y += wave;
-
-    fragPos = (uModel * vec4(pos, 1.0)).xyz;
-    fragNormal = normalize((uModel * vec4(vertexNormal, 0.0)).xyz);
-
-    gl_Position = uMVP * vec4(pos, 1.0);
-}
-"#;
-
-const WATER_FS: &str = r#"
-#version 330 core
-in vec4 fragColor;
-in vec2 fragTexCoord;
-in vec3 fragPos;
-in vec3 fragNormal;
-
-uniform sampler2D texture0;
-uniform vec3 sunDir;
-uniform vec3 viewPos;
-uniform float uTime;
-uniform vec4 skyCol;
-
-out vec4 finalColor;
-
-void main() {
-    vec4 texelColor = texture(texture0, fragTexCoord);
-
-    vec3 N = normalize(fragNormal);
-    vec3 V = normalize(viewPos - fragPos);
-    vec3 L = normalize(sunDir);
-    vec3 R = reflect(-L, N);
-
-    // Ambient + Diffuse
-    float diff = max(dot(N, L), 0.0);
-    vec3 diffuse = texelColor.rgb * fragColor.rgb * (diff * 0.7 + 0.3);
-
-    // Specular (Sparkle/Highlights)
-    float spec = pow(max(dot(V, R), 0.0), 32.0);
-    vec3 specular = vec3(1.0) * spec * 0.6;
-
-    // Fresnel-ish transparency
-    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-    float alpha = mix(fragColor.a, 1.0, fresnel * 0.5);
-
-    // Simple shore foam / depth effect simulation
-    vec3 color = mix(diffuse, vec3(0.1, 0.4, 0.8), 0.2) + specular;
-
-    finalColor = vec4(color, alpha);
-}
-"#;
-
-const FLAT_VS: &str = r#"
-#version 330 core
-layout(location = 0) in vec3 vertexPosition;
-layout(location = 1) in vec2 vertexTexCoord;
-layout(location = 3) in vec4 vertexColor;
-uniform mat4 uMVP;
-out vec4 fragColor;
-out vec2 fragTexCoord;
-void main() {
-    fragColor = vertexColor;
-    fragTexCoord = vertexTexCoord;
-    gl_Position = uMVP * vec4(vertexPosition, 1.0);
-}
-"#;
-
-const FLAT_FS: &str = r#"
-#version 330 core
-in vec4 fragColor;
-in vec2 fragTexCoord;
-out vec4 finalColor;
-uniform int uBodyType; // 0=flat, 1=sun, 2=moon
-void main() {
-    if (uBodyType > 0) {
-        vec2 uv = fragTexCoord * 8.0;
-        ivec2 iuv = ivec2(floor(uv));
-        if (iuv.x < 0 || iuv.x > 7 || iuv.y < 0 || iuv.y > 7) discard;
-        
-        int shape[8] = int[](60, 126, 255, 255, 255, 255, 126, 60);
-        int rowMask = shape[7 - iuv.y];
-        if ((rowMask & (1 << (7 - iuv.x))) == 0) discard;
-        
-        vec4 color = fragColor;
-        if (uBodyType == 2) {
-            // Craters on the moon
-            // 0, 0, 10, 4, 24, 24, 68, 0 roughly mapping to darker craters on MC moon
-            int craters[8] = int[](0, 20, 36, 64, 8, 16, 2, 0); 
-            int craterMask = craters[7 - iuv.y];
-            if ((craterMask & (1 << (7 - iuv.x))) != 0) {
-                color.rgb *= 0.65;
-            }
-        }
-        finalColor = color;
-    } else {
-        finalColor = fragColor;
-    }
-}
-"#;
-
-const UI_VS: &str = r#"
-#version 330 core
-layout(location = 0) in vec3 vertexPosition;
-layout(location = 3) in vec4 vertexColor;
-uniform vec2 uScreenSize;
-out vec4 fragColor;
-void main() {
-    vec2 pos = (vertexPosition.xy / uScreenSize) * 2.0 - 1.0;
-    gl_Position = vec4(pos.x, -pos.y, 0.0, 1.0);
-    fragColor = vertexColor;
-}
-"#;
-
-const UI_FS: &str = r#"
-#version 330 core
-in vec4 fragColor;
-out vec4 finalColor;
-void main() {
-    finalColor = fragColor;
-}
-"#;
-
-const TEXTURE_VS: &str = r#"
-#version 330 core
-layout(location = 0) in vec3 vertexPosition;
-layout(location = 1) in vec2 vertexTexCoord;
-out vec2 fragTexCoord;
-void main() {
-    fragTexCoord = vertexTexCoord;
-    gl_Position = vec4(vertexPosition, 1.0);
-}
-"#;
-
-const TEXTURE_FS: &str = r#"
-#version 330 core
-in vec2 fragTexCoord;
-out vec4 finalColor;
-uniform sampler2D texture0;
-void main() {
-    finalColor = texture(texture0, fragTexCoord);
-}
-"#;
-
-const COLOR_FS: &str = r#"
-#version 330 core
-out vec4 finalColor;
-uniform vec4 uColor;
-void main() {
-    finalColor = uColor;
-}
-"#;
-
-const UI_TEXTURE_VS: &str = r#"
-#version 330 core
-layout(location = 0) in vec3 vertexPosition;
-layout(location = 1) in vec2 vertexTexCoord;
-uniform vec2 uScreenSize;
-out vec2 fragTexCoord;
-void main() {
-    vec2 pos = (vertexPosition.xy / uScreenSize) * 2.0 - 1.0;
-    gl_Position = vec4(pos.x, -pos.y, 0.0, 1.0);
-    fragTexCoord = vertexTexCoord;
-}
-"#;
-
-const UI_TEXTURE_FS: &str = r#"
-#version 330 core
-in vec2 fragTexCoord;
-out vec4 finalColor;
-uniform sampler2D texture0;
-void main() {
-    finalColor = texture(texture0, fragTexCoord);
-}
-"#;
 
 #[allow(clippy::too_many_arguments)]
 fn draw_rect(
@@ -1736,15 +1475,21 @@ fn main() {
     let mut world = World::new();
     world.generate_atlas();
     world.init_celestial();
-    let shader = Shader::new(PS1_VS, PS1_FS).expect("Failed to compile PS1 shader");
-    let water_shader = Shader::new(WATER_VS, WATER_FS).expect("Failed to compile water shader");
-    let flat_shader = Shader::new(FLAT_VS, FLAT_FS).expect("Failed to compile FLAT shader");
-    let ui_shader = Shader::new(UI_VS, UI_FS).expect("Failed to compile UI shader");
-    let texture_shader =
-        Shader::new(TEXTURE_VS, TEXTURE_FS).expect("Failed to compile TEXTURE shader");
+    let shader = Shader::new(&load_shader("ps1.vs"), &load_shader("ps1.fs"))
+        .expect("Failed to compile PS1 shader");
+    let water_shader = Shader::new(&load_shader("water.vs"), &load_shader("water.fs"))
+        .expect("Failed to compile water shader");
+    let flat_shader = Shader::new(&load_shader("flat.vs"), &load_shader("flat.fs"))
+        .expect("Failed to compile FLAT shader");
+    let ui_shader = Shader::new(&load_shader("ui.vs"), &load_shader("ui.fs"))
+        .expect("Failed to compile UI shader");
+    let texture_shader = Shader::new(&load_shader("texture.vs"), &load_shader("texture.fs"))
+        .expect("Failed to compile TEXTURE shader");
     let texture_ui_shader =
-        Shader::new(UI_TEXTURE_VS, UI_TEXTURE_FS).expect("Failed to compile UI TEXTURE shader");
-    let color_shader = Shader::new(TEXTURE_VS, COLOR_FS).expect("Failed to compile COLOR shader");
+        Shader::new(&load_shader("ui_texture.vs"), &load_shader("ui_texture.fs"))
+            .expect("Failed to compile UI TEXTURE shader");
+    let color_shader = Shader::new(&load_shader("texture.vs"), &load_shader("color.fs"))
+        .expect("Failed to compile COLOR shader");
     let target = RenderTexture2D::new(RENDER_WIDTH, RENDER_HEIGHT);
     let font_texture = Texture2D::from_file("assets/font.png");
 
