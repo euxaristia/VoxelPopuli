@@ -53,4 +53,4 @@ cargo run --release
 - `src/block.rs`: Block types and properties.
 
 ## License 📜
-Licensed under **GNU AGPLv3**. See [LICENSE](./LICENSE).
+Released into the **Public Domain** (The Unlicense). See [LICENSE](./LICENSE).
