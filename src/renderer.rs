@@ -145,9 +145,29 @@ impl Texture2D {
     }
 
     pub fn from_file(path: &str) -> Self {
-        let img = image::open(path).expect("Failed to load image").to_rgba8();
-        let (width, height) = img.dimensions();
-        Self::from_data(&img, width as i32, height as i32)
+        let file = std::fs::File::open(path).expect("Failed to open image");
+        let reader = std::io::BufReader::new(file);
+        let mut decoder = png::Decoder::new(reader);
+        decoder.set_transformations(png::Transformations::EXPAND);
+        let mut reader = decoder.read_info().expect("Failed to read PNG info");
+        let mut buf = vec![0; reader.output_buffer_size().expect("Invalid PNG")];
+        let info = reader.next_frame(&mut buf).expect("Failed to decode PNG");
+        buf.truncate(info.buffer_size());
+
+        let (width, height) = (info.width, info.height);
+        let data: Vec<u8> = match info.color_type {
+            png::ColorType::Rgba => buf,
+            png::ColorType::Rgb => {
+                let mut rgba = Vec::with_capacity(buf.len() / 3 * 4);
+                for chunk in buf.chunks_exact(3) {
+                    rgba.extend_from_slice(chunk);
+                    rgba.push(255);
+                }
+                rgba
+            }
+            _ => panic!("Unsupported PNG color type: {:?}", info.color_type),
+        };
+        Self::from_data(&data, width as i32, height as i32)
     }
 
     #[allow(dead_code)]

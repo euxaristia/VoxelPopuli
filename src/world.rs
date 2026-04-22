@@ -669,7 +669,7 @@ impl World {
                     self.meshing_in_flight += 1;
 
                     let chunk_ptr = chunk.as_mut() as *mut Chunk as usize;
-                    rayon::spawn(move || {
+                    std::thread::spawn(move || {
                         let w = unsafe { &*(world_ptr as *const World) };
                         let c = unsafe { &mut *(chunk_ptr as *mut Chunk) };
 

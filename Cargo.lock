@@ -9,9 +9,8 @@ dependencies = [
  "gl",
  "glam",
  "glfw",
- "image",
+ "png",
  "rand 0.10.1",
- "rayon",
 ]
 
 [[package]]

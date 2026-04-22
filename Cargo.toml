@@ -14,6 +14,5 @@ lto = true
 gl = "0.14.0"
 glam = "0.32.1"
 glfw = "0.62.0"
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+png = "0.18"
 rand = "0.10"
-rayon = "1.11.0"
