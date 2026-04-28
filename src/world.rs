@@ -128,6 +128,10 @@ pub struct World {
     pub visible_chunks: Vec<usize>,
     pub meshing_in_flight: i32,
     pub generation_in_flight: i32,
+    // Set when `try_dispatch_generate` had to skip a slot because the existing chunk was
+    // still being generated or meshed. Causes the spiral to re-run on the next frame even
+    // if the player hasn't moved, so the slot eventually gets the right chunk.
+    pub spiral_pending: bool,
 }
 
 impl World {
@@ -159,6 +163,7 @@ impl World {
             visible_chunks: Vec::new(),
             meshing_in_flight: 0,
             generation_in_flight: 0,
+            spiral_pending: true,
         }
     }
 
@@ -492,17 +497,20 @@ impl World {
     }
 
     // Allocates a stub chunk at (cx, cz) and dispatches its terrain `generate()` to the rayon
-    // worker pool. No-op if the slot already holds the correct chunk, or if the slot's current
-    // chunk is busy (generation or meshing in progress) — the spiral will revisit next frame.
+    // worker pool. No-op if the slot already holds the correct chunk. If the slot is busy
+    // (generation or meshing in progress) we set `spiral_pending` so the spiral re-runs next
+    // frame and gets another shot at this slot.
     fn try_dispatch_generate(&mut self, cx: i32, cz: i32) {
         let index = self.get_pool_index(cx, cz);
-        let should_replace = match &self.chunks[index] {
-            None => true,
-            Some(c) if c.x == cx && c.z == cz => false,
-            Some(c) => !c.generation_in_progress && !c.meshing_in_progress,
-        };
-        if !should_replace {
-            return;
+        match &self.chunks[index] {
+            None => {}
+            Some(c) if c.x == cx && c.z == cz => return,
+            Some(c) => {
+                if c.generation_in_progress || c.meshing_in_progress {
+                    self.spiral_pending = true;
+                    return;
+                }
+            }
         }
 
         let mut chunk = Box::new(Chunk::new(cx, cz));
@@ -526,21 +534,25 @@ impl World {
         // --- Spiral Chunk Generation (async via rayon) ---
         // Discovery walks outward in rings and dispatches each missing chunk's `generate()`
         // onto the rayon worker pool. Generation has no cross-chunk reads/writes, so each
-        // chunk runs on its own thread. Slot recycling is guarded against in-flight workers,
-        // and `try_dispatch_generate` is a cheap no-op when the slot already holds the right
-        // chunk — so we just run the spiral every frame and let it self-correct.
-        for r in 0..=VIEW_DISTANCE {
-            for x in (pcx - r)..=(pcx + r) {
-                for z in (pcz - r)..=(pcz + r) {
-                    if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
-                        continue;
+        // chunk runs on its own thread. Skipped: we only run when the player crossed a chunk
+        // boundary or the previous spiral had to skip a busy slot — touching all 5,041 boxed
+        // chunks every frame to check `c.x == cx` is cache-pressure for nothing in steady
+        // state.
+        if pcx != self.last_pcx || pcz != self.last_pcz || self.spiral_pending {
+            self.spiral_pending = false;
+            for r in 0..=VIEW_DISTANCE {
+                for x in (pcx - r)..=(pcx + r) {
+                    for z in (pcz - r)..=(pcz + r) {
+                        if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
+                            continue;
+                        }
+                        self.try_dispatch_generate(x, z);
                     }
-                    self.try_dispatch_generate(x, z);
                 }
             }
+            self.last_pcx = pcx;
+            self.last_pcz = pcz;
         }
-        self.last_pcx = pcx;
-        self.last_pcz = pcz;
 
         // Stay in loading until all chunks are generated, post-processed, dispatched for
         // meshing, and uploaded to the GPU — otherwise the player spawns into an empty sky
