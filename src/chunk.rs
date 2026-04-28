@@ -108,6 +108,12 @@ pub struct Chunk {
     pub pending_mesh_water: Option<MeshData>,
     pub dirty: bool,
     pub meshing_in_progress: bool,
+    // True while a rayon worker is running `generate()` against this chunk's blocks.
+    // Used to guard slot recycling and to skip meshing dispatch until generation finishes.
+    pub generation_in_progress: bool,
+    // False after a worker has just finished generating; flipped to true by the main thread
+    // after it applies pending edits and dirties this chunk + its neighbors.
+    pub post_processed: bool,
     pub x: i32,
     pub z: i32,
 }
@@ -124,8 +130,12 @@ impl Chunk {
             pending_mesh_opaque: None,
             pending_mesh_transparent: None,
             pending_mesh_water: None,
-            dirty: true,
+            // A freshly-allocated chunk has no content yet. The post-process step
+            // flips `dirty` after generation finishes and increments `World::dirty_count`.
+            dirty: false,
             meshing_in_progress: false,
+            generation_in_progress: false,
+            post_processed: true,
             x,
             z,
         }

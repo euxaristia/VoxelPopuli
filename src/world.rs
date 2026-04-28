@@ -121,13 +121,13 @@ pub struct World {
     pub detonations: Vec<(glam::Vec3, crate::block::BlockType)>,
     pub cube_mesh: renderer::Mesh,
     pub is_loading: bool,
-    pub loading_radius: i32,
     pub chunks_generated_count: i32,
     pub active_water: std::collections::HashSet<(i32, i32, i32)>,
     pub active_falling: std::collections::HashSet<(i32, i32, i32)>,
     pub water_tick_timer: f32,
     pub visible_chunks: Vec<usize>,
     pub meshing_in_flight: i32,
+    pub generation_in_flight: i32,
 }
 
 impl World {
@@ -152,13 +152,13 @@ impl World {
             detonations: Vec::new(),
             cube_mesh: Self::create_cube_mesh(),
             is_loading: true,
-            loading_radius: 0,
             chunks_generated_count: 0,
             active_water: std::collections::HashSet::new(),
             active_falling: std::collections::HashSet::new(),
             water_tick_timer: 0.0,
             visible_chunks: Vec::new(),
             meshing_in_flight: 0,
+            generation_in_flight: 0,
         }
     }
 
@@ -491,126 +491,109 @@ impl World {
         }
     }
 
+    // Allocates a stub chunk at (cx, cz) and dispatches its terrain `generate()` to the rayon
+    // worker pool. No-op if the slot already holds the correct chunk, or if the slot's current
+    // chunk is busy (generation or meshing in progress) — the spiral will revisit next frame.
+    fn try_dispatch_generate(&mut self, cx: i32, cz: i32) {
+        let index = self.get_pool_index(cx, cz);
+        let should_replace = match &self.chunks[index] {
+            None => true,
+            Some(c) if c.x == cx && c.z == cz => false,
+            Some(c) => !c.generation_in_progress && !c.meshing_in_progress,
+        };
+        if !should_replace {
+            return;
+        }
+
+        let mut chunk = Box::new(Chunk::new(cx, cz));
+        chunk.generation_in_progress = true;
+        chunk.post_processed = false;
+        let chunk_ptr = chunk.as_mut() as *mut Chunk as usize;
+        self.chunks[index] = Some(chunk);
+        self.generation_in_flight += 1;
+
+        rayon::spawn(move || {
+            let c = unsafe { &mut *(chunk_ptr as *mut Chunk) };
+            c.generate();
+            c.generation_in_progress = false;
+        });
+    }
+
     pub fn update(&mut self, player_pos: Vec3, _time: f32) {
         let pcx = (player_pos.x / CHUNK_WIDTH as f32).floor() as i32;
         let pcz = (player_pos.z / CHUNK_DEPTH as f32).floor() as i32;
 
-        // --- Spiral Chunk Generation ---
-        if pcx != self.last_pcx || pcz != self.last_pcz {
-            if self.is_loading {
-                // In loading state, we process the spiral radius-by-radius, a few chunks per frame
-                let mut generated_this_frame = 0;
-                while self.loading_radius <= VIEW_DISTANCE && generated_this_frame < 64 {
-                    let r = self.loading_radius;
-                    // We need to iterate over the ring r
-                    // This is slightly complex to do incrementally inside the loop without more state,
-                    // but we can just do the whole ring if it's small, or just a few.
-                    // Let's simplify and just do the whole ring r then increment loading_radius.
-                    for x in (pcx - r)..=(pcx + r) {
-                        for z in (pcz - r)..=(pcz + r) {
-                            if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
-                                continue;
-                            }
-
-                            let index = self.get_pool_index(x, z);
-                            let should_replace = match &self.chunks[index] {
-                                None => true,
-                                Some(c) => c.x != x || c.z != z,
-                            };
-                            if should_replace {
-                                let mut chunk = Box::new(Chunk::new(x, z));
-                                chunk.generate();
-                                self.chunks[index] = Some(chunk);
-                                self.apply_edits_to_chunk(x, z);
-                                if let Some(c) = &mut self.chunks[index] {
-                                    c.dirty = true;
-                                    self.dirty_count += 1;
-                                }
-                                self.chunks_generated_count += 1;
-                                generated_this_frame += 1;
-                                if generated_this_frame >= 64 {
-                                    break;
-                                }
-                            }
-                        }
-                        if generated_this_frame >= 64 {
-                            break;
-                        }
+        // --- Spiral Chunk Generation (async via rayon) ---
+        // Discovery walks outward in rings and dispatches each missing chunk's `generate()`
+        // onto the rayon worker pool. Generation has no cross-chunk reads/writes, so each
+        // chunk runs on its own thread. Slot recycling is guarded against in-flight workers,
+        // and `try_dispatch_generate` is a cheap no-op when the slot already holds the right
+        // chunk — so we just run the spiral every frame and let it self-correct.
+        for r in 0..=VIEW_DISTANCE {
+            for x in (pcx - r)..=(pcx + r) {
+                for z in (pcz - r)..=(pcz + r) {
+                    if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
+                        continue;
                     }
-                    if generated_this_frame < 64 {
-                        self.loading_radius += 1;
-                    }
+                    self.try_dispatch_generate(x, z);
                 }
-                if self.loading_radius > VIEW_DISTANCE {
-                    self.is_loading = false;
-                    self.last_pcx = pcx;
-                    self.last_pcz = pcz;
+            }
+        }
+        self.last_pcx = pcx;
+        self.last_pcz = pcz;
+
+        // Stay in loading until all chunks are generated, post-processed, dispatched for
+        // meshing, and uploaded to the GPU — otherwise the player spawns into an empty sky
+        // while meshes are still building.
+        if self.is_loading
+            && self.generation_in_flight == 0
+            && self.meshing_in_flight == 0
+            && self.dirty_count == 0
+        {
+            self.is_loading = false;
+        }
+
+        // --- Generation Post-Process ---
+        // For chunks whose worker has finished (generation_in_progress flipped false but
+        // post_processed not yet set), apply pending edits and dirty self + neighbors.
+        if self.generation_in_flight > 0 {
+            let mut finished = Vec::new();
+            for i in 0..CHUNK_POOL_SIZE {
+                if let Some(chunk) = &self.chunks[i]
+                    && !chunk.generation_in_progress
+                    && !chunk.post_processed
+                {
+                    finished.push((i, chunk.x, chunk.z));
                 }
-            } else {
-                // NORMAL MODE: Non-blocking spiral (Discovery)
-                // Throttle generation to prevent massive stutters when crossing boundaries
-                let mut generated_this_frame = 0;
-                for r in 0..=VIEW_DISTANCE {
-                    for x in (pcx - r)..=(pcx + r) {
-                        for z in (pcz - r)..=(pcz + r) {
-                            if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
-                                continue;
-                            }
-
-                            let index = self.get_pool_index(x, z);
-                            let should_replace = match &self.chunks[index] {
-                                None => true,
-                                Some(c) => c.x != x || c.z != z,
-                            };
-                            if should_replace {
-                                let mut chunk = Box::new(Chunk::new(x, z));
-                                chunk.generate();
-                                self.chunks[index] = Some(chunk);
-                                self.apply_edits_to_chunk(x, z);
-
-                                // Dirty the new chunk AND its neighbors to fix lighting/meshing gaps
-                                if let Some(c) = &mut self.chunks[index]
-                                    && !c.dirty
-                                {
-                                    c.dirty = true;
-                                    self.dirty_count += 1;
-                                }
-                                let neighbors = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)];
-                                for (nx, nz) in neighbors {
-                                    if let Some(nc) = self.get_chunk_mut(nx, nz)
-                                        && !nc.dirty
-                                    {
-                                        nc.dirty = true;
-                                        self.dirty_count += 1;
-                                    }
-                                }
-
-                                generated_this_frame += 1;
-                                if generated_this_frame >= 8 {
-                                    break;
-                                }
-                            }
-                        }
-                        if generated_this_frame >= 8 {
-                            break;
-                        }
-                    }
-                    if generated_this_frame >= 8 {
-                        break;
+            }
+            for (index, cx, cz) in finished {
+                self.apply_edits_to_chunk(cx, cz);
+                if let Some(c) = &mut self.chunks[index] {
+                    c.post_processed = true;
+                    if !c.dirty {
+                        c.dirty = true;
+                        self.dirty_count += 1;
                     }
                 }
-
-                // Only update last_pcx/last_pcz once we've at least tried to load the immediate ring
-                // Actually, let's keep the boundary check simple.
-                if generated_this_frame < 8 {
-                    self.last_pcx = pcx;
-                    self.last_pcz = pcz;
+                let neighbors = [(cx - 1, cz), (cx + 1, cz), (cx, cz - 1), (cx, cz + 1)];
+                for (nx, nz) in neighbors {
+                    if let Some(nc) = self.get_chunk_mut(nx, nz)
+                        && nc.post_processed
+                        && !nc.dirty
+                    {
+                        nc.dirty = true;
+                        self.dirty_count += 1;
+                    }
                 }
+                self.generation_in_flight -= 1;
             }
         }
 
         // --- Prioritized Meshing ---
-        // 1. Collect and upload finished meshes to GPU (skip scan if nothing in flight)
+        // 1. Upload finished meshes to GPU. During gameplay this is capped so a burst of
+        //    completions can't hitch a frame; during initial load we drain everything to
+        //    minimize the loading screen duration.
+        const MAX_UPLOADS_PER_FRAME: usize = 8;
         if self.meshing_in_flight > 0 {
             let mut ready_indices = Vec::new();
             for i in 0..CHUNK_POOL_SIZE {
@@ -628,8 +611,13 @@ impl World {
                 a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
             });
 
-            for (index, _) in ready_indices {
-                if let Some(chunk) = &mut self.chunks[index]
+            let cap = if self.is_loading {
+                ready_indices.len()
+            } else {
+                MAX_UPLOADS_PER_FRAME
+            };
+            for (index, _) in ready_indices.iter().take(cap) {
+                if let Some(chunk) = &mut self.chunks[*index]
                     && let (Some(opaque), Some(trans), Some(water)) = (
                         chunk.pending_mesh_opaque.take(),
                         chunk.pending_mesh_transparent.take(),
@@ -638,17 +626,23 @@ impl World {
                 {
                     chunk.upload_mesh(opaque, trans, water);
                     self.meshing_in_flight -= 1;
+                    if self.is_loading {
+                        self.chunks_generated_count += 1;
+                    }
                 }
             }
         }
 
-        // 2. Scan for dirty chunks and dispatch to background (skip if nothing dirty)
+        // 2. Dispatch dirty chunks to rayon. No per-frame cap: the worker pool's queue handles
+        //    back-pressure, and capping here just leaves cores idle on first load.
         if self.dirty_count > 0 && self.detonations.is_empty() {
             let mut dirty_indices = Vec::new();
             for i in 0..CHUNK_POOL_SIZE {
                 if let Some(chunk) = &self.chunks[i]
                     && chunk.dirty
                     && !chunk.meshing_in_progress
+                    && !chunk.generation_in_progress
+                    && chunk.post_processed
                 {
                     let dx = chunk.x as f32 * CHUNK_WIDTH as f32 + 8.0 - player_pos.x;
                     let dz = chunk.z as f32 * CHUNK_DEPTH as f32 + 8.0 - player_pos.z;
@@ -660,7 +654,6 @@ impl World {
                 a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
             });
 
-            let mut dispatches_this_frame = 0;
             for (index, _) in dirty_indices {
                 let world_ptr = self as *const World as usize;
                 if let Some(chunk) = &mut self.chunks[index] {
@@ -681,11 +674,6 @@ impl World {
                         c.pending_mesh_transparent = Some(tr);
                         c.pending_mesh_water = Some(wa);
                     });
-
-                    dispatches_this_frame += 1;
-                    if dispatches_this_frame >= 16 {
-                        break;
-                    }
                 }
             }
         }
