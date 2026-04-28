@@ -12,6 +12,7 @@ use std::sync::RwLock;
 pub const VIEW_DISTANCE: i32 = 35;
 pub const POOL_WIDTH: i32 = VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
+pub const CLOUD_HEIGHT: f32 = 200.0;
 
 // WorldEdit removed in favor of HashMap edits
 
@@ -1135,7 +1136,7 @@ impl World {
         self.cloud_model = None;
         self.last_cloud_pos = player_pos;
         self.last_cloud_update_time = time;
-        let cloud_height = 200.0;
+        let cloud_height = CLOUD_HEIGHT;
         let cloud_size = 16.0;
         let range = 64;
         let start_x = (player_pos.x / cloud_size).floor() as i32 - range;

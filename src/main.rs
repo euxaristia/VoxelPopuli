@@ -10,7 +10,7 @@ mod noise;
 mod renderer;
 mod world;
 
-use crate::world::{VIEW_DISTANCE, World};
+use crate::world::{CLOUD_HEIGHT, VIEW_DISTANCE, World};
 use block::BlockType;
 use glam::{Mat4, Vec2, Vec3};
 
@@ -2329,11 +2329,17 @@ fn main() {
         world.render_explosives(&shader, &mvp, current_time as f32);
         world.render_particles(&shader, &mvp);
 
-        world.render_clouds(&flat_shader, &mvp);
+        // Transparency render order depends on whether the camera is above or below
+        // the cloud layer, so each transparent layer is drawn back-to-front.
+        let above_clouds = eye_pos.y > CLOUD_HEIGHT;
+
+        if !above_clouds {
+            world.render_clouds(&flat_shader, &mvp);
+        }
+
         shader.bind();
         world.render_transparent(&frustum);
 
-        // Render Water
         water_shader.bind();
         water_shader.set_mat4(water_shader.get_uniform_location("uMVP"), &mvp);
         water_shader.set_mat4(water_shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
@@ -2345,6 +2351,10 @@ fn main() {
         water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), eye_pos);
         water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), sky_c);
         world.render_water(&frustum);
+
+        if above_clouds {
+            world.render_clouds(&flat_shader, &mvp);
+        }
         RenderTexture2D::unbind();
         let (win_width, win_height) = window.get_framebuffer_size();
         unsafe {
