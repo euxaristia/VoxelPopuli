@@ -65,8 +65,12 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
         SnowyGrass => s(0.6, TT::Shovel, TM::None, false, Dirt, 1),
         Gravel => s(0.6, TT::Shovel, TM::None, false, Gravel, 1),
         PowderedSnow => s(0.25, TT::Shovel, TM::None, false, PowderedSnow, 1),
+        Clay => s(0.6, TT::Shovel, TM::None, false, Clay, 1),
+        Farmland => s(0.6, TT::Shovel, TM::None, false, Dirt, 1),
         Sponge => s(0.6, TT::None, TM::None, false, Sponge, 1),
         Wool => s(0.8, TT::None, TM::None, false, Wool, 1),
+        Wheat => s(0.0, TT::None, TM::None, false, Wheat, 1),
+        Cactus => s(0.4, TT::None, TM::None, false, Cactus, 1),
 
         // Wood blocks (axe)
         OakLog => s(2.0, TT::Axe, TM::None, false, OakLog, 1),
@@ -91,6 +95,7 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
         GoldOre => s(3.0, TT::Pickaxe, TM::Iron, true, GoldOre, 1),
         DiamondOre => s(3.0, TT::Pickaxe, TM::Iron, true, Diamond, 1),
         LapisOre => s(3.0, TT::Pickaxe, TM::Stone, true, LapisLazuli, 4),
+        RedstoneOre => s(3.0, TT::Pickaxe, TM::Iron, true, RedstoneDust, 4),
 
         // Metal/gem blocks
         IronBlock => s(5.0, TT::Pickaxe, TM::Stone, true, IronBlock, 1),
@@ -102,11 +107,12 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
         // Special
         Bedrock => s(-1.0, TT::None, TM::None, false, Air, 0),
         Water => s(-1.0, TT::None, TM::None, false, Air, 0),
+        Lava => s(-1.0, TT::None, TM::None, false, Air, 0),
         Air => s(0.0, TT::None, TM::None, false, Air, 0),
+        MobSpawner => s(5.0, TT::Pickaxe, TM::Wood, true, Air, 0),
 
-        // TNT/Nuke drop themselves
+        // TNT drops itself
         TNT => s(0.0, TT::None, TM::None, false, TNT, 1),
-        Nuke => s(0.0, TT::None, TM::None, false, Nuke, 1),
 
         // Items don't have block hardness (shouldn't be mined)
         _ => s(0.0, TT::None, TM::None, false, b, 1),
@@ -264,6 +270,7 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         SpruceLog => (11, 0),
         SpruceLeaves => (12, 0),
         Water => (13, 12),
+        Lava => (7, 7),
 
         // Row 1: original continued
         Bedrock => (1, 1),
@@ -290,12 +297,17 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         Wool => (13, 2),
         Bookshelf => (14, 2),
         Sponge => (15, 2),
-        Nuke => (6, 7),
         Chest => (0, 7),
         MossyCobblestone => (2, 7),
         LapisOre => (4, 7),
         LapisBlock => (3, 7),
         Torch => (5, 7),
+        Cactus => (8, 7),
+        Clay => (9, 7),
+        Farmland => (10, 7),
+        Wheat => (11, 7),
+        RedstoneOre => (12, 7),
+        MobSpawner => (13, 7),
 
         // Row 4: material items
         Stick => (0, 4),
@@ -306,6 +318,7 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         String => (5, 4),
         Gunpowder => (6, 4),
         Leather => (7, 4),
+        RedstoneDust => (8, 4),
 
         // Row 5: wood & stone tools
         WoodPickaxe => (0, 5),
@@ -352,6 +365,7 @@ pub fn atlas_uv_top(b: BlockType) -> (u8, u8) {
         Furnace => (0, 2),            // cobblestone top for furnace
         Chest => (1, 7),              // chest top
         Bookshelf => (1, 2),          // planks on top
+        Farmland => (10, 7),
         _ => atlas_uv(b),
     }
 }
@@ -364,6 +378,7 @@ pub fn atlas_uv_side(b: BlockType) -> (u8, u8) {
         CraftingTable => (3, 2), // plank sides with dark stripe
         Furnace => (5, 2),       // stone sides
         Chest => (0, 7),         // chest side
+        Farmland => (2, 0),      // dirt side
         _ => atlas_uv(b),
     }
 }
@@ -378,6 +393,7 @@ pub fn atlas_uv_bottom(b: BlockType) -> (u8, u8) {
         CraftingTable => (1, 2),      // planks bottom
         Furnace | Chest => (0, 2),    // cobblestone / planks bottom
         Bookshelf => (1, 2),          // planks bottom
+        Farmland => (2, 0),           // dirt bottom
         _ => atlas_uv(b),
     }
 }
@@ -1163,13 +1179,6 @@ mod tests {
     }
 
     #[test]
-    fn test_nuke_properties() {
-        let p = block_properties(BlockType::Nuke);
-        assert_eq!(p.hardness, 0.0);
-        assert_eq!(p.drop, BlockType::Nuke);
-    }
-
-    #[test]
     fn test_crafting_table_properties() {
         let p = block_properties(BlockType::CraftingTable);
         assert_eq!(p.hardness, 2.5);
@@ -1311,5 +1320,35 @@ mod tests {
         let t = breaking_time(BlockType::Obsidian, BlockType::DiamondPickaxe);
         assert!(t > 5.0, "Obsidian should take >5s with diamond, got {t}");
         assert!(t.is_finite());
+    }
+
+    #[test]
+    fn test_world_depth_block_properties() {
+        assert_eq!(
+            breaking_time(BlockType::Lava, BlockType::Air),
+            f32::INFINITY
+        );
+        assert_eq!(
+            get_drop(BlockType::Farmland, BlockType::Air),
+            (BlockType::Dirt, 1)
+        );
+        assert_eq!(
+            get_drop(BlockType::Cactus, BlockType::Air),
+            (BlockType::Cactus, 1)
+        );
+        assert_eq!(
+            get_drop(BlockType::RedstoneOre, BlockType::IronPickaxe),
+            (BlockType::RedstoneDust, 4)
+        );
+        assert_eq!(
+            get_drop(BlockType::MobSpawner, BlockType::DiamondPickaxe),
+            (BlockType::Air, 0)
+        );
+        assert_eq!(atlas_uv(BlockType::Lava), (7, 7));
+        assert_eq!(atlas_uv(BlockType::RedstoneDust), (8, 4));
+        assert_eq!(
+            atlas_uv_side(BlockType::Farmland),
+            atlas_uv(BlockType::Dirt)
+        );
     }
 }

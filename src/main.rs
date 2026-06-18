@@ -91,6 +91,66 @@ fn inv_add_tool(slots: &mut [Option<ItemStack>; 45], tool: ItemStack) {
     }
 }
 
+fn is_hoe_item(block: BlockType) -> bool {
+    matches!(
+        block,
+        BlockType::WoodHoe
+            | BlockType::StoneHoe
+            | BlockType::IronHoe
+            | BlockType::DiamondHoe
+            | BlockType::GoldHoe
+    )
+}
+
+fn damage_selected_tool(slots: &mut [Option<ItemStack>; 45], selected_slot: usize) {
+    if let Some(ref mut s) = slots[selected_slot]
+        && s.block.is_tool()
+        && let Some(ref mut dur) = s.durability
+    {
+        *dur = dur.saturating_sub(1);
+        if *dur == 0 {
+            slots[selected_slot] = None;
+        }
+    }
+}
+
+fn try_till_farmland(
+    world: &mut World,
+    slots: &mut [Option<ItemStack>; 45],
+    selected_slot: usize,
+    res: &world::RaycastResult,
+) -> bool {
+    let Some(held) = slots[selected_slot].map(|s| s.block) else {
+        return false;
+    };
+    if !is_hoe_item(held) {
+        return false;
+    }
+
+    let target = world.get_block(res.x, res.y, res.z);
+    let above = world.get_block(res.x, res.y + 1, res.z);
+    if matches!(
+        target,
+        BlockType::Grass | BlockType::Dirt | BlockType::SnowyGrass
+    ) && above == BlockType::Air
+    {
+        world.set_block(res.x, res.y, res.z, BlockType::Farmland);
+        damage_selected_tool(slots, selected_slot);
+        return true;
+    }
+    false
+}
+
+fn prime_tnt(world: &mut World, x: i32, y: i32, z: i32) {
+    world.set_block(x, y, z, BlockType::Air);
+    world.explosives.push(crate::block::ActiveExplosive {
+        position: Vec3::new(x as f32, y as f32, z as f32),
+        velocity: Vec3::new(0.0, 2.6, 0.0),
+        fuse: 4.0,
+        initial_fuse: 4.0,
+    });
+}
+
 /// Full MC 1.0 slot-click mechanics.
 fn inv_click(
     slots: &mut [Option<ItemStack>; 45],
@@ -554,6 +614,41 @@ fn load_shader(path: &str) -> String {
         .unwrap_or_else(|e| panic!("Failed to load shader {path}: {e}"))
 }
 
+fn seed_from_text(text: &str) -> i64 {
+    let trimmed = text.trim();
+    if let Ok(seed) = trimmed.parse::<i64>() {
+        return seed;
+    }
+
+    let mut hash: i32 = 0;
+    for unit in trimmed.encode_utf16() {
+        hash = hash.wrapping_mul(31).wrapping_add(unit as i32);
+    }
+    hash as i64
+}
+
+fn resolve_world_seed() -> i64 {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if let Some(seed) = arg.strip_prefix("--seed=") {
+            return seed_from_text(seed);
+        }
+        if arg == "--seed"
+            && let Some(seed) = args.next()
+        {
+            return seed_from_text(&seed);
+        }
+    }
+
+    if let Ok(seed) = std::env::var("VOXELPOPULI_SEED")
+        && !seed.trim().is_empty()
+    {
+        return seed_from_text(&seed);
+    }
+
+    rand::random::<i64>()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_rect(
     shader: &Shader,
@@ -821,11 +916,12 @@ struct Player {
     flying: bool,
     last_space_release: f64,
     space_was_pressed: bool,
+    damage_cooldown: f32,
 }
 impl Player {
     fn is_point_in_block(world: &World, p: Vec3) -> bool {
         let b = world.get_block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
-        b != BlockType::Air && b != BlockType::Water
+        b.is_solid()
     }
     fn check_collision(world: &World, pos: Vec3) -> bool {
         let w = 0.22;
@@ -909,6 +1005,16 @@ impl Player {
             (self.position.y + 1.6).floor() as i32,
             self.position.z.floor() as i32,
         ) == BlockType::Water;
+        let in_lava = world.get_block(
+            self.position.x.floor() as i32,
+            (self.position.y + 0.9).floor() as i32,
+            self.position.z.floor() as i32,
+        ) == BlockType::Lava
+            || world.get_block(
+                self.position.x.floor() as i32,
+                (self.position.y + 0.1).floor() as i32,
+                self.position.z.floor() as i32,
+            ) == BlockType::Lava;
         let in_water = waist_in_w || feet_in_w;
 
         // Apply movement input
@@ -1013,6 +1119,16 @@ impl Player {
         if self.air_seconds <= 0.0 {
             // Drowning damage (not fully implemented, just draining health for now)
             // real implementation would need a timer
+        }
+
+        if in_lava {
+            self.damage_cooldown -= dt;
+            if self.damage_cooldown <= 0.0 {
+                self.health = (self.health - 2).max(0);
+                self.damage_cooldown = 0.5;
+            }
+        } else if self.damage_cooldown > 0.0 {
+            self.damage_cooldown = (self.damage_cooldown - dt).max(0.0);
         }
     }
 }
@@ -1429,6 +1545,8 @@ fn draw_pause_menu(
 fn main() {
     // Entry point
     let state = WindowState::load();
+    let world_seed = resolve_world_seed();
+    let window_title = format!("VoxelPopuli Rust - Seed {world_seed}");
     let mut glfw = glfw::init(glfw::log_errors).unwrap();
     // Add DualSense mappings for Linux
     glfw.update_gamepad_mappings("030000004c050000e60d000011010000,PS5 Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b10,leftshoulder:b4,leftstick:b11,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b12,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b2,y:b3,platform:Linux,\n\
@@ -1444,7 +1562,7 @@ fn main() {
         .create_window(
             state.width,
             state.height,
-            "VoxelPopuli Rust",
+            &window_title,
             glfw::WindowMode::Windowed,
         )
         .expect("Failed to create GLFW window.");
@@ -1472,7 +1590,7 @@ fn main() {
         gl::Enable(gl::BLEND);
         gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
     }
-    let mut world = World::new();
+    let mut world = World::new(world_seed as u64);
     world.generate_atlas();
     world.init_celestial();
     let shader = Shader::new(&load_shader("ps1.vs"), &load_shader("ps1.fs"))
@@ -1500,7 +1618,7 @@ fn main() {
     let mut game_state = GameState::Loading;
     let mut spawn_y = 150.0;
     let mut inv_slots = [None::<ItemStack>; 45];
-    inv_slots[0] = Some(ItemStack::new(BlockType::Nuke, 64));
+    inv_slots[0] = Some(ItemStack::new(BlockType::TNT, 64));
     inv_slots[1] = Some(ItemStack::new(BlockType::FlintAndSteel, 1));
     let mut inv_cursor: Option<ItemStack> = None;
     let mut player = Player {
@@ -1514,6 +1632,7 @@ fn main() {
         flying: false,
         last_space_release: 0.0,
         space_was_pressed: false,
+        damage_cooldown: 0.0,
     };
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
@@ -1540,7 +1659,10 @@ fn main() {
             let fps = (fps_frames as f64 / fps_elapsed) as f32;
             fps_frames = 0;
             fps_last_time = current_time;
-            window.set_title(&format!("VoxelPopuli Rust - {:.0} FPS", fps));
+            window.set_title(&format!(
+                "VoxelPopuli Rust - Seed {} - {:.0} FPS",
+                world_seed, fps
+            ));
         }
         glfw.poll_events();
 
@@ -1908,33 +2030,22 @@ fn main() {
                                 }
                             }
                             if res.hit
+                                && try_till_farmland(
+                                    &mut world,
+                                    &mut inv_slots,
+                                    player.selected_slot,
+                                    &res,
+                                )
+                            {
+                                continue;
+                            }
+                            if res.hit
                                 && let Some(s) = &mut inv_slots[player.selected_slot]
                             {
                                 if s.block == BlockType::FlintAndSteel {
                                     let target = world.get_block(res.x, res.y, res.z);
                                     if target == BlockType::TNT {
-                                        world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                        world.explosives.push(crate::block::ActiveExplosive {
-                                            position: Vec3::new(
-                                                res.x as f32,
-                                                res.y as f32,
-                                                res.z as f32,
-                                            ),
-                                            fuse: 4.0,
-                                            block_type: BlockType::TNT,
-                                        });
-                                        continue;
-                                    } else if target == BlockType::Nuke {
-                                        world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                        world.explosives.push(crate::block::ActiveExplosive {
-                                            position: Vec3::new(
-                                                res.x as f32,
-                                                res.y as f32,
-                                                res.z as f32,
-                                            ),
-                                            fuse: 4.0,
-                                            block_type: BlockType::Nuke,
-                                        });
+                                        prime_tnt(&mut world, res.x, res.y, res.z);
                                         continue;
                                     }
                                 }
@@ -2048,33 +2159,21 @@ fn main() {
                     );
                     if gp_place {
                         let res = world.raycast(gp_eye, gp_look, 8.0);
-                        if res.hit
+                        let tilled = res.hit
+                            && try_till_farmland(
+                                &mut world,
+                                &mut inv_slots,
+                                player.selected_slot,
+                                &res,
+                            );
+                        if !tilled
+                            && res.hit
                             && let Some(s) = &mut inv_slots[player.selected_slot]
                         {
                             if s.block == BlockType::FlintAndSteel {
                                 let target = world.get_block(res.x, res.y, res.z);
                                 if target == BlockType::TNT {
-                                    world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                    world.explosives.push(crate::block::ActiveExplosive {
-                                        position: Vec3::new(
-                                            res.x as f32,
-                                            res.y as f32,
-                                            res.z as f32,
-                                        ),
-                                        fuse: 4.0,
-                                        block_type: BlockType::TNT,
-                                    });
-                                } else if target == BlockType::Nuke {
-                                    world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                    world.explosives.push(crate::block::ActiveExplosive {
-                                        position: Vec3::new(
-                                            res.x as f32,
-                                            res.y as f32,
-                                            res.z as f32,
-                                        ),
-                                        fuse: 4.0,
-                                        block_type: BlockType::Nuke,
-                                    });
+                                    prime_tnt(&mut world, res.x, res.y, res.z);
                                 } else if !s.block.is_item() {
                                     let (nx, ny, nz) =
                                         (res.x + res.nx, res.y + res.ny, res.z + res.nz);
@@ -2365,18 +2464,23 @@ fn main() {
         texture_shader.bind();
         draw_texture_quad(&target.texture);
 
-        // Underwater blue screen overlay (below HUD)
+        // Liquid screen overlay (below HUD)
         let cam_block = world.get_block(
             eye_pos.x.floor() as i32,
             eye_pos.y.floor() as i32,
             eye_pos.z.floor() as i32,
         );
-        if cam_block == BlockType::Water {
+        if cam_block == BlockType::Water || cam_block == BlockType::Lava {
             unsafe {
                 gl::Enable(gl::BLEND);
                 gl::Disable(gl::DEPTH_TEST);
             }
-            draw_screen_quad(&color_shader, glam::Vec4::new(0.05, 0.05, 0.2, 0.55));
+            let tint = if cam_block == BlockType::Lava {
+                glam::Vec4::new(0.65, 0.16, 0.02, 0.65)
+            } else {
+                glam::Vec4::new(0.05, 0.05, 0.2, 0.55)
+            };
+            draw_screen_quad(&color_shader, tint);
             unsafe {
                 gl::Enable(gl::DEPTH_TEST);
             }

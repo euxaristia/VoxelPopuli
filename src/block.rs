@@ -3,8 +3,9 @@ use glam::Vec3;
 #[derive(Clone, Copy, Debug)]
 pub struct ActiveExplosive {
     pub position: Vec3,
+    pub velocity: Vec3,
     pub fuse: f32, // remaining time in seconds
-    pub block_type: BlockType,
+    pub initial_fuse: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -20,7 +21,7 @@ pub struct Particle {
 #[repr(u8)]
 #[allow(dead_code, clippy::upper_case_acronyms)]
 pub enum BlockType {
-    // === Original blocks (0-22) ===
+    // === Original blocks (0-21) ===
     Air = 0,
     Stone,
     Grass,
@@ -43,10 +44,9 @@ pub enum BlockType {
     IronIngot,
     IronBlock,
     TNT,
-    Nuke,
     FlintAndSteel,
 
-    // === New placeable blocks (23-41) ===
+    // === New placeable blocks (22-40) ===
     Cobblestone,
     OakPlanks,
     CraftingTable,
@@ -67,7 +67,7 @@ pub enum BlockType {
     Brick,
     StoneBrick,
 
-    // === New material items (42-49) ===
+    // === New material items (41-48) ===
     Stick,
     Coal,
     GoldIngot,
@@ -77,45 +77,55 @@ pub enum BlockType {
     Gunpowder,
     Leather,
 
-    // === Tools: Pickaxes (50-54) ===
+    // === Tools: Pickaxes (49-53) ===
     WoodPickaxe,
     StonePickaxe,
     IronPickaxe,
     DiamondPickaxe,
     GoldPickaxe,
 
-    // === Tools: Axes (55-59) ===
+    // === Tools: Axes (54-58) ===
     WoodAxe,
     StoneAxe,
     IronAxe,
     DiamondAxe,
     GoldAxe,
 
-    // === Tools: Shovels (60-64) ===
+    // === Tools: Shovels (59-63) ===
     WoodShovel,
     StoneShovel,
     IronShovel,
     DiamondShovel,
     GoldShovel,
 
-    // === Tools: Swords (65-69) ===
+    // === Tools: Swords (64-68) ===
     WoodSword,
     StoneSword,
     IronSword,
     DiamondSword,
     GoldSword,
 
-    // === Tools: Hoes (70-74) ===
+    // === Tools: Hoes (69-73) ===
     WoodHoe,
     StoneHoe,
     IronHoe,
     DiamondHoe,
     GoldHoe,
+
+    // === World-depth blocks/items (74-81) ===
+    Lava,
+    Cactus,
+    Clay,
+    Farmland,
+    Wheat,
+    RedstoneOre,
+    RedstoneDust,
+    MobSpawner,
 }
 
 #[allow(dead_code)]
 impl BlockType {
-    pub const COUNT: usize = 75;
+    pub const COUNT: usize = 82;
 
     pub fn from_u8(value: u8) -> Self {
         if (value as usize) < Self::COUNT {
@@ -140,6 +150,8 @@ impl BlockType {
                 | BlockType::String
                 | BlockType::Gunpowder
                 | BlockType::Leather
+                | BlockType::Wheat
+                | BlockType::RedstoneDust
                 | BlockType::WoodPickaxe
                 | BlockType::StonePickaxe
                 | BlockType::IronPickaxe
@@ -170,7 +182,11 @@ impl BlockType {
 
     pub fn is_solid(&self) -> bool {
         match self {
-            BlockType::Air | BlockType::Water | BlockType::SnowLayer | BlockType::Torch => false,
+            BlockType::Air
+            | BlockType::Water
+            | BlockType::Lava
+            | BlockType::SnowLayer
+            | BlockType::Torch => false,
             _ => !self.is_item(),
         }
     }
@@ -217,6 +233,7 @@ impl BlockType {
                 | BlockType::SnowLayer
                 | BlockType::Glass
                 | BlockType::Torch
+                | BlockType::Wheat
         )
     }
 }
@@ -227,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_count() {
-        assert_eq!(BlockType::COUNT, 75);
+        assert_eq!(BlockType::COUNT, 82);
     }
 
     #[test]
@@ -240,7 +257,7 @@ mod tests {
 
     #[test]
     fn test_from_u8_out_of_range() {
-        assert_eq!(BlockType::from_u8(75), BlockType::Air);
+        assert_eq!(BlockType::from_u8(82), BlockType::Air);
         assert_eq!(BlockType::from_u8(128), BlockType::Air);
         assert_eq!(BlockType::from_u8(255), BlockType::Air);
     }
@@ -249,6 +266,7 @@ mod tests {
     fn test_air_and_water_not_solid() {
         assert!(!BlockType::Air.is_solid());
         assert!(!BlockType::Water.is_solid());
+        assert!(!BlockType::Lava.is_solid());
         assert!(!BlockType::SnowLayer.is_solid());
         assert!(!BlockType::Torch.is_solid());
     }
@@ -282,6 +300,8 @@ mod tests {
         assert!(BlockType::String.is_item());
         assert!(BlockType::Gunpowder.is_item());
         assert!(BlockType::Leather.is_item());
+        assert!(BlockType::Wheat.is_item());
+        assert!(BlockType::RedstoneDust.is_item());
     }
 
     #[test]
@@ -340,6 +360,7 @@ mod tests {
         assert!(BlockType::SnowLayer.is_transparent());
         assert!(BlockType::Glass.is_transparent());
         assert!(BlockType::Torch.is_transparent());
+        assert!(BlockType::Wheat.is_transparent());
     }
 
     #[test]

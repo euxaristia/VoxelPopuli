@@ -601,8 +601,8 @@ pub fn generate_atlas_data() -> Vec<u8> {
         }
     }
 
-    // Nuke: High-fidelity Radiation Symbol
-    let nuke_pixels: [(u8, u8, u8); 256] = [
+    // Unused warning tile
+    let warning_pixels: [(u8, u8, u8); 256] = [
         (255, 255, 0),
         (255, 255, 0),
         (255, 255, 0),
@@ -862,7 +862,7 @@ pub fn generate_atlas_data() -> Vec<u8> {
     ];
     for y in 0..16 {
         for x in 0..16 {
-            let (r, g, b) = nuke_pixels[y * 16 + x];
+            let (r, g, b) = warning_pixels[y * 16 + x];
             draw_pixel(6 * 16 + x as i32, 7 * 16 + y as i32, r, g, b, 255);
         }
     }
@@ -1475,6 +1475,125 @@ pub fn generate_atlas_data() -> Vec<u8> {
             }
         }
 
+        // Lava (7,7)
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                let n = (crate::noise::noise_2d(x as f32 * 0.6, y as f32 * 0.6) * 35.0) as i32;
+                let vein = (x * 3 + y * 5) % 11 < 3;
+                let (r, g, b) = if vein {
+                    (255 + n, 210 + n / 2, 55)
+                } else {
+                    (220 + n, 75 + n / 3, 20)
+                };
+                sp(
+                    &mut data,
+                    7 * 16 + x,
+                    7 * 16 + y,
+                    r.clamp(0, 255) as u8,
+                    g.clamp(0, 255) as u8,
+                    b.clamp(0, 255) as u8,
+                    255,
+                );
+            }
+        }
+
+        // Cactus (8,7)
+        nb(&mut data, 8, 7, 45, 145, 55);
+        for y in 0..16i32 {
+            sp(&mut data, 8 * 16 + 2, 7 * 16 + y, 25, 95, 35, 255);
+            sp(&mut data, 8 * 16 + 13, 7 * 16 + y, 25, 95, 35, 255);
+        }
+        for y in (2..16i32).step_by(4) {
+            for x in 4..12i32 {
+                sp(&mut data, 8 * 16 + x, 7 * 16 + y, 210, 235, 160, 255);
+            }
+        }
+
+        // Clay (9,7)
+        nb(&mut data, 9, 7, 145, 155, 165);
+
+        // Farmland top (10,7)
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                let n = (crate::noise::noise_2d(x as f32 * 0.5, y as f32 * 0.5) * 10.0) as i32;
+                let furrow = x % 4 == 0 || x % 4 == 1;
+                let (r, g, b) = if furrow {
+                    (85 + n, 55 + n, 35 + n)
+                } else {
+                    (125 + n, 80 + n, 45 + n)
+                };
+                sp(
+                    &mut data,
+                    10 * 16 + x,
+                    7 * 16 + y,
+                    r.clamp(0, 255) as u8,
+                    g.clamp(0, 255) as u8,
+                    b.clamp(0, 255) as u8,
+                    255,
+                );
+            }
+        }
+
+        // Wheat crop/item (11,7)
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                sp(&mut data, 11 * 16 + x, 7 * 16 + y, 0, 0, 0, 0);
+            }
+        }
+        let wheat_stems = [
+            (4, 6, 14, 120, 135, 35),
+            (6, 4, 15, 145, 125, 35),
+            (8, 5, 15, 120, 145, 40),
+            (10, 3, 14, 170, 130, 35),
+            (12, 7, 15, 110, 130, 35),
+        ];
+        for (x, y0, y1, r, g, b) in wheat_stems {
+            for y in y0..=y1 {
+                sp(&mut data, 11 * 16 + x, 7 * 16 + y, r, g, b, 255);
+                if y > y0 + 2 && x > 1 {
+                    sp(&mut data, 11 * 16 + x - 1, 7 * 16 + y, r / 2, g, b / 2, 220);
+                }
+            }
+            for dy in 0..4 {
+                for dx in -1..=1 {
+                    if (dx + dy) % 2 == 0 {
+                        sp(
+                            &mut data,
+                            11 * 16 + x + dx,
+                            7 * 16 + y0 + dy,
+                            225,
+                            185,
+                            55,
+                            255,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Redstone Ore (12,7)
+        nb(&mut data, 12, 7, 135, 135, 135);
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                if (x * 5 + y * 7) % 10 == 0 {
+                    sp(&mut data, 12 * 16 + x, 7 * 16 + y, 210, 25, 25, 255);
+                }
+            }
+        }
+
+        // Mob spawner (13,7)
+        nb(&mut data, 13, 7, 45, 50, 60);
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                if x % 5 == 0 || y % 5 == 0 {
+                    sp(&mut data, 13 * 16 + x, 7 * 16 + y, 15, 18, 24, 255);
+                }
+                if (6..=9).contains(&x) && (6..=9).contains(&y) {
+                    sp(&mut data, 13 * 16 + x, 7 * 16 + y, 60, 100, 180, 255);
+                }
+            }
+        }
+
         // === MATERIAL ITEM SPRITES (Row 4) ===
         // Stick (0,4)
         for i in 0..12i32 {
@@ -1591,6 +1710,16 @@ pub fn generate_atlas_data() -> Vec<u8> {
                         (50 + n).clamp(0, 255) as u8,
                         255,
                     );
+                }
+            }
+        }
+        // Redstone Dust (8,4)
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                let main = y == 8 && (3..=12).contains(&x);
+                let shard = (x - 8) * (x - 8) + (y - 8) * (y - 8) < 16 && (x + y) % 3 == 0;
+                if main || shard {
+                    sp(&mut data, 8 * 16 + x, 4 * 16 + y, 190, 20, 20, 255);
                 }
             }
         }
