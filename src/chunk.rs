@@ -181,6 +181,9 @@ pub struct Chunk {
     pub pending_mesh_opaque: Option<MeshData>,
     pub pending_mesh_transparent: Option<MeshData>,
     pub pending_mesh_water: Option<MeshData>,
+    pub edit_revision: u64,
+    pub meshing_revision: u64,
+    pub pending_mesh_revision: u64,
     pub dirty: bool,
     pub meshing_in_progress: bool,
     pub x: i32,
@@ -200,6 +203,9 @@ impl Chunk {
             pending_mesh_opaque: None,
             pending_mesh_transparent: None,
             pending_mesh_water: None,
+            edit_revision: 0,
+            meshing_revision: 0,
+            pending_mesh_revision: 0,
             dirty: true,
             meshing_in_progress: false,
             x,
@@ -1111,6 +1117,7 @@ impl Chunk {
             } else {
                 self.liquid_levels[x][y][z] = 0;
             }
+            self.edit_revision = self.edit_revision.wrapping_add(1);
             self.dirty = true;
         }
     }

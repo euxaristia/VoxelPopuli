@@ -2177,7 +2177,9 @@ fn main() {
                                 } else if !s.block.is_item() {
                                     let (nx, ny, nz) =
                                         (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                                    if world.get_block(nx, ny, nz) == BlockType::Air {
+                                    if world.get_block(nx, ny, nz) == BlockType::Air
+                                        && !player.intersects_block(nx, ny, nz)
+                                    {
                                         world.set_block(nx, ny, nz, s.block);
                                         s.count -= 1;
                                         if s.count == 0 {
@@ -2187,7 +2189,9 @@ fn main() {
                                 }
                             } else if !s.block.is_item() {
                                 let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                                if world.get_block(nx, ny, nz) == BlockType::Air {
+                                if world.get_block(nx, ny, nz) == BlockType::Air
+                                    && !player.intersects_block(nx, ny, nz)
+                                {
                                     world.set_block(nx, ny, nz, s.block);
                                     s.count -= 1;
                                     if s.count == 0 {

@@ -41,6 +41,7 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, radius: i32) {
     world.particles.push(Particle {
         position: Vec3::new(x as f32 + 0.1, y as f32 + 0.1, z as f32 + 0.1),
         velocity: Vec3::ZERO,
+        color: glam::Vec4::new(1.0, 0.92, 0.68, 0.75),
         life: 0.5,
         max_life: 0.5,
         scale: total_radius * 2.0,
@@ -55,6 +56,7 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, radius: i32) {
         world.particles.push(Particle {
             position: Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
             velocity: Vec3::new(vx, vy, vz),
+            color: glam::Vec4::new(0.55, 0.52, 0.48, 0.85),
             life: rng.random_range(1.0..3.0),
             max_life: 3.0,
             scale: rng.random_range(0.2..1.5),

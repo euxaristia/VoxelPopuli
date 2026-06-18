@@ -1,4 +1,4 @@
-use glam::Vec3;
+use glam::{Vec3, Vec4};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ActiveExplosive {
@@ -12,6 +12,7 @@ pub struct ActiveExplosive {
 pub struct Particle {
     pub position: Vec3,
     pub velocity: Vec3,
+    pub color: Vec4,
     pub life: f32,
     pub max_life: f32,
     pub scale: f32,
