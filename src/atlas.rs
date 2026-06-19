@@ -600,6 +600,46 @@ pub fn generate_atlas_data() -> Vec<u8> {
             draw_pixel(4 * 16 + x as i32, 16 + y as i32, r, g, b, 255);
         }
     }
+    for y in 0..16i32 {
+        for x in 0..16i32 {
+            let noise = ((x * 13 + y * 7) % 17) - 8;
+            let (r, g, b) = if (5..=10).contains(&y) {
+                let band = if y == 5 || y == 10 { 174 } else { 214 };
+                (band + noise, band + noise, band + noise)
+            } else {
+                let stripe = if (x + y) % 3 == 0 { 28 } else { 0 };
+                (186 + stripe + noise, 38 + noise / 2, 28 + noise / 3)
+            };
+            draw_pixel(
+                4 * 16 + x,
+                16 + y,
+                r.clamp(0, 255) as u8,
+                g.clamp(0, 255) as u8,
+                b.clamp(0, 255) as u8,
+                255,
+            );
+        }
+    }
+    for (x, y) in [
+        (3, 7),
+        (4, 7),
+        (5, 7),
+        (4, 8),
+        (4, 9),
+        (7, 7),
+        (8, 7),
+        (7, 8),
+        (8, 8),
+        (7, 9),
+        (8, 9),
+        (11, 7),
+        (12, 7),
+        (13, 7),
+        (12, 8),
+        (12, 9),
+    ] {
+        draw_pixel(4 * 16 + x, 16 + y, 24, 24, 24, 255);
+    }
 
     // Unused warning tile
     let warning_pixels: [(u8, u8, u8); 256] = [
@@ -1834,22 +1874,571 @@ pub fn generate_atlas_data() -> Vec<u8> {
         }
 
         // === CRACK STAGE TEXTURES (row 3, columns 0-9) ===
+        struct CrackLine {
+            x1: i32,
+            y1: i32,
+            x2: i32,
+            y2: i32,
+            start_stage: u32,
+        }
+        let crack_lines = [
+            // Center core (appears at stage 0)
+            CrackLine {
+                x1: 8,
+                y1: 8,
+                x2: 7,
+                y2: 6,
+                start_stage: 0,
+            },
+            CrackLine {
+                x1: 8,
+                y1: 8,
+                x2: 10,
+                y2: 9,
+                start_stage: 0,
+            },
+            CrackLine {
+                x1: 8,
+                y1: 8,
+                x2: 9,
+                y2: 6,
+                start_stage: 0,
+            },
+            CrackLine {
+                x1: 8,
+                y1: 8,
+                x2: 6,
+                y2: 9,
+                start_stage: 0,
+            },
+            // Main branches (stage 1)
+            CrackLine {
+                x1: 7,
+                y1: 6,
+                x2: 5,
+                y2: 5,
+                start_stage: 1,
+            },
+            CrackLine {
+                x1: 10,
+                y1: 9,
+                x2: 12,
+                y2: 11,
+                start_stage: 1,
+            },
+            CrackLine {
+                x1: 9,
+                y1: 6,
+                x2: 11,
+                y2: 4,
+                start_stage: 1,
+            },
+            CrackLine {
+                x1: 6,
+                y1: 9,
+                x2: 4,
+                y2: 11,
+                start_stage: 1,
+            },
+            // Further extension (stage 2)
+            CrackLine {
+                x1: 5,
+                y1: 5,
+                x2: 2,
+                y2: 3,
+                start_stage: 2,
+            },
+            CrackLine {
+                x1: 12,
+                y1: 11,
+                x2: 14,
+                y2: 13,
+                start_stage: 2,
+            },
+            CrackLine {
+                x1: 11,
+                y1: 4,
+                x2: 13,
+                y2: 2,
+                start_stage: 2,
+            },
+            CrackLine {
+                x1: 4,
+                y1: 11,
+                x2: 2,
+                y2: 13,
+                start_stage: 2,
+            },
+            // Outer edges (stage 3)
+            CrackLine {
+                x1: 2,
+                y1: 3,
+                x2: 0,
+                y2: 2,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 14,
+                y1: 13,
+                x2: 15,
+                y2: 14,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 13,
+                y1: 2,
+                x2: 15,
+                y2: 1,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 2,
+                y1: 13,
+                x2: 0,
+                y2: 15,
+                start_stage: 3,
+            },
+            // Side branches (stage 3-4)
+            CrackLine {
+                x1: 7,
+                y1: 6,
+                x2: 8,
+                y2: 4,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 8,
+                y1: 4,
+                x2: 9,
+                y2: 2,
+                start_stage: 4,
+            },
+            CrackLine {
+                x1: 5,
+                y1: 5,
+                x2: 3,
+                y2: 6,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 3,
+                y1: 6,
+                x2: 1,
+                y2: 7,
+                start_stage: 4,
+            },
+            CrackLine {
+                x1: 10,
+                y1: 9,
+                x2: 9,
+                y2: 11,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 9,
+                y1: 11,
+                x2: 8,
+                y2: 14,
+                start_stage: 4,
+            },
+            CrackLine {
+                x1: 12,
+                y1: 11,
+                x2: 14,
+                y2: 10,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 14,
+                y1: 10,
+                x2: 15,
+                y2: 9,
+                start_stage: 4,
+            },
+            CrackLine {
+                x1: 9,
+                y1: 6,
+                x2: 11,
+                y2: 7,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 11,
+                y1: 7,
+                x2: 13,
+                y2: 8,
+                start_stage: 4,
+            },
+            CrackLine {
+                x1: 11,
+                y1: 4,
+                x2: 12,
+                y2: 2,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 12,
+                y1: 2,
+                x2: 11,
+                y2: 0,
+                start_stage: 4,
+            },
+            CrackLine {
+                x1: 6,
+                y1: 9,
+                x2: 4,
+                y2: 8,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 4,
+                y1: 8,
+                x2: 2,
+                y2: 7,
+                start_stage: 4,
+            },
+            CrackLine {
+                x1: 4,
+                y1: 11,
+                x2: 4,
+                y2: 13,
+                start_stage: 3,
+            },
+            CrackLine {
+                x1: 4,
+                y1: 13,
+                x2: 3,
+                y2: 15,
+                start_stage: 4,
+            },
+            // Connective loops & complex structure (stage 5-6)
+            CrackLine {
+                x1: 8,
+                y1: 4,
+                x2: 11,
+                y2: 4,
+                start_stage: 5,
+            },
+            CrackLine {
+                x1: 4,
+                y1: 8,
+                x2: 4,
+                y2: 11,
+                start_stage: 5,
+            },
+            CrackLine {
+                x1: 9,
+                y1: 11,
+                x2: 12,
+                y2: 11,
+                start_stage: 5,
+            },
+            CrackLine {
+                x1: 11,
+                y1: 7,
+                x2: 10,
+                y2: 9,
+                start_stage: 5,
+            },
+            CrackLine {
+                x1: 5,
+                y1: 5,
+                x2: 6,
+                y2: 9,
+                start_stage: 5,
+            },
+            // Extra edge cracks for stage 6-7
+            CrackLine {
+                x1: 1,
+                y1: 7,
+                x2: 0,
+                y2: 8,
+                start_stage: 6,
+            },
+            CrackLine {
+                x1: 15,
+                y1: 9,
+                x2: 14,
+                y2: 8,
+                start_stage: 6,
+            },
+            CrackLine {
+                x1: 8,
+                y1: 14,
+                x2: 7,
+                y2: 15,
+                start_stage: 6,
+            },
+            CrackLine {
+                x1: 11,
+                y1: 0,
+                x2: 10,
+                y2: 0,
+                start_stage: 6,
+            },
+            // Random auxiliary splits (stage 7-8)
+            CrackLine {
+                x1: 3,
+                y1: 3,
+                x2: 1,
+                y2: 4,
+                start_stage: 7,
+            },
+            CrackLine {
+                x1: 12,
+                y1: 12,
+                x2: 14,
+                y2: 11,
+                start_stage: 7,
+            },
+            CrackLine {
+                x1: 12,
+                y1: 3,
+                x2: 14,
+                y2: 4,
+                start_stage: 7,
+            },
+            CrackLine {
+                x1: 3,
+                y1: 12,
+                x2: 1,
+                y2: 11,
+                start_stage: 7,
+            },
+        ];
+
+        let draw_line = |grid: &mut [bool; 256], x1: i32, y1: i32, x2: i32, y2: i32| {
+            let dx = (x2 - x1).abs();
+            let dy = (y2 - y1).abs();
+            let sx = if x1 < x2 { 1 } else { -1 };
+            let sy = if y1 < y2 { 1 } else { -1 };
+            let mut err = dx - dy;
+            let mut x = x1;
+            let mut y = y1;
+            loop {
+                if (0..16).contains(&x) && (0..16).contains(&y) {
+                    grid[(y * 16 + x) as usize] = true;
+                }
+                if x == x2 && y == y2 {
+                    break;
+                }
+                let e2 = 2 * err;
+                if e2 > -dy {
+                    err -= dy;
+                    x += sx;
+                }
+                if e2 < dx {
+                    err += dx;
+                    y += sy;
+                }
+            }
+        };
+
         for stage in 0..10u32 {
-            let density = (stage + 1) as f32 / 12.0;
+            let mut grid = [false; 256];
+            for line in &crack_lines {
+                if stage >= line.start_stage {
+                    draw_line(&mut grid, line.x1, line.y1, line.x2, line.y2);
+                }
+            }
+
+            // Apply dilation / thickness for higher stages
+            let mut final_grid = grid;
+            if stage >= 6 {
+                let mut dilated = final_grid;
+                for y in 0..16i32 {
+                    for x in 0..16i32 {
+                        if final_grid[(y * 16 + x) as usize] {
+                            let neighbors = if stage >= 8 {
+                                vec![
+                                    (x + 1, y),
+                                    (x - 1, y),
+                                    (x, y + 1),
+                                    (x, y - 1),
+                                    (x + 1, y + 1),
+                                    (x - 1, y - 1),
+                                ]
+                            } else {
+                                vec![(x + 1, y), (x, y + 1)]
+                            };
+                            for (nx, ny) in neighbors {
+                                if (0..16).contains(&nx) && (0..16).contains(&ny) {
+                                    dilated[(ny * 16 + nx) as usize] = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                final_grid = dilated;
+            }
+
             for x in 0..16i32 {
                 for y in 0..16i32 {
-                    let hash = ((x * 374761393 + y * 668265263 + stage as i32 * 1274126177) as u32)
-                        .wrapping_mul(1103515245)
-                        .wrapping_add(12345);
-                    let frac = (hash % 1000) as f32 / 1000.0;
-                    if frac < density {
-                        let alpha = (80 + stage * 18).min(255) as u8;
+                    if final_grid[(y * 16 + x) as usize] {
+                        let alpha = (100 + stage * 17).min(255) as u8;
                         sp(&mut data, stage as i32 * 16 + x, 3 * 16 + y, 0, 0, 0, alpha);
                     }
+                }
+            }
+        }
+
+        for stage in 0..10i32 {
+            for x in 0..16i32 {
+                for y in 0..16i32 {
+                    sp(&mut data, stage * 16 + x, 3 * 16 + y, 0, 0, 0, 0);
+                }
+            }
+        }
+
+        let crack_segments: [(i32, i32, i32, i32, i32); 31] = [
+            (8, 8, 7, 6, 0),
+            (8, 8, 10, 8, 0),
+            (8, 8, 7, 10, 0),
+            (7, 6, 5, 5, 1),
+            (10, 8, 12, 7, 1),
+            (7, 10, 5, 12, 1),
+            (5, 5, 3, 4, 2),
+            (12, 7, 14, 6, 2),
+            (5, 12, 4, 14, 2),
+            (7, 6, 8, 4, 2),
+            (10, 8, 11, 10, 2),
+            (8, 4, 9, 2, 3),
+            (11, 10, 13, 12, 3),
+            (3, 4, 1, 3, 3),
+            (4, 14, 2, 15, 3),
+            (5, 5, 4, 7, 4),
+            (4, 7, 2, 8, 4),
+            (12, 7, 13, 9, 4),
+            (13, 9, 15, 10, 4),
+            (7, 10, 9, 11, 4),
+            (9, 11, 10, 14, 5),
+            (8, 4, 6, 3, 5),
+            (6, 3, 5, 1, 5),
+            (11, 10, 9, 8, 5),
+            (1, 3, 0, 2, 6),
+            (14, 6, 15, 5, 6),
+            (15, 10, 15, 12, 6),
+            (2, 15, 1, 15, 6),
+            (6, 3, 3, 2, 7),
+            (9, 11, 12, 13, 7),
+            (4, 7, 1, 9, 8),
+        ];
+
+        let draw_crack_line =
+            |data: &mut [u8], stage: i32, x1: i32, y1: i32, x2: i32, y2: i32, thick: bool| {
+                let dx = (x2 - x1).abs();
+                let dy = (y2 - y1).abs();
+                let sx = if x1 < x2 { 1 } else { -1 };
+                let sy = if y1 < y2 { 1 } else { -1 };
+                let mut err = dx - dy;
+                let mut x = x1;
+                let mut y = y1;
+                loop {
+                    if (0..16).contains(&x) && (0..16).contains(&y) {
+                        sp(data, stage * 16 + x, 3 * 16 + y, 0, 0, 0, 230);
+                        if thick {
+                            for (ox, oy) in [(1, 0), (0, 1)] {
+                                let nx = x + ox;
+                                let ny = y + oy;
+                                if (0..16).contains(&nx) && (0..16).contains(&ny) {
+                                    sp(data, stage * 16 + nx, 3 * 16 + ny, 0, 0, 0, 180);
+                                }
+                            }
+                        }
+                    }
+                    if x == x2 && y == y2 {
+                        break;
+                    }
+                    let e2 = err * 2;
+                    if e2 > -dy {
+                        err -= dy;
+                        x += sx;
+                    }
+                    if e2 < dx {
+                        err += dx;
+                        y += sy;
+                    }
+                }
+            };
+
+        for stage in 0..10i32 {
+            for &(x1, y1, x2, y2, start_stage) in &crack_segments {
+                if stage >= start_stage {
+                    draw_crack_line(&mut data, stage, x1, y1, x2, y2, stage >= 8);
+                }
+            }
+            if stage >= 6 {
+                for &(x, y) in &[(6, 9), (9, 7), (11, 11), (3, 11), (12, 4)] {
+                    sp(&mut data, stage * 16 + x, 3 * 16 + y, 0, 0, 0, 210);
                 }
             }
         }
     }
 
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generate_atlas_data;
+
+    const ATLAS_SIZE: usize = 256;
+    const TILE_SIZE: usize = 16;
+
+    fn pixel(data: &[u8], x: usize, y: usize) -> [u8; 4] {
+        let i = (y * ATLAS_SIZE + x) * 4;
+        [data[i], data[i + 1], data[i + 2], data[i + 3]]
+    }
+
+    #[test]
+    fn tnt_tile_is_opaque_and_visibly_red() {
+        let data = generate_atlas_data();
+        let mut opaque_pixels = 0;
+        let mut red_pixels = 0;
+        let mut pale_label_pixels = 0;
+
+        for y in 0..TILE_SIZE {
+            for x in 0..TILE_SIZE {
+                let [r, g, b, a] = pixel(&data, 4 * TILE_SIZE + x, TILE_SIZE + y);
+                if a == 255 {
+                    opaque_pixels += 1;
+                }
+                if r > 150 && g < 85 && b < 75 {
+                    red_pixels += 1;
+                }
+                if r > 165 && g > 165 && b > 165 {
+                    pale_label_pixels += 1;
+                }
+            }
+        }
+
+        assert_eq!(opaque_pixels, TILE_SIZE * TILE_SIZE);
+        assert!(red_pixels > 120, "TNT tile should be mostly red");
+        assert!(
+            pale_label_pixels > 50,
+            "TNT tile should have a clear label band"
+        );
+    }
+
+    #[test]
+    fn crack_tiles_have_transparent_backgrounds_and_progress() {
+        let data = generate_atlas_data();
+        let mut stage_counts = [0usize; 10];
+
+        for stage in 0..10 {
+            for y in 0..TILE_SIZE {
+                for x in 0..TILE_SIZE {
+                    let [_, _, _, a] = pixel(&data, stage * TILE_SIZE + x, 3 * TILE_SIZE + y);
+                    if a > 0 {
+                        stage_counts[stage] += 1;
+                    }
+                }
+            }
+        }
+
+        assert!(stage_counts[0] > 0);
+        assert!(stage_counts[0] < TILE_SIZE * TILE_SIZE / 3);
+        assert!(stage_counts[9] > stage_counts[0]);
+        assert!(stage_counts[9] < TILE_SIZE * TILE_SIZE);
+    }
 }

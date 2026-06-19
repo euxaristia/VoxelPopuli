@@ -2412,12 +2412,14 @@ fn main() {
             }
             unsafe {
                 gl::Enable(gl::BLEND);
-                gl::BlendFunc(gl::DST_COLOR, gl::ZERO); // multiplicative darkening
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
                 gl::DepthMask(gl::FALSE);
                 gl::Enable(gl::POLYGON_OFFSET_FILL);
                 gl::PolygonOffset(-1.0, -1.0);
             }
-            let crack_mesh = renderer::Mesh::new(&verts, Some(&uvs), None, None);
+            let normals = vec![0.0f32; verts.len()];
+            let colors = vec![255u8; (verts.len() / 3) * 4];
+            let crack_mesh = renderer::Mesh::new(&verts, Some(&uvs), Some(&normals), Some(&colors));
             crack_mesh.draw();
             unsafe {
                 gl::Disable(gl::POLYGON_OFFSET_FILL);

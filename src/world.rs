@@ -763,7 +763,7 @@ impl World {
             let mut next_pos = self.explosives[i].position + velocity * _time;
             let center_x = (next_pos.x + 0.5).floor() as i32;
             let center_z = (next_pos.z + 0.5).floor() as i32;
-            let below_y = next_pos.y.floor() as i32 - 1;
+            let below_y = next_pos.y.floor() as i32;
 
             self.explosives[i].velocity.y -= 9.8 * _time;
             if velocity.y < 0.0 && self.get_block(center_x, below_y, center_z).is_solid() {

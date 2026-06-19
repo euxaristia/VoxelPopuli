@@ -720,29 +720,30 @@ impl Chunk {
                         ^ 0xC0A5_E51D_5EED_0001,
                 );
 
-                let num_caves = ((cave_rng(base_seed) * 15.0) as i32).max(0);
+                let num_caves = ((cave_rng(base_seed) * 11.0) as i32).max(0);
 
                 for i in 0..num_caves {
                     let cave_seed = base_seed.wrapping_add((i * 9283711) as u64);
 
                     let start_x =
                         (neighbor_x * CHUNK_WIDTH as i32) as f32 + cave_rng(cave_seed) * 16.0;
-                    let start_y = cave_rng(cave_seed.wrapping_add(1)) * 120.0 + 8.0;
+                    let depth_roll = cave_rng(cave_seed.wrapping_add(1));
+                    let start_y = 8.0 + depth_roll * depth_roll * 86.0;
                     let start_z = (neighbor_z * CHUNK_DEPTH as i32) as f32
                         + cave_rng(cave_seed.wrapping_add(2)) * 16.0;
 
-                    let mut length = cave_rng(cave_seed.wrapping_add(3)) * 100.0 + 10.0; // 10 to 110 steps
-                    let mut radius = cave_rng(cave_seed.wrapping_add(4)) * 2.0 + 1.5; // 1.5 to 3.5 base radius
+                    let mut length = cave_rng(cave_seed.wrapping_add(3)) * 82.0 + 18.0; // 18 to 100 steps
+                    let mut radius = cave_rng(cave_seed.wrapping_add(4)) * 1.35 + 1.0; // 1.0 to 2.35 base radius
 
-                    // 25% chance of a spherical room
-                    if cave_rng(cave_seed.wrapping_add(5)) < 0.25 {
-                        radius *= 2.0;
+                    // Occasional underground rooms, kept deeper so hillside mouths stay small.
+                    if start_y < 54.0 && cave_rng(cave_seed.wrapping_add(5)) < 0.10 {
+                        radius *= 1.75;
                         length = 0.0; // Rooms don't immediately worm
                     }
 
-                    // 10% chance of a massive tunnel starting
+                    // Rare wider tunnel starting, but not a surface-breaking cavern.
                     if cave_rng(cave_seed.wrapping_add(6)) < 0.10 {
-                        radius *= cave_rng(cave_seed.wrapping_add(7)) * 2.0 + 1.0;
+                        radius *= cave_rng(cave_seed.wrapping_add(7)) * 0.85 + 1.0;
                     }
 
                     let mut current_x = start_x;
@@ -757,7 +758,9 @@ impl Chunk {
                     let mut s = cave_seed.wrapping_add(10);
 
                     while step < length || length == 0.0 {
-                        let rad = radius * (1.0 + (step / length.max(1.0)).sin());
+                        let progress = if length > 0.0 { step / length } else { 0.5 };
+                        let taper = (std::f32::consts::PI * progress).sin();
+                        let rad = radius * (0.65 + taper * 0.70);
 
                         // Carve the sphere at the current point
                         let min_cx =
@@ -778,8 +781,9 @@ impl Chunk {
                                     let global_y = by as f32;
                                     let global_z = (self.z * CHUNK_DEPTH as i32 + bz) as f32;
 
+                                    let vertical_scale = if current_y > 64.0 { 1.9 } else { 1.35 };
                                     let dist_sq = (global_x - current_x).powi(2)
-                                        + ((global_y - current_y) * 1.5).powi(2)
+                                        + ((global_y - current_y) * vertical_scale).powi(2)
                                         + (global_z - current_z).powi(2);
 
                                     let edge_noise = seeded_perlin_2d(
@@ -798,13 +802,33 @@ impl Chunk {
                                         self.seed,
                                         9102,
                                     );
-                                    let rough_rad = (rad
-                                        * (0.92 + edge_noise * 0.12 + fine_noise * 0.06))
-                                        .max(0.75);
+                                    let mut rough_rad = (rad
+                                        * (0.86 + edge_noise * 0.18 + fine_noise * 0.08))
+                                        .max(0.65);
+                                    let ux = bx as usize;
+                                    let uz = bz as usize;
+                                    let current_block = self.blocks[ux][by as usize][uz];
+                                    let surface =
+                                        self.surface_y(ux, uz).unwrap_or(CHUNK_HEIGHT - 1);
+                                    let depth_below_surface =
+                                        (surface as i32 - by).clamp(0, CHUNK_HEIGHT as i32);
+                                    let near_surface = global_y > 44.0 && depth_below_surface <= 14;
+                                    if near_surface {
+                                        rough_rad = rough_rad.min(0.95);
+                                    }
 
                                     if dist_sq <= rough_rad * rough_rad {
-                                        let current_block =
-                                            self.blocks[bx as usize][by as usize][bz as usize];
+                                        if near_surface && depth_below_surface <= 6 {
+                                            continue;
+                                        }
+                                        if near_surface
+                                            && !matches!(
+                                                current_block,
+                                                BlockType::Stone | BlockType::Gravel
+                                            )
+                                        {
+                                            continue;
+                                        }
                                         if matches!(
                                             current_block,
                                             BlockType::Stone
