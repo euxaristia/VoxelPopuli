@@ -5,6 +5,8 @@ mod chunk;
 mod crafting;
 mod explosion;
 mod item;
+#[allow(dead_code)]
+mod java_compat;
 mod mining;
 mod noise;
 mod renderer;
