@@ -64,6 +64,11 @@ fn get_biome_seeded(world_x: f32, world_z: f32, seed: u64) -> Biome {
     }
 }
 
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 fn chunk_hash(seed: u64, x: i32, z: i32, salt: i32) -> u32 {
     let mixed = mix64(
         seed ^ (x as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -116,6 +121,37 @@ pub const CHUNK_WIDTH: usize = 16;
 pub const CHUNK_HEIGHT: usize = 256;
 pub const CHUNK_DEPTH: usize = 16;
 pub const WATER_VERTEX_ALPHA: u8 = 180;
+const SEA_LEVEL: usize = 124;
+const MAX_TERRAIN_HEIGHT: i32 = CHUNK_HEIGHT as i32 - 18;
+
+fn terrain_height_and_biome(world_x: f32, world_z: f32, seed: u64) -> (usize, Biome) {
+    let biome = get_biome_seeded(world_x, world_z, seed);
+    let continental = seeded_perlin_2d(world_x, world_z, 0.005, 3, seed, 100);
+    let detail = seeded_perlin_2d(world_x, world_z, 0.03, 4, seed, 110);
+    let mountain_noise = seeded_perlin_2d(world_x, world_z, 0.001, 3, seed, 30);
+    let hills_noise = seeded_perlin_2d(world_x, world_z, 0.005, 2, seed, 40);
+    let ridged = (-seeded_perlin_2d(world_x, world_z, 0.01, 3, seed, 120).abs() + 1.0).powi(2);
+
+    let mountain_factor = smoothstep(0.34, 0.58, mountain_noise);
+    let hill_factor = smoothstep(0.25, 0.48, hills_noise) * (1.0 - mountain_factor * 0.55);
+    let base_h = continental * (40.0 + mountain_factor * 8.0)
+        + 128.0
+        + hill_factor * 7.0
+        + mountain_factor * (15.0 + ridged * 42.0);
+    let height_scale = 15.0 + hill_factor * 8.0 + mountain_factor * 12.0;
+    let mut height = base_h + detail * height_scale;
+
+    let rough_factor = mountain_factor.max(hill_factor);
+    if rough_factor > 0.1 && continental < 0.1 {
+        let fjord_noise = seeded_perlin_2d(world_x, world_z, 0.02, 2, seed, 130).abs();
+        if fjord_noise < 0.15 {
+            let depth_factor = (0.15 - fjord_noise) / 0.15 * rough_factor;
+            height = height * (1.0 - depth_factor) + 110.0 * depth_factor;
+        }
+    }
+
+    ((height as i32).clamp(1, MAX_TERRAIN_HEIGHT) as usize, biome)
+}
 
 // MC 1.0 water level encoding:
 // 0 = no water
@@ -454,37 +490,7 @@ impl Chunk {
             for z in 0..CHUNK_DEPTH {
                 let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
                 let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
-                let biome = get_biome_seeded(world_x, world_z, self.seed);
-
-                let continental = seeded_perlin_2d(world_x, world_z, 0.005, 3, self.seed, 100);
-                let detail = seeded_perlin_2d(world_x, world_z, 0.03, 4, self.seed, 110);
-
-                let (base_h, height_scale) = match biome {
-                    Biome::Mountains => {
-                        let ridged = (-seeded_perlin_2d(world_x, world_z, 0.01, 3, self.seed, 120)
-                            .abs()
-                            + 1.0)
-                            .powi(2);
-                        (continental * 50.0 + 140.0 + ridged * 60.0, 30.0)
-                    }
-                    Biome::HighHills => (continental * 40.0 + 135.0, 25.0),
-                    _ => (continental * 40.0 + 128.0, 15.0),
-                };
-
-                let mut height = (base_h + detail * height_scale) as i32;
-
-                // Fjord carving: if mountainous/hilly and near ocean (low continental)
-                if (biome == Biome::Mountains || biome == Biome::HighHills) && continental < 0.1 {
-                    let fjord_noise =
-                        seeded_perlin_2d(world_x, world_z, 0.02, 2, self.seed, 130).abs();
-                    if fjord_noise < 0.15 {
-                        let depth_factor = (0.15 - fjord_noise) / 0.15;
-                        height =
-                            (height as f32 * (1.0 - depth_factor) + 110.0 * depth_factor) as i32;
-                    }
-                }
-
-                let height = height.clamp(0, CHUNK_HEIGHT as i32 - 1) as usize;
+                let (height, biome) = terrain_height_and_biome(world_x, world_z, self.seed);
 
                 for y in 0..CHUNK_HEIGHT {
                     let b = if y == 0 {
@@ -529,7 +535,7 @@ impl Chunk {
                                 Biome::Plains => BlockType::Grass,
                             }
                         }
-                    } else if y < 124 {
+                    } else if y < SEA_LEVEL {
                         BlockType::Water
                     } else {
                         BlockType::Air
@@ -2072,5 +2078,36 @@ mod tests {
 
         assert_eq!(first.blocks, second.blocks);
         assert_eq!(first.liquid_levels, second.liquid_levels);
+    }
+
+    #[test]
+    fn terrain_height_stays_below_world_ceiling() {
+        for seed in [12_345_u64, 4_259_633_870_796_407_859_u64] {
+            for x in (-256..=256).step_by(7) {
+                for z in (-256..=256).step_by(7) {
+                    let (height, _) = terrain_height_and_biome(x as f32, z as f32, seed);
+                    assert!(
+                        height <= MAX_TERRAIN_HEIGHT as usize,
+                        "terrain height {height} reached ceiling near ({x}, {z}) for seed {seed}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_height_changes_smoothly_across_columns() {
+        let seed = 4_259_633_870_796_407_859_u64;
+        for x in (-192..=192).step_by(3) {
+            for z in (-192..=192).step_by(3) {
+                let (height, _) = terrain_height_and_biome(x as f32, z as f32, seed);
+                let (east, _) = terrain_height_and_biome((x + 1) as f32, z as f32, seed);
+                let (south, _) = terrain_height_and_biome(x as f32, (z + 1) as f32, seed);
+                assert!(
+                    height.abs_diff(east).max(height.abs_diff(south)) <= 28,
+                    "terrain height jumped near ({x}, {z}) for seed {seed}"
+                );
+            }
+        }
     }
 }
