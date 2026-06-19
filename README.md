@@ -35,6 +35,15 @@ For the best performance and to avoid visual artifacts, always run in release mo
 cargo run --release
 ```
 
+## Export Minecraft Java 1.17 World
+
+VoxelPopuli can export generated chunks to a classic Java Anvil world folder
+using 16×16×256 chunks and Y `0..255`:
+
+```bash
+cargo run --release -- --export-java17 ./java17-world --export-radius 4 --seed 12345
+```
+
 ## Controls 🎮
 - `W A S D`: Move
 - `Mouse`: Look

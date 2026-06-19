@@ -64,6 +64,10 @@ fn get_biome_seeded(world_x: f32, world_z: f32, seed: u64) -> Biome {
     }
 }
 
+pub fn biome_at(world_x: f32, world_z: f32, seed: u64) -> Biome {
+    get_biome_seeded(world_x, world_z, seed)
+}
+
 fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
     let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)

@@ -5,7 +5,6 @@ mod chunk;
 mod crafting;
 mod explosion;
 mod item;
-#[allow(dead_code)]
 mod java_compat;
 mod mining;
 mod noise;
@@ -1585,8 +1584,27 @@ fn draw_pause_menu(
 
 fn main() {
     // Entry point
-    let state = WindowState::load();
     let world_seed = resolve_world_seed();
+    if let Some(config) = java_compat::ExportConfig::from_args() {
+        match java_compat::export_classic_java_world(world_seed as u64, &config) {
+            Ok(summary) => {
+                println!(
+                    "Exported {} chunks across {} region file(s) as {} to {}",
+                    summary.chunks,
+                    summary.regions,
+                    java_compat::TARGET_NAME,
+                    config.output_dir.display()
+                );
+            }
+            Err(err) => {
+                eprintln!("Failed to export Java 1.17 world: {err}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    let state = WindowState::load();
     let window_title = format!("VoxelPopuli Rust - Seed {world_seed}");
     let mut glfw = glfw::init(glfw::log_errors).unwrap();
     // Add DualSense mappings for Linux

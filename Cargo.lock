@@ -6,6 +6,7 @@ version = 4
 name = "VoxelPopuli"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "gl",
  "glam",
  "glfw",
