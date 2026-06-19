@@ -551,6 +551,45 @@ use renderer::{RenderTexture2D, Shader, Texture2D};
 const RENDER_WIDTH: i32 = 750;
 const RENDER_HEIGHT: i32 = 422;
 
+fn render_target_size_for_framebuffer(width: i32, height: i32) -> (i32, i32) {
+    let width = width.max(1);
+    let height = height.max(1);
+    let aspect = width as f32 / height as f32;
+    let pixel_budget = (RENDER_WIDTH * RENDER_HEIGHT) as f32;
+    let target_height = (pixel_budget / aspect).sqrt().round().max(1.0) as i32;
+    let target_width = (target_height as f32 * aspect).round().max(1.0) as i32;
+    (target_width, target_height)
+}
+
+#[cfg(test)]
+mod render_target_tests {
+    use super::*;
+
+    fn aspect_error(size: (i32, i32), width: i32, height: i32) -> f32 {
+        (size.0 as f32 / size.1 as f32 - width as f32 / height as f32).abs()
+    }
+
+    #[test]
+    fn render_target_keeps_default_resolution_for_default_aspect() {
+        assert_eq!(
+            render_target_size_for_framebuffer(RENDER_WIDTH, RENDER_HEIGHT),
+            (RENDER_WIDTH, RENDER_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn render_target_tracks_tall_framebuffer_aspect() {
+        let size = render_target_size_for_framebuffer(1280, 1380);
+        assert!(aspect_error(size, 1280, 1380) < 0.002);
+    }
+
+    #[test]
+    fn render_target_tracks_wide_framebuffer_aspect() {
+        let size = render_target_size_for_framebuffer(2560, 1080);
+        assert!(aspect_error(size, 2560, 1080) < 0.002);
+    }
+}
+
 #[derive(Debug)]
 struct WindowState {
     width: u32,
@@ -1608,7 +1647,10 @@ fn main() {
             .expect("Failed to compile UI TEXTURE shader");
     let color_shader = Shader::new(&load_shader("texture.vs"), &load_shader("color.fs"))
         .expect("Failed to compile COLOR shader");
-    let target = RenderTexture2D::new(RENDER_WIDTH, RENDER_HEIGHT);
+    let (initial_fb_width, initial_fb_height) = window.get_framebuffer_size();
+    let (target_width, target_height) =
+        render_target_size_for_framebuffer(initial_fb_width, initial_fb_height);
+    let mut target = RenderTexture2D::new(target_width, target_height);
     let font_texture = Texture2D::from_file("assets/font.png");
 
     let mut is_fullscreen = false;
@@ -2340,12 +2382,19 @@ fn main() {
                 glam::Vec4::new(5.0 / 255.0, 5.0 / 255.0, 15.0 / 255.0, 1.0)
             }
         };
+        let (framebuffer_width, framebuffer_height) = window.get_framebuffer_size();
+        let (target_width, target_height) =
+            render_target_size_for_framebuffer(framebuffer_width, framebuffer_height);
+        if target.texture.width != target_width || target.texture.height != target_height {
+            target = RenderTexture2D::new(target_width, target_height);
+        }
+
         target.bind();
         unsafe {
             gl::ClearColor(sky_c.x, sky_c.y, sky_c.z, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
         }
-        let aspect = RENDER_WIDTH as f32 / RENDER_HEIGHT as f32;
+        let aspect = target.texture.width as f32 / target.texture.height as f32;
         let projection = Mat4::perspective_rh_gl(75.0_f32.to_radians(), aspect, 0.1, 1000.0);
         let view = Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
         let mvp = projection * view;
@@ -2357,7 +2406,7 @@ fn main() {
         shader.set_float(shader.get_uniform_location("uTime"), current_time as f32);
         shader.set_vec2(
             shader.get_uniform_location("uResolution"),
-            glam::Vec2::new(RENDER_WIDTH as f32, RENDER_HEIGHT as f32),
+            glam::Vec2::new(target.texture.width as f32, target.texture.height as f32),
         );
         shader.set_vec3(shader.get_uniform_location("sunDir"), sun_dir);
         shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
@@ -2461,9 +2510,8 @@ fn main() {
             world.render_clouds(&flat_shader, &mvp);
         }
         RenderTexture2D::unbind();
-        let (win_width, win_height) = window.get_framebuffer_size();
         unsafe {
-            gl::Viewport(0, 0, win_width, win_height);
+            gl::Viewport(0, 0, framebuffer_width, framebuffer_height);
             gl::ClearColor(0.0, 0.0, 0.0, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
         }
@@ -2500,9 +2548,9 @@ fn main() {
         ui_shader.bind();
         ui_shader.set_vec2(
             ui_shader.get_uniform_location("uScreenSize"),
-            glam::Vec2::new(win_width as f32, win_height as f32),
+            glam::Vec2::new(framebuffer_width as f32, framebuffer_height as f32),
         );
-        let (sw, sh) = (win_width as f32, win_height as f32);
+        let (sw, sh) = (framebuffer_width as f32, framebuffer_height as f32);
         let hbx = (sw - (9.0 * 40.0 - 4.0)) / 2.0; // 9 slots × 40px stride − last gap
         for (i, inv_slot) in inv_slots.iter().enumerate().take(9) {
             let rx = hbx + i as f32 * 40.0;
