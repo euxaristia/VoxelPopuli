@@ -612,6 +612,7 @@ public class Main {
         if (gameState == GameState.PLAYING) {
             player.update(world, moveDir, dt, isSprinting, isJumping, isSneaking, currentTime);
             world.update(player.position, dt);
+            world.updateClouds(player.position, (float) currentTime);
 
             // Mining check
             boolean gpRtHeld = false;
