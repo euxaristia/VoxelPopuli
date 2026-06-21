@@ -13,6 +13,7 @@ import org.lwjgl.opengl.GL11;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class World {
     public static final int VIEW_DISTANCE = 35;
@@ -47,7 +48,7 @@ public class World {
     public float waterTickTimer = 0.0f;
     
     public final List<Integer> visibleChunks = new ArrayList<>();
-    public int meshingInFlight = 0;
+    public final AtomicInteger meshingInFlight = new AtomicInteger(0);
 
     private final ExecutorService meshingExecutor = Executors.newFixedThreadPool(
         Math.max(1, Runtime.getRuntime().availableProcessors() - 1),
@@ -392,7 +393,7 @@ public class World {
         }
 
         // --- Prioritized Meshing ---
-        if (meshingInFlight > 0) {
+        if (meshingInFlight.get() > 0) {
             List<Map.Entry<Integer, Float>> readyIndices = new ArrayList<>();
             for (int i = 0; i < CHUNK_POOL_SIZE; i++) {
                 Chunk chunk = chunks[i];
@@ -412,7 +413,7 @@ public class World {
                     chunk.pendingOpaque = null;
                     chunk.pendingTransparent = null;
                     chunk.pendingWater = null;
-                    meshingInFlight--;
+                    meshingInFlight.decrementAndGet();
                 }
             }
         }
@@ -439,7 +440,7 @@ public class World {
                     chunk.dirty = false;
                     chunk.meshingInProgress = true;
                     dirtyCount--;
-                    meshingInFlight++;
+                    meshingInFlight.incrementAndGet();
 
                     meshingExecutor.submit(() -> {
                         try {
@@ -450,6 +451,8 @@ public class World {
                             chunk.pendingWater = data[2];
                         } catch (Exception ex) {
                             ex.printStackTrace();
+                            chunk.meshingInProgress = false;
+                            meshingInFlight.decrementAndGet();
                         }
                     });
 
@@ -916,7 +919,10 @@ public class World {
             return;
         }
 
-        cloudModel = null;
+        if (cloudModel != null) {
+            cloudModel.cleanup();
+            cloudModel = null;
+        }
         lastCloudPos.set(playerPos);
         lastCloudUpdateTime = time;
 

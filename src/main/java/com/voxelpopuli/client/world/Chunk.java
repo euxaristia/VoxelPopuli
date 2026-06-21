@@ -30,7 +30,7 @@ public class Chunk {
     public MeshData pendingWater;
 
     public boolean dirty = true;
-    public boolean meshingInProgress = false;
+    public volatile boolean meshingInProgress = false;
     public final int x;
     public final int z;
 
@@ -127,7 +127,10 @@ public class Chunk {
     }
 
     public void generate() {
-        Random rng = new Random();
+        long chunkSeed = 42L
+            ^ (0x9E3779B97F4A7C15L * (long) this.x)
+            ^ (0xC2B2AE3D27D4EB4FL * (long) this.z);
+        Random rng = new Random(chunkSeed);
 
         // PASS 1: Terrain (biome-aware)
         for (int x = 0; x < WIDTH; x++) {
