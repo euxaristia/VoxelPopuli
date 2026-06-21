@@ -1,7 +1,10 @@
 *.o
-voxelpopuli
+/voxelpopuli
 save/
 perf.data
 .gitignore
 perf.data.old
 target/
+lib/
+.gradle/
+.opencode/
