@@ -211,6 +211,220 @@ pub struct MeshData {
     pub c: Vec<u8>,
 }
 
+pub type BlockArray = Box<[[[BlockType; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>;
+pub type LightArray = Box<[[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>;
+
+// Owned copy of a chunk's voxel data, handed to a meshing worker so the
+// live chunk can keep being mutated on the main thread while meshing runs.
+pub struct ChunkData {
+    pub x: i32,
+    pub z: i32,
+    pub blocks: BlockArray,
+    pub light: LightArray,
+    pub liquid_levels: LightArray,
+}
+
+// Finished meshing job, sent back to the main thread over a channel.
+pub struct MeshResult {
+    pub x: i32,
+    pub z: i32,
+    pub light: LightArray,
+    pub opaque: MeshData,
+    pub transparent: MeshData,
+    pub water: MeshData,
+}
+
+// Snapshot of the chunk plus a 1-block border from its neighbors,
+// captured on the main thread. Meshing never reads further than 1 block
+// outside the chunk (face culling, AO corners, water corner heights),
+// so this is everything a worker needs for cross-chunk queries.
+pub const SNAP_W: usize = CHUNK_WIDTH + 2;
+pub const SNAP_D: usize = CHUNK_DEPTH + 2;
+
+// Skylight + BFS light propagation over a chunk's own blocks. Shared by the
+// live chunk (generation) and by worker-owned copies (background meshing).
+fn compute_lighting(
+    blocks: &[[[BlockType; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH],
+    light: &mut [[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH],
+) {
+    // PASS 7: Simple skylight (top-down sunlight)
+    for x in 0..CHUNK_WIDTH {
+        for z in 0..CHUNK_DEPTH {
+            let mut sunlight: u8 = 15;
+            for y in (0..CHUNK_HEIGHT).rev() {
+                let b = blocks[x][y][z];
+                match b {
+                    b if b == BlockType::Air
+                        || b == BlockType::Water
+                        || b == BlockType::Lava
+                        || b.is_transparent() =>
+                    {
+                        light[x][y][z] = sunlight;
+                    }
+                    _ => {
+                        light[x][y][z] = 0;
+                        sunlight = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    // Horizontal Light Propagation (BFS queue — no cloning, visits only lit blocks)
+    let mut queue = VecDeque::new();
+    for x in 0..CHUNK_WIDTH {
+        for y in 0..CHUNK_HEIGHT {
+            for z in 0..CHUNK_DEPTH {
+                let emitted = match blocks[x][y][z] {
+                    BlockType::Torch => 14,
+                    BlockType::Lava => 15,
+                    _ => 0,
+                };
+                if emitted > light[x][y][z] {
+                    light[x][y][z] = emitted;
+                }
+                if light[x][y][z] > 1 {
+                    queue.push_back((x, y, z));
+                }
+            }
+        }
+    }
+
+    while let Some((x, y, z)) = queue.pop_front() {
+        let current_light = light[x][y][z];
+        let drop_light = current_light.saturating_sub(1);
+        if drop_light == 0 {
+            continue;
+        }
+
+        let neighbors: [(i32, i32, i32); 6] = [
+            (x as i32 + 1, y as i32, z as i32),
+            (x as i32 - 1, y as i32, z as i32),
+            (x as i32, y as i32 + 1, z as i32),
+            (x as i32, y as i32 - 1, z as i32),
+            (x as i32, y as i32, z as i32 + 1),
+            (x as i32, y as i32, z as i32 - 1),
+        ];
+
+        for (nx, ny, nz) in neighbors {
+            if nx >= 0
+                && nx < CHUNK_WIDTH as i32
+                && ny >= 0
+                && ny < CHUNK_HEIGHT as i32
+                && nz >= 0
+                && nz < CHUNK_DEPTH as i32
+            {
+                let (ux, uy, uz) = (nx as usize, ny as usize, nz as usize);
+                let nb = blocks[ux][uy][uz];
+                let occluding = nb.is_solid() && !nb.is_transparent();
+
+                if !occluding && light[ux][uy][uz] < drop_light {
+                    light[ux][uy][uz] = drop_light;
+                    queue.push_back((ux, uy, uz));
+                }
+            }
+        }
+    }
+}
+
+pub struct MeshSnapshot {
+    pub x: i32,
+    pub z: i32,
+    blocks: Box<[[[BlockType; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]>,
+    light: Box<[[[u8; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]>,
+    liquid: Box<[[[u8; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]>,
+}
+
+impl MeshSnapshot {
+    pub fn capture(world: &crate::world::World, cx: i32, cz: i32) -> Self {
+        let mut snap = Self {
+            x: cx,
+            z: cz,
+            blocks: Box::new([[[BlockType::Air; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]),
+            light: Box::new([[[15u8; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]),
+            liquid: Box::new([[[0u8; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]),
+        };
+
+        let mut neighbors: [[Option<&Chunk>; 3]; 3] = [[None; 3]; 3];
+        for (dx, row) in neighbors.iter_mut().enumerate() {
+            for (dz, slot) in row.iter_mut().enumerate() {
+                *slot = world.get_chunk(cx + dx as i32 - 1, cz + dz as i32 - 1);
+            }
+        }
+
+        for sx in 0..SNAP_W {
+            let lx = sx as i32 - 1;
+            let dx = lx.div_euclid(CHUNK_WIDTH as i32);
+            let bx = lx.rem_euclid(CHUNK_WIDTH as i32) as usize;
+            for sz in 0..SNAP_D {
+                let lz = sz as i32 - 1;
+                let dz = lz.div_euclid(CHUNK_DEPTH as i32);
+                let bz = lz.rem_euclid(CHUNK_DEPTH as i32) as usize;
+                match neighbors[(dx + 1) as usize][(dz + 1) as usize] {
+                    Some(c) => {
+                        for y in 0..CHUNK_HEIGHT {
+                            snap.blocks[sx][y][sz] = c.blocks[bx][y][bz];
+                            snap.light[sx][y][sz] = c.light[bx][y][bz];
+                            snap.liquid[sx][y][sz] = c.liquid_levels[bx][y][bz];
+                        }
+                    }
+                    None => {
+                        // Unloaded neighbor: fall back to the edits map,
+                        // matching what World::get_block would return.
+                        let wx = cx * CHUNK_WIDTH as i32 + lx;
+                        let wz = cz * CHUNK_DEPTH as i32 + lz;
+                        for y in 0..CHUNK_HEIGHT {
+                            snap.blocks[sx][y][sz] = world.get_block(wx, y as i32, wz);
+                        }
+                    }
+                }
+            }
+        }
+        snap
+    }
+
+    #[inline]
+    fn local(&self, wx: i32, wz: i32) -> Option<(usize, usize)> {
+        let lx = wx - self.x * CHUNK_WIDTH as i32 + 1;
+        let lz = wz - self.z * CHUNK_DEPTH as i32 + 1;
+        if lx < 0 || lx >= SNAP_W as i32 || lz < 0 || lz >= SNAP_D as i32 {
+            None
+        } else {
+            Some((lx as usize, lz as usize))
+        }
+    }
+
+    pub fn get_block(&self, wx: i32, wy: i32, wz: i32) -> BlockType {
+        if wy < 0 || wy >= CHUNK_HEIGHT as i32 {
+            return BlockType::Air;
+        }
+        match self.local(wx, wz) {
+            Some((lx, lz)) => self.blocks[lx][wy as usize][lz],
+            None => BlockType::Air,
+        }
+    }
+
+    pub fn get_light(&self, wx: i32, wy: i32, wz: i32) -> u8 {
+        if wy < 0 || wy >= CHUNK_HEIGHT as i32 {
+            return 15;
+        }
+        match self.local(wx, wz) {
+            Some((lx, lz)) => self.light[lx][wy as usize][lz],
+            None => 15,
+        }
+    }
+
+    pub fn get_liquid_level(&self, wx: i32, wy: i32, wz: i32) -> u8 {
+        if wy < 0 || wy >= CHUNK_HEIGHT as i32 {
+            return 0;
+        }
+        match self.local(wx, wz) {
+            Some((lx, lz)) => self.liquid[lx][wy as usize][lz],
+            None => 0,
+        }
+    }
+}
+
 pub struct Chunk {
     pub blocks: Box<[[[BlockType; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
     pub light: Box<[[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
@@ -218,12 +432,6 @@ pub struct Chunk {
     pub mesh_opaque: Option<Mesh>,
     pub mesh_transparent: Option<Mesh>,
     pub mesh_water: Option<Mesh>,
-    pub pending_mesh_opaque: Option<MeshData>,
-    pub pending_mesh_transparent: Option<MeshData>,
-    pub pending_mesh_water: Option<MeshData>,
-    pub edit_revision: u64,
-    pub meshing_revision: u64,
-    pub pending_mesh_revision: u64,
     pub dirty: bool,
     pub meshing_in_progress: bool,
     pub x: i32,
@@ -240,12 +448,6 @@ impl Chunk {
             mesh_opaque: None,
             mesh_transparent: None,
             mesh_water: None,
-            pending_mesh_opaque: None,
-            pending_mesh_transparent: None,
-            pending_mesh_water: None,
-            edit_revision: 0,
-            meshing_revision: 0,
-            pending_mesh_revision: 0,
             dirty: true,
             meshing_in_progress: false,
             x,
@@ -1062,83 +1264,16 @@ impl Chunk {
     }
 
     pub fn calculate_lighting(&mut self) {
-        // PASS 7: Simple skylight (top-down sunlight)
-        for x in 0..CHUNK_WIDTH {
-            for z in 0..CHUNK_DEPTH {
-                let mut sunlight: u8 = 15;
-                for y in (0..CHUNK_HEIGHT).rev() {
-                    let b = self.blocks[x][y][z];
-                    match b {
-                        b if b == BlockType::Air
-                            || b == BlockType::Water
-                            || b == BlockType::Lava
-                            || b.is_transparent() =>
-                        {
-                            self.light[x][y][z] = sunlight;
-                        }
-                        _ => {
-                            self.light[x][y][z] = 0;
-                            sunlight = 0;
-                        }
-                    }
-                }
-            }
-        }
+        compute_lighting(&self.blocks, &mut self.light);
+    }
 
-        // Horizontal Light Propagation (BFS queue — no cloning, visits only lit blocks)
-        let mut queue = VecDeque::new();
-        for x in 0..CHUNK_WIDTH {
-            for y in 0..CHUNK_HEIGHT {
-                for z in 0..CHUNK_DEPTH {
-                    let emitted = match self.blocks[x][y][z] {
-                        BlockType::Torch => 14,
-                        BlockType::Lava => 15,
-                        _ => 0,
-                    };
-                    if emitted > self.light[x][y][z] {
-                        self.light[x][y][z] = emitted;
-                    }
-                    if self.light[x][y][z] > 1 {
-                        queue.push_back((x, y, z));
-                    }
-                }
-            }
-        }
-
-        while let Some((x, y, z)) = queue.pop_front() {
-            let current_light = self.light[x][y][z];
-            let drop_light = current_light.saturating_sub(1);
-            if drop_light == 0 {
-                continue;
-            }
-
-            let neighbors: [(i32, i32, i32); 6] = [
-                (x as i32 + 1, y as i32, z as i32),
-                (x as i32 - 1, y as i32, z as i32),
-                (x as i32, y as i32 + 1, z as i32),
-                (x as i32, y as i32 - 1, z as i32),
-                (x as i32, y as i32, z as i32 + 1),
-                (x as i32, y as i32, z as i32 - 1),
-            ];
-
-            for (nx, ny, nz) in neighbors {
-                if nx >= 0
-                    && nx < CHUNK_WIDTH as i32
-                    && ny >= 0
-                    && ny < CHUNK_HEIGHT as i32
-                    && nz >= 0
-                    && nz < CHUNK_DEPTH as i32
-                {
-                    let (ux, uy, uz) = (nx as usize, ny as usize, nz as usize);
-                    let nb = self.blocks[ux][uy][uz];
-                    let occluding = nb.is_solid() && !nb.is_transparent();
-
-                    if !occluding && self.light[ux][uy][uz] < drop_light {
-                        self.light[ux][uy][uz] = drop_light;
-                        queue.push_back((ux, uy, uz));
-                    }
-                }
-            }
+    pub fn snapshot_data(&self) -> ChunkData {
+        ChunkData {
+            x: self.x,
+            z: self.z,
+            blocks: self.blocks.clone(),
+            light: self.light.clone(),
+            liquid_levels: self.liquid_levels.clone(),
         }
     }
 
@@ -1150,7 +1285,6 @@ impl Chunk {
             } else {
                 self.liquid_levels[x][y][z] = 0;
             }
-            self.edit_revision = self.edit_revision.wrapping_add(1);
             self.dirty = true;
         }
     }
@@ -1163,10 +1297,14 @@ impl Chunk {
         }
     }
 
-    pub fn calculate_mesh_data(
-        &self,
-        world: &crate::world::World,
-    ) -> (MeshData, MeshData, MeshData) {
+}
+
+impl ChunkData {
+    pub fn calculate_lighting(&mut self) {
+        compute_lighting(&self.blocks, &mut self.light);
+    }
+
+    pub fn calculate_mesh_data(&self, snap: &MeshSnapshot) -> (MeshData, MeshData, MeshData) {
         let mut v_op = Vec::new();
         let mut t_op = Vec::new();
         let mut n_op = Vec::new();
@@ -1181,11 +1319,6 @@ impl Chunk {
         let mut t_wa = Vec::new();
         let mut n_wa = Vec::new();
         let mut c_wa = Vec::new();
-        // Cache neighbor chunks
-        let n_px = world.get_chunk_ptr(self.x + 1, self.z);
-        let n_nx = world.get_chunk_ptr(self.x - 1, self.z);
-        let n_pz = world.get_chunk_ptr(self.x, self.z + 1);
-        let n_nz = world.get_chunk_ptr(self.x, self.z - 1);
 
         let should_draw_face = |current: BlockType, neighbor: BlockType| -> bool {
             if neighbor == BlockType::Air {
@@ -1207,8 +1340,8 @@ impl Chunk {
         };
 
         let get_block_safe = |wx: i32, wy: i32, wz: i32| -> BlockType {
-            // Use the world pointer for 100% accurate neighbor data (including diagonals)
-            world.get_block(wx, wy, wz)
+            // Snapshot covers the chunk plus a 1-block border (including diagonals)
+            snap.get_block(wx, wy, wz)
         };
 
         // Standard Voxel AO calculation
@@ -1245,48 +1378,12 @@ impl Chunk {
             let cz = wz - (self.z * CHUNK_DEPTH as i32);
 
             if cx >= 0 && cx < CHUNK_WIDTH as i32 && cz >= 0 && cz < CHUNK_DEPTH as i32 {
+                // Own chunk: freshly recomputed light
                 return self.light[cx as usize][wy as usize][cz as usize];
             }
 
-            // Check neighbor chunks if out of bounds
-            if cx < 0 {
-                return unsafe {
-                    n_nx.map_or(15, |c| {
-                        (*c).light[(CHUNK_WIDTH as i32 + cx) as usize][wy as usize][if cz >= 0
-                            && cz < CHUNK_DEPTH as i32
-                        {
-                            cz as usize
-                        } else {
-                            0
-                        }]
-                    })
-                };
-            } else if cx >= CHUNK_WIDTH as i32 {
-                return unsafe {
-                    n_px.map_or(15, |c| {
-                        (*c).light[(cx - CHUNK_WIDTH as i32) as usize][wy as usize][if cz >= 0
-                            && cz < CHUNK_DEPTH as i32
-                        {
-                            cz as usize
-                        } else {
-                            0
-                        }]
-                    })
-                };
-            } else if cz < 0 {
-                return unsafe {
-                    n_nz.map_or(15, |c| {
-                        (*c).light[cx as usize][wy as usize][(CHUNK_DEPTH as i32 + cz) as usize]
-                    })
-                };
-            } else if cz >= CHUNK_DEPTH as i32 {
-                return unsafe {
-                    n_pz.map_or(15, |c| {
-                        (*c).light[cx as usize][wy as usize][(cz - CHUNK_DEPTH as i32) as usize]
-                    })
-                };
-            }
-            15
+            // Neighbor light from the snapshot border
+            snap.get_light(wx, wy, wz)
         };
 
         let calc_light_f = |light_val: u8| -> f32 {
@@ -1347,12 +1444,12 @@ impl Chunk {
                                 for ddz in [-1i32, 0] {
                                     let bx = cx + ddx;
                                     let bz = cz + ddz;
-                                    if world.get_block(bx, wy + 1, bz) == block {
+                                    if snap.get_block(bx, wy + 1, bz) == block {
                                         return 1.0;
                                     }
-                                    let b = world.get_block(bx, wy, bz);
+                                    let b = snap.get_block(bx, wy, bz);
                                     if b == block {
-                                        let l = world.get_liquid_level(bx, wy, bz);
+                                        let l = snap.get_liquid_level(bx, wy, bz);
                                         total += if is_lava { 1.0 } else { water_render_height(l) };
                                         count += 1;
                                     } else if !b.is_solid() {
@@ -1455,7 +1552,7 @@ impl Chunk {
                         let n_zpb = if z < CHUNK_DEPTH - 1 {
                             self.blocks[x][y][z + 1]
                         } else {
-                            unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[x][y][0]) }
+                            snap.get_block(wx, wy, wz + 1)
                         };
                         if n_zpb != block {
                             v_wa.extend_from_slice(&[
@@ -1494,9 +1591,7 @@ impl Chunk {
                         let n_znb = if z > 0 {
                             self.blocks[x][y][z - 1]
                         } else {
-                            unsafe {
-                                n_nz.map_or(BlockType::Air, |c| (*c).blocks[x][y][CHUNK_DEPTH - 1])
-                            }
+                            snap.get_block(wx, wy, wz - 1)
                         };
                         if n_znb != block {
                             v_wa.extend_from_slice(&[
@@ -1535,7 +1630,7 @@ impl Chunk {
                         let n_xpb = if x < CHUNK_WIDTH - 1 {
                             self.blocks[x + 1][y][z]
                         } else {
-                            unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[0][y][z]) }
+                            snap.get_block(wx + 1, wy, wz)
                         };
                         if n_xpb != block {
                             v_wa.extend_from_slice(&[
@@ -1574,9 +1669,7 @@ impl Chunk {
                         let n_xnb = if x > 0 {
                             self.blocks[x - 1][y][z]
                         } else {
-                            unsafe {
-                                n_nx.map_or(BlockType::Air, |c| (*c).blocks[CHUNK_WIDTH - 1][y][z])
-                            }
+                            snap.get_block(wx - 1, wy, wz)
                         };
                         if n_xnb != block {
                             v_wa.extend_from_slice(&[
@@ -1860,7 +1953,7 @@ impl Chunk {
                             if z < CHUNK_DEPTH - 1 {
                                 self.blocks[x][y][z + 1]
                             } else {
-                                unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[x][y][0]) }
+                                snap.get_block(wx, wy, wz + 1)
                             },
                             [0.0, 0.0, 1.0],
                             0.6,
@@ -1869,11 +1962,7 @@ impl Chunk {
                             if z > 0 {
                                 self.blocks[x][y][z - 1]
                             } else {
-                                unsafe {
-                                    n_nz.map_or(BlockType::Air, |c| {
-                                        (*c).blocks[x][y][CHUNK_DEPTH - 1]
-                                    })
-                                }
+                                snap.get_block(wx, wy, wz - 1)
                             },
                             [0.0, 0.0, -1.0],
                             0.6,
@@ -1882,7 +1971,7 @@ impl Chunk {
                             if x < CHUNK_WIDTH - 1 {
                                 self.blocks[x + 1][y][z]
                             } else {
-                                unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[0][y][z]) }
+                                snap.get_block(wx + 1, wy, wz)
                             },
                             [1.0, 0.0, 0.0],
                             0.8,
@@ -1891,11 +1980,7 @@ impl Chunk {
                             if x > 0 {
                                 self.blocks[x - 1][y][z]
                             } else {
-                                unsafe {
-                                    n_nx.map_or(BlockType::Air, |c| {
-                                        (*c).blocks[CHUNK_WIDTH - 1][y][z]
-                                    })
-                                }
+                                snap.get_block(wx - 1, wy, wz)
                             },
                             [-1.0, 0.0, 0.0],
                             0.8,
@@ -2031,7 +2116,9 @@ impl Chunk {
             },
         )
     }
+}
 
+impl Chunk {
     pub fn upload_mesh(&mut self, opaque: MeshData, transparent: MeshData, water: MeshData) {
         self.mesh_opaque = if opaque.v.is_empty() {
             None
