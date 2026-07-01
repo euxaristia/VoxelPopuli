@@ -377,7 +377,9 @@ fn classic_chunk_fields(chunk: &Chunk) -> Vec<(String, NbtTag)> {
                 nbt_field("Status", NbtTag::String("full".to_owned())),
                 nbt_field("LastUpdate", NbtTag::Long(0)),
                 nbt_field("InhabitedTime", NbtTag::Long(0)),
-                nbt_field("isLightOn", NbtTag::Byte(1)),
+                // The exported BlockLight/SkyLight arrays are placeholders, so
+                // mark the chunk unlit and let Minecraft recompute on load.
+                nbt_field("isLightOn", NbtTag::Byte(0)),
                 nbt_field(
                     "Sections",
                     NbtTag::List {
@@ -562,21 +564,18 @@ fn bits_needed(values: usize) -> usize {
 
 fn pack_values(values: &[u16], bits_per_value: usize) -> Vec<i64> {
     debug_assert!(bits_per_value > 0 && bits_per_value <= 16);
-    let long_count = (values.len() * bits_per_value).div_ceil(64);
+    // MC 1.16+ layout: entries never span i64 boundaries; each long holds
+    // floor(64 / bits) entries and any leftover high bits are padding.
+    let values_per_long = 64 / bits_per_value;
+    let long_count = values.len().div_ceil(values_per_long);
     let mut longs = vec![0u64; long_count];
     let mask = (1u64 << bits_per_value) - 1;
 
     for (index, value) in values.iter().enumerate() {
         let value = *value as u64 & mask;
-        let bit_index = index * bits_per_value;
-        let long_index = bit_index / 64;
-        let bit_offset = bit_index % 64;
+        let long_index = index / values_per_long;
+        let bit_offset = (index % values_per_long) * bits_per_value;
         longs[long_index] |= value << bit_offset;
-
-        let bits_in_first_long = 64 - bit_offset;
-        if bits_in_first_long < bits_per_value {
-            longs[long_index + 1] |= value >> bits_in_first_long;
-        }
     }
 
     longs.into_iter().map(|value| value as i64).collect()
@@ -672,8 +671,9 @@ mod tests {
         let values = vec![0u16; CHUNK_WIDTH * CHUNK_DEPTH * SECTION_HEIGHT];
         assert_eq!(pack_values(&values, 4).len(), 256);
 
+        // 9-bit entries: 7 per long, 256 entries -> 37 longs (1.16+ padded layout)
         let height_values = vec![64u16; CHUNK_WIDTH * CHUNK_DEPTH];
-        assert_eq!(pack_values(&height_values, 9).len(), 36);
+        assert_eq!(pack_values(&height_values, 9).len(), 37);
     }
 
     #[test]

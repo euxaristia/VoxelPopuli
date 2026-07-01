@@ -426,16 +426,15 @@ impl Chunk {
                     if self.blocks[x][y][z] == BlockType::Air
                         || self.blocks[x][y][z] == BlockType::Water
                     {
-                        self.blocks[x][y][z] = BlockType::Dirt;
+                        self.set_local(x as i32, y as i32, z as i32, BlockType::Dirt);
                     }
                 }
                 if z == 8 && x == 2 {
-                    self.blocks[x][farm_y][z] = BlockType::Water;
-                    self.liquid_levels[x][farm_y][z] = WATER_SOURCE;
+                    self.set_local(x as i32, farm_y as i32, z as i32, BlockType::Water);
                 } else {
-                    self.blocks[x][farm_y][z] = BlockType::Farmland;
+                    self.set_local(x as i32, farm_y as i32, z as i32, BlockType::Farmland);
                     if (x + z) % 2 == 0 && farm_y + 1 < CHUNK_HEIGHT {
-                        self.blocks[x][farm_y + 1][z] = BlockType::Wheat;
+                        self.set_local(x as i32, (farm_y + 1) as i32, z as i32, BlockType::Wheat);
                     }
                 }
             }
