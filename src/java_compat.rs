@@ -1,0 +1,714 @@
+use crate::block::BlockType;
+use crate::chunk::{Biome, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, biome_at};
+use flate2::Compression;
+use flate2::write::{GzEncoder, ZlibEncoder};
+use std::collections::BTreeMap;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+pub const TARGET_NAME: &str = "Minecraft Java pre-1.18 Anvil";
+pub const JAVA_1_17_DATA_VERSION: i32 = 2724;
+pub const MIN_Y: i32 = 0;
+pub const MAX_Y: i32 = 255;
+pub const SECTION_HEIGHT: usize = 16;
+pub const SECTIONS_PER_CHUNK: usize = CHUNK_HEIGHT / SECTION_HEIGHT;
+pub const REGION_CHUNKS: i32 = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JavaProperty {
+    pub name: &'static str,
+    pub value: &'static str,
+}
+
+impl JavaProperty {
+    const fn new(name: &'static str, value: &'static str) -> Self {
+        Self { name, value }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JavaBlockState {
+    pub name: &'static str,
+    pub properties: &'static [JavaProperty],
+}
+
+impl JavaBlockState {
+    const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            properties: &[],
+        }
+    }
+
+    const fn with_properties(name: &'static str, properties: &'static [JavaProperty]) -> Self {
+        Self { name, properties }
+    }
+}
+
+const GRASS_SNOWY: &[JavaProperty] = &[JavaProperty::new("snowy", "true")];
+const LOG_Y_AXIS: &[JavaProperty] = &[JavaProperty::new("axis", "y")];
+const LEAVES: &[JavaProperty] = &[
+    JavaProperty::new("distance", "7"),
+    JavaProperty::new("persistent", "false"),
+];
+const SOURCE_LIQUID: &[JavaProperty] = &[JavaProperty::new("level", "0")];
+const SNOW_LAYER: &[JavaProperty] = &[JavaProperty::new("layers", "1")];
+const FURNACE: &[JavaProperty] = &[
+    JavaProperty::new("facing", "north"),
+    JavaProperty::new("lit", "false"),
+];
+const CHEST: &[JavaProperty] = &[
+    JavaProperty::new("facing", "north"),
+    JavaProperty::new("type", "single"),
+    JavaProperty::new("waterlogged", "false"),
+];
+const FARMLAND: &[JavaProperty] = &[JavaProperty::new("moisture", "7")];
+const WHEAT: &[JavaProperty] = &[JavaProperty::new("age", "7")];
+const REDSTONE_ORE: &[JavaProperty] = &[JavaProperty::new("lit", "false")];
+
+pub fn classic_world_height_matches_chunks() -> bool {
+    MIN_Y == 0 && MAX_Y == 255 && CHUNK_HEIGHT == 256 && SECTIONS_PER_CHUNK == 16
+}
+
+pub fn classic_chunk_dimensions() -> (usize, usize, usize) {
+    (CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_DEPTH)
+}
+
+pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
+    use BlockType::*;
+    Some(match block {
+        Air => JavaBlockState::new("minecraft:air"),
+        Stone => JavaBlockState::new("minecraft:stone"),
+        Grass => JavaBlockState::new("minecraft:grass_block"),
+        Dirt => JavaBlockState::new("minecraft:dirt"),
+        OakLog => JavaBlockState::with_properties("minecraft:oak_log", LOG_Y_AXIS),
+        OakLeaves => JavaBlockState::with_properties("minecraft:oak_leaves", LEAVES),
+        Bedrock => JavaBlockState::new("minecraft:bedrock"),
+        Water => JavaBlockState::with_properties("minecraft:water", SOURCE_LIQUID),
+        Sand => JavaBlockState::new("minecraft:sand"),
+        Gravel => JavaBlockState::new("minecraft:gravel"),
+        CoalOre => JavaBlockState::new("minecraft:coal_ore"),
+        PowderedSnow => JavaBlockState::new("minecraft:powder_snow"),
+        SnowyGrass => JavaBlockState::with_properties("minecraft:grass_block", GRASS_SNOWY),
+        SpruceLog => JavaBlockState::with_properties("minecraft:spruce_log", LOG_Y_AXIS),
+        SpruceLeaves => JavaBlockState::with_properties("minecraft:spruce_leaves", LEAVES),
+        SnowLayer => JavaBlockState::with_properties("minecraft:snow", SNOW_LAYER),
+        IronOre => JavaBlockState::new("minecraft:iron_ore"),
+        IronBlock => JavaBlockState::new("minecraft:iron_block"),
+        TNT => JavaBlockState::new("minecraft:tnt"),
+        Cobblestone => JavaBlockState::new("minecraft:cobblestone"),
+        OakPlanks => JavaBlockState::new("minecraft:oak_planks"),
+        CraftingTable => JavaBlockState::new("minecraft:crafting_table"),
+        Furnace => JavaBlockState::with_properties("minecraft:furnace", FURNACE),
+        Chest => JavaBlockState::with_properties("minecraft:chest", CHEST),
+        Torch => JavaBlockState::new("minecraft:torch"),
+        GoldOre => JavaBlockState::new("minecraft:gold_ore"),
+        DiamondOre => JavaBlockState::new("minecraft:diamond_ore"),
+        Glass => JavaBlockState::new("minecraft:glass"),
+        Bookshelf => JavaBlockState::new("minecraft:bookshelf"),
+        MossyCobblestone => JavaBlockState::new("minecraft:mossy_cobblestone"),
+        Obsidian => JavaBlockState::new("minecraft:obsidian"),
+        Sponge => JavaBlockState::new("minecraft:sponge"),
+        Wool => JavaBlockState::new("minecraft:white_wool"),
+        LapisOre => JavaBlockState::new("minecraft:lapis_ore"),
+        LapisBlock => JavaBlockState::new("minecraft:lapis_block"),
+        Sandstone => JavaBlockState::new("minecraft:sandstone"),
+        Brick => JavaBlockState::new("minecraft:bricks"),
+        StoneBrick => JavaBlockState::new("minecraft:stone_bricks"),
+        Lava => JavaBlockState::with_properties("minecraft:lava", SOURCE_LIQUID),
+        Cactus => JavaBlockState::new("minecraft:cactus"),
+        Clay => JavaBlockState::new("minecraft:clay"),
+        Farmland => JavaBlockState::with_properties("minecraft:farmland", FARMLAND),
+        Wheat => JavaBlockState::with_properties("minecraft:wheat", WHEAT),
+        RedstoneOre => JavaBlockState::with_properties("minecraft:redstone_ore", REDSTONE_ORE),
+        MobSpawner => JavaBlockState::new("minecraft:spawner"),
+
+        RawIron | IronIngot | FlintAndSteel | Stick | Coal | GoldIngot | Diamond | LapisLazuli
+        | String | Gunpowder | Leather | RedstoneDust | WoodPickaxe | StonePickaxe
+        | IronPickaxe | DiamondPickaxe | GoldPickaxe | WoodAxe | StoneAxe | IronAxe
+        | DiamondAxe | GoldAxe | WoodShovel | StoneShovel | IronShovel | DiamondShovel
+        | GoldShovel | WoodSword | StoneSword | IronSword | DiamondSword | GoldSword | WoodHoe
+        | StoneHoe | IronHoe | DiamondHoe | GoldHoe => return None,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportConfig {
+    pub output_dir: PathBuf,
+    pub radius: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportSummary {
+    pub chunks: usize,
+    pub regions: usize,
+}
+
+impl ExportConfig {
+    pub fn from_args() -> Option<Self> {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let mut output_dir: Option<PathBuf> = None;
+        let mut radius = 4;
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            if let Some(path) = arg.strip_prefix("--export-java17=") {
+                output_dir = Some(PathBuf::from(path));
+            } else if arg == "--export-java17" {
+                if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                    output_dir = Some(PathBuf::from(&args[i + 1]));
+                    i += 1;
+                } else {
+                    output_dir = Some(PathBuf::from("java17_world"));
+                }
+            } else if let Some(value) = arg.strip_prefix("--export-radius=") {
+                radius = value.parse().unwrap_or(radius);
+            } else if arg == "--export-radius" && i + 1 < args.len() {
+                radius = args[i + 1].parse().unwrap_or(radius);
+                i += 1;
+            }
+            i += 1;
+        }
+
+        output_dir.map(|output_dir| Self {
+            output_dir,
+            radius: radius.max(0),
+        })
+    }
+}
+
+pub fn export_classic_java_world(seed: u64, config: &ExportConfig) -> io::Result<ExportSummary> {
+    if !classic_world_height_matches_chunks() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "classic Java export requires 16x16x256 chunks with Y 0..255",
+        ));
+    }
+    let _dimensions = classic_chunk_dimensions();
+
+    std::fs::create_dir_all(&config.output_dir)?;
+    std::fs::create_dir_all(config.output_dir.join("region"))?;
+    write_level_dat(&config.output_dir, seed)?;
+
+    let mut regions: BTreeMap<(i32, i32), Vec<(i32, i32, Vec<u8>)>> = BTreeMap::new();
+    let mut chunks = 0usize;
+    for chunk_x in -config.radius..=config.radius {
+        for chunk_z in -config.radius..=config.radius {
+            let mut chunk = Chunk::new(chunk_x, chunk_z, seed);
+            chunk.generate();
+            let nbt = write_nbt_root(NbtTag::Compound(classic_chunk_fields(&chunk)));
+            let compressed = zlib_compress(&nbt)?;
+            let region = (
+                chunk_x.div_euclid(REGION_CHUNKS),
+                chunk_z.div_euclid(REGION_CHUNKS),
+            );
+            regions
+                .entry(region)
+                .or_default()
+                .push((chunk_x, chunk_z, compressed));
+            chunks += 1;
+        }
+    }
+
+    let region_count = regions.len();
+    for ((region_x, region_z), chunks) in regions {
+        let path = config
+            .output_dir
+            .join("region")
+            .join(format!("r.{region_x}.{region_z}.mca"));
+        write_region_file(&path, &chunks)?;
+    }
+
+    Ok(ExportSummary {
+        chunks,
+        regions: region_count,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum NbtTag {
+    Byte(i8),
+    Int(i32),
+    Long(i64),
+    ByteArray(Vec<u8>),
+    String(String),
+    List { element_type: u8, tags: Vec<NbtTag> },
+    Compound(Vec<(String, NbtTag)>),
+    IntArray(Vec<i32>),
+    LongArray(Vec<i64>),
+}
+
+impl NbtTag {
+    fn id(&self) -> u8 {
+        match self {
+            NbtTag::Byte(_) => 1,
+            NbtTag::Int(_) => 3,
+            NbtTag::Long(_) => 4,
+            NbtTag::ByteArray(_) => 7,
+            NbtTag::String(_) => 8,
+            NbtTag::List { .. } => 9,
+            NbtTag::Compound(_) => 10,
+            NbtTag::IntArray(_) => 11,
+            NbtTag::LongArray(_) => 12,
+        }
+    }
+}
+
+fn nbt_field(name: &str, tag: NbtTag) -> (String, NbtTag) {
+    (name.to_owned(), tag)
+}
+
+fn write_nbt_root(root: NbtTag) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_named_tag(&mut out, "", &root);
+    out
+}
+
+fn write_named_tag(out: &mut Vec<u8>, name: &str, tag: &NbtTag) {
+    out.push(tag.id());
+    write_string_payload(out, name);
+    write_payload(out, tag);
+}
+
+fn write_payload(out: &mut Vec<u8>, tag: &NbtTag) {
+    match tag {
+        NbtTag::Byte(value) => out.push(*value as u8),
+        NbtTag::Int(value) => out.extend_from_slice(&value.to_be_bytes()),
+        NbtTag::Long(value) => out.extend_from_slice(&value.to_be_bytes()),
+        NbtTag::ByteArray(values) => {
+            out.extend_from_slice(&(values.len() as i32).to_be_bytes());
+            out.extend_from_slice(values);
+        }
+        NbtTag::String(value) => write_string_payload(out, value),
+        NbtTag::List { element_type, tags } => {
+            out.push(*element_type);
+            out.extend_from_slice(&(tags.len() as i32).to_be_bytes());
+            for tag in tags {
+                write_payload(out, tag);
+            }
+        }
+        NbtTag::Compound(fields) => {
+            for (name, tag) in fields {
+                write_named_tag(out, name, tag);
+            }
+            out.push(0);
+        }
+        NbtTag::IntArray(values) => {
+            out.extend_from_slice(&(values.len() as i32).to_be_bytes());
+            for value in values {
+                out.extend_from_slice(&value.to_be_bytes());
+            }
+        }
+        NbtTag::LongArray(values) => {
+            out.extend_from_slice(&(values.len() as i32).to_be_bytes());
+            for value in values {
+                out.extend_from_slice(&value.to_be_bytes());
+            }
+        }
+    }
+}
+
+fn write_string_payload(out: &mut Vec<u8>, value: &str) {
+    out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn zlib_compress(data: &[u8]) -> io::Result<Vec<u8>> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data)?;
+    encoder.finish()
+}
+
+fn gzip_compress(data: &[u8]) -> io::Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data)?;
+    encoder.finish()
+}
+
+fn write_level_dat(output_dir: &Path, seed: u64) -> io::Result<()> {
+    let fields = vec![
+        nbt_field("DataVersion", NbtTag::Int(JAVA_1_17_DATA_VERSION)),
+        nbt_field(
+            "Data",
+            NbtTag::Compound(vec![
+                nbt_field("DataVersion", NbtTag::Int(JAVA_1_17_DATA_VERSION)),
+                nbt_field(
+                    "Version",
+                    NbtTag::Compound(vec![
+                        nbt_field("Id", NbtTag::Int(JAVA_1_17_DATA_VERSION)),
+                        nbt_field("Name", NbtTag::String("1.17".to_owned())),
+                        nbt_field("Snapshot", NbtTag::Byte(0)),
+                    ]),
+                ),
+                nbt_field(
+                    "LevelName",
+                    NbtTag::String("VoxelPopuli Java 1.17 Export".to_owned()),
+                ),
+                nbt_field("RandomSeed", NbtTag::Long(seed as i64)),
+                nbt_field("SpawnX", NbtTag::Int(0)),
+                nbt_field("SpawnY", NbtTag::Int(140)),
+                nbt_field("SpawnZ", NbtTag::Int(0)),
+                nbt_field("GameType", NbtTag::Int(1)),
+                nbt_field("MapFeatures", NbtTag::Byte(1)),
+                nbt_field("hardcore", NbtTag::Byte(0)),
+                nbt_field("allowCommands", NbtTag::Byte(1)),
+                nbt_field("initialized", NbtTag::Byte(1)),
+                nbt_field("Time", NbtTag::Long(0)),
+                nbt_field("DayTime", NbtTag::Long(1000)),
+                nbt_field("version", NbtTag::Int(19133)),
+            ]),
+        ),
+    ];
+
+    let raw = write_nbt_root(NbtTag::Compound(fields));
+    let compressed = gzip_compress(&raw)?;
+    std::fs::write(output_dir.join("level.dat"), compressed)
+}
+
+fn classic_chunk_fields(chunk: &Chunk) -> Vec<(String, NbtTag)> {
+    vec![
+        nbt_field("DataVersion", NbtTag::Int(JAVA_1_17_DATA_VERSION)),
+        nbt_field(
+            "Level",
+            NbtTag::Compound(vec![
+                nbt_field("xPos", NbtTag::Int(chunk.x)),
+                nbt_field("zPos", NbtTag::Int(chunk.z)),
+                nbt_field("Status", NbtTag::String("full".to_owned())),
+                nbt_field("LastUpdate", NbtTag::Long(0)),
+                nbt_field("InhabitedTime", NbtTag::Long(0)),
+                // The exported BlockLight/SkyLight arrays are placeholders, so
+                // mark the chunk unlit and let Minecraft recompute on load.
+                nbt_field("isLightOn", NbtTag::Byte(0)),
+                nbt_field(
+                    "Sections",
+                    NbtTag::List {
+                        element_type: 10,
+                        tags: build_sections(chunk),
+                    },
+                ),
+                nbt_field("Biomes", NbtTag::IntArray(build_biomes(chunk))),
+                nbt_field(
+                    "Heightmaps",
+                    NbtTag::Compound(vec![
+                        nbt_field("MOTION_BLOCKING", NbtTag::LongArray(build_heightmap(chunk))),
+                        nbt_field("WORLD_SURFACE", NbtTag::LongArray(build_heightmap(chunk))),
+                    ]),
+                ),
+                nbt_field(
+                    "Entities",
+                    NbtTag::List {
+                        element_type: 10,
+                        tags: Vec::new(),
+                    },
+                ),
+                nbt_field(
+                    "TileEntities",
+                    NbtTag::List {
+                        element_type: 10,
+                        tags: Vec::new(),
+                    },
+                ),
+                nbt_field(
+                    "TileTicks",
+                    NbtTag::List {
+                        element_type: 10,
+                        tags: Vec::new(),
+                    },
+                ),
+                nbt_field(
+                    "LiquidTicks",
+                    NbtTag::List {
+                        element_type: 10,
+                        tags: Vec::new(),
+                    },
+                ),
+                nbt_field(
+                    "Structures",
+                    NbtTag::Compound(vec![
+                        nbt_field("References", NbtTag::Compound(Vec::new())),
+                        nbt_field("Starts", NbtTag::Compound(Vec::new())),
+                    ]),
+                ),
+            ]),
+        ),
+    ]
+}
+
+fn build_sections(chunk: &Chunk) -> Vec<NbtTag> {
+    let mut sections = Vec::new();
+    for section_y in 0..SECTIONS_PER_CHUNK {
+        let mut palette = Vec::<JavaBlockState>::new();
+        let mut indices = Vec::<u16>::with_capacity(CHUNK_WIDTH * CHUNK_DEPTH * SECTION_HEIGHT);
+        let mut contains_non_air = false;
+
+        for y in 0..SECTION_HEIGHT {
+            let world_y = section_y * SECTION_HEIGHT + y;
+            for z in 0..CHUNK_DEPTH {
+                for x in 0..CHUNK_WIDTH {
+                    let block = chunk.blocks[x][world_y][z];
+                    if block != BlockType::Air {
+                        contains_non_air = true;
+                    }
+                    let state = classic_java_block_state(block)
+                        .unwrap_or(JavaBlockState::new("minecraft:air"));
+                    let palette_index = match palette.iter().position(|existing| *existing == state)
+                    {
+                        Some(index) => index,
+                        None => {
+                            palette.push(state);
+                            palette.len() - 1
+                        }
+                    };
+                    indices.push(palette_index as u16);
+                }
+            }
+        }
+
+        if !contains_non_air {
+            continue;
+        }
+
+        let bits_per_block = bits_needed(palette.len()).max(4);
+        sections.push(NbtTag::Compound(vec![
+            nbt_field("Y", NbtTag::Byte(section_y as i8)),
+            nbt_field(
+                "Palette",
+                NbtTag::List {
+                    element_type: 10,
+                    tags: palette.into_iter().map(palette_entry_nbt).collect(),
+                },
+            ),
+            nbt_field(
+                "BlockStates",
+                NbtTag::LongArray(pack_values(&indices, bits_per_block)),
+            ),
+            nbt_field("BlockLight", NbtTag::ByteArray(vec![0; 2048])),
+            nbt_field("SkyLight", NbtTag::ByteArray(vec![0xFF; 2048])),
+        ]));
+    }
+    sections
+}
+
+fn palette_entry_nbt(state: JavaBlockState) -> NbtTag {
+    let mut fields = vec![nbt_field("Name", NbtTag::String(state.name.to_owned()))];
+    if !state.properties.is_empty() {
+        fields.push(nbt_field(
+            "Properties",
+            NbtTag::Compound(
+                state
+                    .properties
+                    .iter()
+                    .map(|property| {
+                        nbt_field(property.name, NbtTag::String(property.value.to_owned()))
+                    })
+                    .collect(),
+            ),
+        ));
+    }
+    NbtTag::Compound(fields)
+}
+
+fn build_heightmap(chunk: &Chunk) -> Vec<i64> {
+    let mut heights = Vec::<u16>::with_capacity(CHUNK_WIDTH * CHUNK_DEPTH);
+    for z in 0..CHUNK_DEPTH {
+        for x in 0..CHUNK_WIDTH {
+            let mut height = 0u16;
+            for y in (0..CHUNK_HEIGHT).rev() {
+                if chunk.blocks[x][y][z] != BlockType::Air {
+                    height = (y + 1) as u16;
+                    break;
+                }
+            }
+            heights.push(height);
+        }
+    }
+    pack_values(&heights, 9)
+}
+
+fn build_biomes(chunk: &Chunk) -> Vec<i32> {
+    let mut biomes = Vec::with_capacity(4 * 4 * 64);
+    for _y in 0..64 {
+        for z in 0..4 {
+            for x in 0..4 {
+                let world_x = chunk.x * CHUNK_WIDTH as i32 + x * 4 + 2;
+                let world_z = chunk.z * CHUNK_DEPTH as i32 + z * 4 + 2;
+                biomes.push(java_biome_id(biome_at(
+                    world_x as f32,
+                    world_z as f32,
+                    chunk.seed,
+                )));
+            }
+        }
+    }
+    biomes
+}
+
+fn java_biome_id(biome: Biome) -> i32 {
+    match biome {
+        Biome::Plains => 1,
+        Biome::Desert => 2,
+        Biome::Mountains | Biome::HighHills => 3,
+        Biome::SnowyTundra => 12,
+        Biome::SnowyTaiga => 30,
+    }
+}
+
+fn bits_needed(values: usize) -> usize {
+    if values <= 1 {
+        1
+    } else {
+        usize::BITS as usize - (values - 1).leading_zeros() as usize
+    }
+}
+
+fn pack_values(values: &[u16], bits_per_value: usize) -> Vec<i64> {
+    debug_assert!(bits_per_value > 0 && bits_per_value <= 16);
+    // MC 1.16+ layout: entries never span i64 boundaries; each long holds
+    // floor(64 / bits) entries and any leftover high bits are padding.
+    let values_per_long = 64 / bits_per_value;
+    let long_count = values.len().div_ceil(values_per_long);
+    let mut longs = vec![0u64; long_count];
+    let mask = (1u64 << bits_per_value) - 1;
+
+    for (index, value) in values.iter().enumerate() {
+        let value = *value as u64 & mask;
+        let long_index = index / values_per_long;
+        let bit_offset = (index % values_per_long) * bits_per_value;
+        longs[long_index] |= value << bit_offset;
+    }
+
+    longs.into_iter().map(|value| value as i64).collect()
+}
+
+fn write_region_file(path: &Path, chunks: &[(i32, i32, Vec<u8>)]) -> io::Result<()> {
+    const SECTOR_BYTES: usize = 4096;
+    let mut header = vec![0u8; SECTOR_BYTES * 2];
+    let mut body = Vec::new();
+    let mut next_sector = 2u32;
+
+    for (chunk_x, chunk_z, compressed_nbt) in chunks {
+        let local_x = chunk_x.rem_euclid(REGION_CHUNKS) as usize;
+        let local_z = chunk_z.rem_euclid(REGION_CHUNKS) as usize;
+        let location_index = local_x + local_z * REGION_CHUNKS as usize;
+
+        let payload_len = 1 + compressed_nbt.len();
+        let total_len = 4 + payload_len;
+        let sector_count = total_len.div_ceil(SECTOR_BYTES) as u8;
+        let offset = next_sector;
+
+        header[location_index * 4] = ((offset >> 16) & 0xFF) as u8;
+        header[location_index * 4 + 1] = ((offset >> 8) & 0xFF) as u8;
+        header[location_index * 4 + 2] = (offset & 0xFF) as u8;
+        header[location_index * 4 + 3] = sector_count;
+
+        let timestamp_index = SECTOR_BYTES + location_index * 4;
+        header[timestamp_index..timestamp_index + 4].copy_from_slice(&0u32.to_be_bytes());
+
+        let mut chunk_record = Vec::with_capacity(sector_count as usize * SECTOR_BYTES);
+        chunk_record.extend_from_slice(&(payload_len as u32).to_be_bytes());
+        chunk_record.push(2); // zlib
+        chunk_record.extend_from_slice(compressed_nbt);
+        chunk_record.resize(sector_count as usize * SECTOR_BYTES, 0);
+        body.extend_from_slice(&chunk_record);
+        next_sector += sector_count as u32;
+    }
+
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(&header)?;
+    file.write_all(&body)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classic_target_uses_zero_to_255_world_height() {
+        assert_eq!(TARGET_NAME, "Minecraft Java pre-1.18 Anvil");
+        assert_eq!((MIN_Y, MAX_Y), (0, 255));
+        assert_eq!(classic_chunk_dimensions(), (16, 256, 16));
+        assert!(classic_world_height_matches_chunks());
+    }
+
+    #[test]
+    fn every_world_block_has_classic_java_state_mapping() {
+        for id in 0..BlockType::COUNT as u8 {
+            let block = BlockType::from_u8(id);
+            let expected_world_block = !block.is_item() || matches!(block, BlockType::Wheat);
+            assert_eq!(
+                classic_java_block_state(block).is_some(),
+                expected_world_block,
+                "{block:?} mapping mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn classic_mapping_uses_real_java_names_for_special_blocks() {
+        assert_eq!(
+            classic_java_block_state(BlockType::SnowyGrass).unwrap(),
+            JavaBlockState::with_properties("minecraft:grass_block", GRASS_SNOWY)
+        );
+        assert_eq!(
+            classic_java_block_state(BlockType::Farmland).unwrap(),
+            JavaBlockState::with_properties("minecraft:farmland", FARMLAND)
+        );
+        assert_eq!(
+            classic_java_block_state(BlockType::Wheat).unwrap(),
+            JavaBlockState::with_properties("minecraft:wheat", WHEAT)
+        );
+        assert_eq!(
+            classic_java_block_state(BlockType::RedstoneDust),
+            None,
+            "inventory redstone dust is not a placed block in VoxelPopuli yet"
+        );
+    }
+
+    #[test]
+    fn packed_block_states_use_expected_long_count() {
+        let values = vec![0u16; CHUNK_WIDTH * CHUNK_DEPTH * SECTION_HEIGHT];
+        assert_eq!(pack_values(&values, 4).len(), 256);
+
+        // 9-bit entries: 7 per long, 256 entries -> 37 longs (1.16+ padded layout)
+        let height_values = vec![64u16; CHUNK_WIDTH * CHUNK_DEPTH];
+        assert_eq!(pack_values(&height_values, 9).len(), 37);
+    }
+
+    #[test]
+    fn nbt_root_starts_as_named_compound() {
+        let bytes = write_nbt_root(NbtTag::Compound(vec![nbt_field(
+            "DataVersion",
+            NbtTag::Int(1),
+        )]));
+        assert_eq!(bytes[0], 10);
+        assert_eq!(&bytes[1..3], &[0, 0]);
+        assert!(bytes.ends_with(&[0]));
+    }
+
+    #[test]
+    fn export_radius_zero_writes_level_and_region_files() {
+        let out = std::env::temp_dir().join(format!(
+            "voxelpopuli-java17-export-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+
+        let config = ExportConfig {
+            output_dir: out.clone(),
+            radius: 0,
+        };
+        let summary = export_classic_java_world(12345, &config).unwrap();
+
+        assert_eq!(summary.chunks, 1);
+        assert_eq!(summary.regions, 1);
+        assert!(out.join("level.dat").is_file());
+        let region = out.join("region").join("r.0.0.mca");
+        assert!(region.is_file());
+        let len = std::fs::metadata(region).unwrap().len();
+        assert_eq!(len % 4096, 0);
+
+        let _ = std::fs::remove_dir_all(out);
+    }
+}

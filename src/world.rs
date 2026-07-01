@@ -106,6 +106,7 @@ impl Frustum {
 }
 
 pub struct World {
+    pub seed: u64,
     pub chunks: Vec<Option<Box<Chunk>>>,
     pub atlas: Option<Texture2D>,
     pub cloud_model: Option<Mesh>,
@@ -118,8 +119,10 @@ pub struct World {
     pub dirty_count: i32,
     pub explosives: Vec<crate::block::ActiveExplosive>,
     pub particles: Vec<crate::block::Particle>,
-    pub detonations: Vec<(glam::Vec3, crate::block::BlockType)>,
-    pub cube_mesh: renderer::Mesh,
+    pub detonations: Vec<glam::Vec3>,
+    pub tnt_mesh: renderer::Mesh,
+    pub spark_mesh: renderer::Mesh,
+    pub particle_mesh: renderer::Mesh,
     pub is_loading: bool,
     pub loading_radius: i32,
     pub chunks_generated_count: i32,
@@ -131,12 +134,13 @@ pub struct World {
 }
 
 impl World {
-    pub fn new() -> Self {
+    pub fn new(seed: u64) -> Self {
         let mut chunks = Vec::with_capacity(CHUNK_POOL_SIZE);
         for _ in 0..CHUNK_POOL_SIZE {
             chunks.push(None);
         }
         Self {
+            seed,
             chunks,
             atlas: None,
             cloud_model: None,
@@ -150,7 +154,9 @@ impl World {
             explosives: Vec::new(),
             particles: Vec::new(),
             detonations: Vec::new(),
-            cube_mesh: Self::create_cube_mesh(),
+            tnt_mesh: Self::create_textured_cube_mesh(BlockType::TNT),
+            spark_mesh: Self::create_textured_cube_mesh(BlockType::Torch),
+            particle_mesh: Self::create_textured_cube_mesh(BlockType::SnowLayer),
             is_loading: true,
             loading_radius: 0,
             chunks_generated_count: 0,
@@ -162,7 +168,7 @@ impl World {
         }
     }
 
-    fn create_cube_mesh() -> renderer::Mesh {
+    fn create_textured_cube_mesh(block: BlockType) -> renderer::Mesh {
         let v: Vec<f32> = vec![
             0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0,
             0.0, // bottom
@@ -177,7 +183,18 @@ impl World {
             1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0,
             1.0, // right
         ];
-        let t: Vec<f32> = vec![0.0; v.len() / 3 * 2];
+        let (tx, ty) = crate::item::atlas_uv(block);
+        let ts = 1.0 / 16.0;
+        let pad = 0.001;
+        let u0 = tx as f32 * ts + pad;
+        let v0 = ty as f32 * ts + pad;
+        let u1 = (tx as f32 + 1.0) * ts - pad;
+        let v1 = (ty as f32 + 1.0) * ts - pad;
+        let face_uv = [u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0];
+        let mut t = Vec::with_capacity(72);
+        for _ in 0..6 {
+            t.extend_from_slice(&face_uv);
+        }
         let n: Vec<f32> = vec![0.0; v.len()];
         let c: Vec<u8> = vec![255; v.len() / 3 * 4];
         renderer::Mesh::new(&v, Some(&t), Some(&n), Some(&c))
@@ -192,35 +209,73 @@ impl World {
         let _loc_mvp = shader.get_uniform_location("uMVP");
         let loc_model = shader.get_uniform_location("uModel");
         let loc_diff = shader.get_uniform_location("colDiffuse");
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
 
         for e in &self.explosives {
-            let flash = (current_time * 4.0) as i32 % 2 == 0;
+            let progress = 1.0 - (e.fuse / e.initial_fuse.max(0.001)).clamp(0.0, 1.0);
+            let flash_rate = 4.0 + progress * 12.0;
+            let flash = (current_time * flash_rate) as i32 % 2 == 0;
             let diffuse = if flash {
-                glam::Vec4::new(4.0, 4.0, 4.0, 1.0)
+                glam::Vec4::new(1.8, 1.8, 1.8, 1.0)
             } else {
                 glam::Vec4::ONE
             };
             shader.set_vec4(loc_diff, diffuse);
 
-            let model = glam::Mat4::from_translation(e.position);
+            let pulse = 1.0 + progress * 0.12;
+            let model = glam::Mat4::from_translation(e.position + Vec3::splat(0.5))
+                * glam::Mat4::from_scale(Vec3::splat(pulse))
+                * glam::Mat4::from_translation(Vec3::splat(-0.5));
             shader.set_mat4(loc_model, &model);
-            self.cube_mesh.draw();
+            self.tnt_mesh.draw();
+
+            let spark_phase = current_time * (18.0 + progress * 24.0);
+            let spark_scale = 0.11 + spark_phase.sin().abs() * 0.05;
+            let spark_offset = Vec3::new(
+                spark_phase.sin() * 0.16,
+                1.06 + (spark_phase * 1.7).sin().abs() * 0.08,
+                spark_phase.cos() * 0.16,
+            );
+            shader.set_vec4(loc_diff, glam::Vec4::new(2.4, 1.35, 0.35, 1.0));
+            let spark_model =
+                glam::Mat4::from_translation(e.position + Vec3::new(0.5, 0.0, 0.5) + spark_offset)
+                    * glam::Mat4::from_scale(Vec3::splat(spark_scale));
+            shader.set_mat4(loc_model, &spark_model);
+            self.spark_mesh.draw();
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
+        shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
     }
 
     pub fn render_particles(&self, shader: &crate::renderer::Shader, _mvp: &glam::Mat4) {
         let loc_model = shader.get_uniform_location("uModel");
         let loc_diff = shader.get_uniform_location("colDiffuse");
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
+        unsafe {
+            gl::Enable(gl::BLEND);
+            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+        }
 
         for p in &self.particles {
             let alpha = (p.life / p.max_life).clamp(0.0, 1.0);
-            shader.set_vec4(loc_diff, glam::Vec4::new(1.0, 1.0, 1.0, alpha));
+            shader.set_vec4(
+                loc_diff,
+                glam::Vec4::new(p.color.x, p.color.y, p.color.z, alpha * p.color.w),
+            );
 
             let model = glam::Mat4::from_translation(p.position)
                 * glam::Mat4::from_scale(glam::Vec3::splat(p.scale * alpha));
             shader.set_mat4(loc_model, &model);
-            self.cube_mesh.draw();
+            self.particle_mesh.draw();
+        }
+        shader.set_vec4(loc_diff, glam::Vec4::ONE);
+        shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
+        unsafe {
+            gl::Disable(gl::BLEND);
         }
     }
 
@@ -302,9 +357,9 @@ impl World {
         let bz = z.rem_euclid(CHUNK_DEPTH as i32) as usize;
 
         if let Some(chunk) = self.get_chunk_mut(cx, cz) {
+            let was_dirty = chunk.dirty;
             chunk.set_block(bx, y as usize, bz, block);
-            if !chunk.dirty {
-                chunk.dirty = true;
+            if !was_dirty {
                 self.dirty_count += 1;
             }
 
@@ -433,7 +488,7 @@ impl World {
         let mut nz = 0;
         while t < max_distance {
             let block = self.get_block(ix, iy, iz);
-            if block != BlockType::Air && block != BlockType::Water {
+            if block != BlockType::Air && block != BlockType::Water && block != BlockType::Lava {
                 return RaycastResult {
                     hit: true,
                     x: ix,
@@ -518,7 +573,7 @@ impl World {
                                 Some(c) => c.x != x || c.z != z,
                             };
                             if should_replace {
-                                let mut chunk = Box::new(Chunk::new(x, z));
+                                let mut chunk = Box::new(Chunk::new(x, z, self.seed));
                                 chunk.generate();
                                 self.chunks[index] = Some(chunk);
                                 self.apply_edits_to_chunk(x, z);
@@ -563,7 +618,7 @@ impl World {
                                 Some(c) => c.x != x || c.z != z,
                             };
                             if should_replace {
-                                let mut chunk = Box::new(Chunk::new(x, z));
+                                let mut chunk = Box::new(Chunk::new(x, z, self.seed));
                                 chunk.generate();
                                 self.chunks[index] = Some(chunk);
                                 self.apply_edits_to_chunk(x, z);
@@ -636,7 +691,15 @@ impl World {
                         chunk.pending_mesh_water.take(),
                     )
                 {
-                    chunk.upload_mesh(opaque, trans, water);
+                    if chunk.pending_mesh_revision == chunk.edit_revision {
+                        chunk.upload_mesh(opaque, trans, water);
+                    } else {
+                        chunk.meshing_in_progress = false;
+                        if !chunk.dirty {
+                            chunk.dirty = true;
+                            self.dirty_count += 1;
+                        }
+                    }
                     self.meshing_in_flight -= 1;
                 }
             }
@@ -666,6 +729,7 @@ impl World {
                 if let Some(chunk) = &mut self.chunks[index] {
                     chunk.dirty = false;
                     chunk.meshing_in_progress = true;
+                    chunk.meshing_revision = chunk.edit_revision;
                     self.dirty_count -= 1;
                     self.meshing_in_flight += 1;
 
@@ -677,6 +741,7 @@ impl World {
                         c.calculate_lighting();
                         let (op, tr, wa) = c.calculate_mesh_data(w);
 
+                        c.pending_mesh_revision = c.meshing_revision;
                         c.pending_mesh_opaque = Some(op);
                         c.pending_mesh_transparent = Some(tr);
                         c.pending_mesh_water = Some(wa);
@@ -692,31 +757,77 @@ impl World {
 
         // --- Explosive Ticking ---
         let mut i = 0;
+        let mut fuse_particles = Vec::new();
         while i < self.explosives.len() {
+            let velocity = self.explosives[i].velocity;
+            let mut next_pos = self.explosives[i].position + velocity * _time;
+            let center_x = (next_pos.x + 0.5).floor() as i32;
+            let center_z = (next_pos.z + 0.5).floor() as i32;
+            let below_y = next_pos.y.floor() as i32;
+
+            self.explosives[i].velocity.y -= 9.8 * _time;
+            if velocity.y < 0.0 && self.get_block(center_x, below_y, center_z).is_solid() {
+                next_pos.y = (below_y + 1) as f32;
+                self.explosives[i].velocity.y = -velocity.y * 0.35;
+                self.explosives[i].velocity.x *= 0.75;
+                self.explosives[i].velocity.z *= 0.75;
+                if self.explosives[i].velocity.y < 0.2 {
+                    self.explosives[i].velocity.y = 0.0;
+                }
+            }
+
+            self.explosives[i].position = next_pos;
             self.explosives[i].fuse -= _time;
+            let progress = 1.0
+                - (self.explosives[i].fuse / self.explosives[i].initial_fuse.max(0.001))
+                    .clamp(0.0, 1.0);
+            if rand::random::<f32>() < _time * (5.0 + progress * 14.0) {
+                let jitter = Vec3::new(
+                    (rand::random::<f32>() - 0.5) * 0.36,
+                    rand::random::<f32>() * 0.08,
+                    (rand::random::<f32>() - 0.5) * 0.36,
+                );
+                let velocity = Vec3::new(
+                    (rand::random::<f32>() - 0.5) * 0.35,
+                    0.55 + rand::random::<f32>() * 0.45,
+                    (rand::random::<f32>() - 0.5) * 0.35,
+                );
+                fuse_particles.push(crate::block::Particle {
+                    position: self.explosives[i].position + Vec3::new(0.5, 1.05, 0.5) + jitter,
+                    velocity,
+                    color: glam::Vec4::new(0.58, 0.56, 0.52, 0.72),
+                    life: 0.45 + rand::random::<f32>() * 0.35,
+                    max_life: 0.8,
+                    scale: 0.10 + rand::random::<f32>() * 0.08,
+                });
+            }
+            if progress > 0.55 && rand::random::<f32>() < _time * 8.0 {
+                fuse_particles.push(crate::block::Particle {
+                    position: self.explosives[i].position + Vec3::new(0.5, 1.12, 0.5),
+                    velocity: Vec3::new(
+                        (rand::random::<f32>() - 0.5) * 0.8,
+                        0.7,
+                        (rand::random::<f32>() - 0.5) * 0.8,
+                    ),
+                    color: glam::Vec4::new(1.0, 0.42, 0.08, 0.95),
+                    life: 0.18,
+                    max_life: 0.18,
+                    scale: 0.07,
+                });
+            }
             if self.explosives[i].fuse <= 0.0 {
                 let e = self.explosives.remove(i);
-                self.detonations.push((e.position, e.block_type));
+                self.detonations.push(e.position);
             } else {
                 i += 1;
             }
         }
+        self.particles.extend(fuse_particles);
 
         // --- Process Detonations ---
-        let dets: Vec<(glam::Vec3, BlockType)> = std::mem::take(&mut self.detonations);
-        for (pos, btype) in dets {
-            let (radius, is_nuke) = match btype {
-                BlockType::Nuke => (20, true),
-                _ => (4, false),
-            };
-            crate::explosion::explode(
-                self,
-                pos.x as i32,
-                pos.y as i32,
-                pos.z as i32,
-                radius,
-                is_nuke,
-            );
+        let dets: Vec<glam::Vec3> = std::mem::take(&mut self.detonations);
+        for pos in dets {
+            crate::explosion::explode(self, pos.x as i32, pos.y as i32, pos.z as i32, 4);
         }
 
         // --- Particle Ticking ---
@@ -1095,7 +1206,10 @@ impl World {
 
             if y > 0 {
                 let target = self.get_block(x, y - 1, z);
-                if target == BlockType::Air || target == BlockType::Water {
+                if target == BlockType::Air
+                    || target == BlockType::Water
+                    || target == BlockType::Lava
+                {
                     self.set_block(x, y, z, BlockType::Air);
                     self.set_block(x, y - 1, z, b);
                 }

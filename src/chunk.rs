@@ -1,7 +1,6 @@
 use crate::block::BlockType;
 use crate::noise::perlin_2d;
 use crate::renderer::Mesh;
-use rand::RngExt;
 use std::collections::VecDeque;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -14,11 +13,39 @@ pub enum Biome {
     HighHills,
 }
 
-pub fn get_biome(world_x: f32, world_z: f32) -> Biome {
-    let temperature = perlin_2d(world_x + 5000.0, world_z + 5000.0, 0.002, 2);
-    let humidity = perlin_2d(world_x + 10000.0, world_z + 10000.0, 0.002, 2);
-    let mountain_noise = perlin_2d(world_x + 20000.0, world_z + 20000.0, 0.001, 3);
-    let hills_noise = perlin_2d(world_x + 30000.0, world_z + 30000.0, 0.005, 2);
+fn mix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+fn seed_offset(seed: u64, salt: u64) -> f32 {
+    let bucket = mix64(seed ^ salt) % 1_000_000;
+    bucket as f32 / 10.0 - 50_000.0
+}
+
+fn seeded_perlin_2d(
+    world_x: f32,
+    world_z: f32,
+    scale: f32,
+    octaves: usize,
+    seed: u64,
+    salt: u64,
+) -> f32 {
+    perlin_2d(
+        world_x + seed_offset(seed, salt),
+        world_z + seed_offset(seed, salt ^ 0xA5A5_A5A5_A5A5_A5A5),
+        scale,
+        octaves,
+    )
+}
+
+fn get_biome_seeded(world_x: f32, world_z: f32, seed: u64) -> Biome {
+    let temperature = seeded_perlin_2d(world_x, world_z, 0.002, 2, seed, 10);
+    let humidity = seeded_perlin_2d(world_x, world_z, 0.002, 2, seed, 20);
+    let mountain_noise = seeded_perlin_2d(world_x, world_z, 0.001, 3, seed, 30);
+    let hills_noise = seeded_perlin_2d(world_x, world_z, 0.005, 2, seed, 40);
 
     if mountain_noise > 0.45 {
         Biome::Mountains
@@ -37,10 +64,98 @@ pub fn get_biome(world_x: f32, world_z: f32) -> Biome {
     }
 }
 
+pub fn biome_at(world_x: f32, world_z: f32, seed: u64) -> Biome {
+    get_biome_seeded(world_x, world_z, seed)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn chunk_hash(seed: u64, x: i32, z: i32, salt: i32) -> u32 {
+    let mixed = mix64(
+        seed ^ (x as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (z as i64 as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
+            ^ (salt as i64 as u64).wrapping_mul(0x94D0_49BB_1331_11EB),
+    );
+    (mixed ^ (mixed >> 32)) as u32
+}
+
+fn hash_unit(seed: u64, x: i32, z: i32, salt: i32) -> f32 {
+    chunk_hash(seed, x, z, salt) as f32 / u32::MAX as f32
+}
+
+struct ChunkRng {
+    state: u64,
+}
+
+impl ChunkRng {
+    fn new(seed: u64, x: i32, z: i32, salt: u64) -> Self {
+        let state = mix64(
+            seed ^ (x as i64 as u64).wrapping_mul(0xD1B5_4A32_D192_ED03)
+                ^ (z as i64 as u64).wrapping_mul(0xABC9_83DB_5F35_53B5)
+                ^ salt,
+        );
+        Self { state }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        (mix64(self.state) >> 32) as u32
+    }
+
+    fn range_usize(&mut self, start: usize, end: usize) -> usize {
+        debug_assert!(start < end);
+        start + (self.next_u32() as usize % (end - start))
+    }
+
+    fn range_i32(&mut self, start: i32, end: i32) -> i32 {
+        debug_assert!(start < end);
+        start + (self.next_u32() % (end - start) as u32) as i32
+    }
+
+    fn range_i32_inclusive(&mut self, start: i32, end: i32) -> i32 {
+        debug_assert!(start <= end);
+        start + (self.next_u32() % (end - start + 1) as u32) as i32
+    }
+}
+
 pub const CHUNK_WIDTH: usize = 16;
 pub const CHUNK_HEIGHT: usize = 256;
 pub const CHUNK_DEPTH: usize = 16;
 pub const WATER_VERTEX_ALPHA: u8 = 180;
+const SEA_LEVEL: usize = 124;
+const MAX_TERRAIN_HEIGHT: i32 = CHUNK_HEIGHT as i32 - 18;
+
+fn terrain_height_and_biome(world_x: f32, world_z: f32, seed: u64) -> (usize, Biome) {
+    let biome = get_biome_seeded(world_x, world_z, seed);
+    let continental = seeded_perlin_2d(world_x, world_z, 0.005, 3, seed, 100);
+    let detail = seeded_perlin_2d(world_x, world_z, 0.03, 4, seed, 110);
+    let mountain_noise = seeded_perlin_2d(world_x, world_z, 0.001, 3, seed, 30);
+    let hills_noise = seeded_perlin_2d(world_x, world_z, 0.005, 2, seed, 40);
+    let ridged = (-seeded_perlin_2d(world_x, world_z, 0.01, 3, seed, 120).abs() + 1.0).powi(2);
+
+    let mountain_factor = smoothstep(0.34, 0.58, mountain_noise);
+    let hill_factor = smoothstep(0.25, 0.48, hills_noise) * (1.0 - mountain_factor * 0.55);
+    let base_h = continental * (40.0 + mountain_factor * 8.0)
+        + 128.0
+        + hill_factor * 7.0
+        + mountain_factor * (15.0 + ridged * 42.0);
+    let height_scale = 15.0 + hill_factor * 8.0 + mountain_factor * 12.0;
+    let mut height = base_h + detail * height_scale;
+
+    let rough_factor = mountain_factor.max(hill_factor);
+    if rough_factor > 0.1 && continental < 0.1 {
+        let fjord_noise = seeded_perlin_2d(world_x, world_z, 0.02, 2, seed, 130).abs();
+        if fjord_noise < 0.15 {
+            let depth_factor = (0.15 - fjord_noise) / 0.15 * rough_factor;
+            height = height * (1.0 - depth_factor) + 110.0 * depth_factor;
+        }
+    }
+
+    ((height as i32).clamp(1, MAX_TERRAIN_HEIGHT) as usize, biome)
+}
 
 // MC 1.0 water level encoding:
 // 0 = no water
@@ -106,14 +221,18 @@ pub struct Chunk {
     pub pending_mesh_opaque: Option<MeshData>,
     pub pending_mesh_transparent: Option<MeshData>,
     pub pending_mesh_water: Option<MeshData>,
+    pub edit_revision: u64,
+    pub meshing_revision: u64,
+    pub pending_mesh_revision: u64,
     pub dirty: bool,
     pub meshing_in_progress: bool,
     pub x: i32,
     pub z: i32,
+    pub seed: u64,
 }
 
 impl Chunk {
-    pub fn new(x: i32, z: i32) -> Self {
+    pub fn new(x: i32, z: i32, seed: u64) -> Self {
         Self {
             blocks: Box::new([[[BlockType::Air; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
             light: Box::new([[[0; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
@@ -124,48 +243,257 @@ impl Chunk {
             pending_mesh_opaque: None,
             pending_mesh_transparent: None,
             pending_mesh_water: None,
+            edit_revision: 0,
+            meshing_revision: 0,
+            pending_mesh_revision: 0,
             dirty: true,
             meshing_in_progress: false,
             x,
             z,
+            seed,
+        }
+    }
+
+    fn surface_y(&self, x: usize, z: usize) -> Option<usize> {
+        for y in (1..CHUNK_HEIGHT - 2).rev() {
+            let b = self.blocks[x][y][z];
+            if b.is_solid() && b != BlockType::SnowLayer {
+                return Some(y);
+            }
+        }
+        None
+    }
+
+    fn set_local(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
+        if x >= 0
+            && x < CHUNK_WIDTH as i32
+            && y >= 0
+            && y < CHUNK_HEIGHT as i32
+            && z >= 0
+            && z < CHUNK_DEPTH as i32
+        {
+            let (ux, uy, uz) = (x as usize, y as usize, z as usize);
+            self.blocks[ux][uy][uz] = block;
+            self.liquid_levels[ux][uy][uz] =
+                if block == BlockType::Water || block == BlockType::Lava {
+                    WATER_SOURCE
+                } else {
+                    0
+                };
+        }
+    }
+
+    fn generate_lava_pockets(&mut self) {
+        if hash_unit(self.seed, self.x, self.z, 5001) > 0.38 {
+            return;
+        }
+
+        let cx = 4 + (chunk_hash(self.seed, self.x, self.z, 5002) % 8) as i32;
+        let cy = 8 + (chunk_hash(self.seed, self.x, self.z, 5003) % 24) as i32;
+        let cz = 4 + (chunk_hash(self.seed, self.x, self.z, 5004) % 8) as i32;
+        let radius = 2 + (chunk_hash(self.seed, self.x, self.z, 5005) % 2) as i32;
+        let r2 = radius * radius;
+
+        for dx in -radius..=radius {
+            for dy in -2i32..=2 {
+                for dz in -radius..=radius {
+                    let dist = dx * dx + dz * dz + dy.abs() * 2;
+                    if dist > r2 + 1 {
+                        continue;
+                    }
+                    let block = if dy <= 0 {
+                        BlockType::Lava
+                    } else {
+                        BlockType::Air
+                    };
+                    self.set_local(cx + dx, cy + dy, cz + dz, block);
+                }
+            }
+        }
+    }
+
+    fn generate_dungeon_room(&mut self) {
+        if hash_unit(self.seed, self.x, self.z, 6101) > 0.10 {
+            return;
+        }
+
+        let cx = 5 + (chunk_hash(self.seed, self.x, self.z, 6102) % 6) as i32;
+        let cy = 18 + (chunk_hash(self.seed, self.x, self.z, 6103) % 42) as i32;
+        let cz = 5 + (chunk_hash(self.seed, self.x, self.z, 6104) % 6) as i32;
+
+        for dx in -4i32..=4 {
+            for dy in 0..=4 {
+                for dz in -4i32..=4 {
+                    let wall = dx.abs() == 4 || dz.abs() == 4 || dy == 0 || dy == 4;
+                    let block = if wall {
+                        if (chunk_hash(self.seed, self.x + dx, self.z + dz, 6110 + dy) & 1) == 0 {
+                            BlockType::MossyCobblestone
+                        } else {
+                            BlockType::Cobblestone
+                        }
+                    } else {
+                        BlockType::Air
+                    };
+                    self.set_local(cx + dx, cy + dy, cz + dz, block);
+                }
+            }
+        }
+
+        self.set_local(cx, cy + 1, cz, BlockType::MobSpawner);
+        self.set_local(cx - 2, cy + 1, cz, BlockType::Chest);
+        self.set_local(cx + 2, cy + 1, cz, BlockType::Chest);
+        self.set_local(cx, cy + 1, cz - 3, BlockType::Torch);
+        self.set_local(cx, cy + 1, cz + 3, BlockType::Torch);
+    }
+
+    fn generate_village_outpost(&mut self) {
+        if hash_unit(self.seed, self.x, self.z, 7201) > 0.07 {
+            return;
+        }
+
+        let world_x = (self.x * CHUNK_WIDTH as i32 + 8) as f32;
+        let world_z = (self.z * CHUNK_DEPTH as i32 + 8) as f32;
+        let biome = get_biome_seeded(world_x, world_z, self.seed);
+        if biome != Biome::Plains && biome != Biome::Desert {
+            return;
+        }
+
+        let (x0, z0) = (4usize, 4usize);
+        let (x1, z1) = (11usize, 11usize);
+        let mut min_y = CHUNK_HEIGHT;
+        let mut max_y = 0usize;
+        for x in x0..=x1 {
+            for z in z0..=z1 {
+                let Some(y) = self.surface_y(x, z) else {
+                    return;
+                };
+                if self.blocks[x][y + 1][z] == BlockType::Water {
+                    return;
+                }
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+        }
+        if max_y - min_y > 3 || max_y + 6 >= CHUNK_HEIGHT {
+            return;
+        }
+
+        let base_y = max_y + 1;
+        let wall = if biome == Biome::Desert {
+            BlockType::Sandstone
+        } else {
+            BlockType::OakPlanks
+        };
+        let roof = if biome == Biome::Desert {
+            BlockType::Sandstone
+        } else {
+            BlockType::OakLog
+        };
+
+        for x in x0..=x1 {
+            for z in z0..=z1 {
+                if let Some(surface) = self.surface_y(x, z) {
+                    for y in surface + 1..base_y {
+                        self.blocks[x][y][z] = wall;
+                    }
+                }
+                self.blocks[x][base_y][z] = wall;
+                for y in base_y + 1..=base_y + 3 {
+                    let edge = x == x0 || x == x1 || z == z0 || z == z1;
+                    self.blocks[x][y][z] = if edge { wall } else { BlockType::Air };
+                }
+                self.blocks[x][base_y + 4][z] = roof;
+            }
+        }
+
+        for y in base_y + 1..=base_y + 2 {
+            self.blocks[7][y][z0] = BlockType::Air;
+            self.blocks[8][y][z0] = BlockType::Air;
+        }
+        self.blocks[5][base_y + 2][z0] = BlockType::Glass;
+        self.blocks[10][base_y + 2][z0] = BlockType::Glass;
+        self.blocks[5][base_y + 2][z1] = BlockType::Glass;
+        self.blocks[10][base_y + 2][z1] = BlockType::Glass;
+        self.blocks[6][base_y + 1][9] = BlockType::Chest;
+        self.blocks[9][base_y + 1][9] = BlockType::CraftingTable;
+        self.blocks[7][base_y + 2][10] = BlockType::Torch;
+        self.blocks[8][base_y + 2][10] = BlockType::Torch;
+
+        let farm_y = base_y;
+        for x in 1usize..=3 {
+            for z in 4usize..=12 {
+                for y in 1..farm_y {
+                    if self.blocks[x][y][z] == BlockType::Air
+                        || self.blocks[x][y][z] == BlockType::Water
+                    {
+                        self.set_local(x as i32, y as i32, z as i32, BlockType::Dirt);
+                    }
+                }
+                if z == 8 && x == 2 {
+                    self.set_local(x as i32, farm_y as i32, z as i32, BlockType::Water);
+                } else {
+                    self.set_local(x as i32, farm_y as i32, z as i32, BlockType::Farmland);
+                    if (x + z) % 2 == 0 && farm_y + 1 < CHUNK_HEIGHT {
+                        self.set_local(x as i32, (farm_y + 1) as i32, z as i32, BlockType::Wheat);
+                    }
+                }
+            }
+        }
+    }
+
+    fn generate_biome_decorations(&mut self) {
+        for x in 1..CHUNK_WIDTH - 1 {
+            for z in 1..CHUNK_DEPTH - 1 {
+                let world_x = self.x * CHUNK_WIDTH as i32 + x as i32;
+                let world_z = self.z * CHUNK_DEPTH as i32 + z as i32;
+                let biome = get_biome_seeded(world_x as f32, world_z as f32, self.seed);
+                let Some(surface_y) = self.surface_y(x, z) else {
+                    continue;
+                };
+
+                if biome == Biome::Desert
+                    && self.blocks[x][surface_y][z] == BlockType::Sand
+                    && self.blocks[x][surface_y + 1][z] == BlockType::Air
+                    && hash_unit(self.seed, world_x, world_z, 8101) < 0.018
+                {
+                    let height = 2 + (chunk_hash(self.seed, world_x, world_z, 8102) % 2) as usize;
+                    for h in 1..=height {
+                        if surface_y + h < CHUNK_HEIGHT
+                            && self.blocks[x][surface_y + h][z] == BlockType::Air
+                        {
+                            self.blocks[x][surface_y + h][z] = BlockType::Cactus;
+                        }
+                    }
+                }
+
+                let near_water = [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)]
+                    .iter()
+                    .any(|(dx, dz)| {
+                        let nx = (x as i32 + dx) as usize;
+                        let nz = (z as i32 + dz) as usize;
+                        self.blocks[nx][surface_y + 1][nz] == BlockType::Water
+                            || self.blocks[nx][surface_y][nz] == BlockType::Water
+                    });
+                if near_water
+                    && (116..=126).contains(&surface_y)
+                    && self.blocks[x][surface_y][z] == BlockType::Sand
+                    && hash_unit(self.seed, world_x, world_z, 8201) < 0.35
+                {
+                    self.blocks[x][surface_y][z] = BlockType::Clay;
+                }
+            }
         }
     }
 
     pub fn generate(&mut self) {
-        let mut rng = rand::rng();
+        let mut rng = ChunkRng::new(self.seed, self.x, self.z, 1001);
 
         // PASS 1: Terrain (biome-aware)
         for x in 0..CHUNK_WIDTH {
             for z in 0..CHUNK_DEPTH {
                 let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
                 let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
-                let biome = get_biome(world_x, world_z);
-
-                let continental = perlin_2d(world_x, world_z, 0.005, 3);
-                let detail = perlin_2d(world_x, world_z, 0.03, 4);
-
-                let (base_h, height_scale) = match biome {
-                    Biome::Mountains => {
-                        let ridged = (-perlin_2d(world_x, world_z, 0.01, 3).abs() + 1.0).powi(2);
-                        (continental * 50.0 + 140.0 + ridged * 60.0, 30.0)
-                    }
-                    Biome::HighHills => (continental * 40.0 + 135.0, 25.0),
-                    _ => (continental * 40.0 + 128.0, 15.0),
-                };
-
-                let mut height = (base_h + detail * height_scale) as i32;
-
-                // Fjord carving: if mountainous/hilly and near ocean (low continental)
-                if (biome == Biome::Mountains || biome == Biome::HighHills) && continental < 0.1 {
-                    let fjord_noise = perlin_2d(world_x, world_z, 0.02, 2).abs();
-                    if fjord_noise < 0.15 {
-                        let depth_factor = (0.15 - fjord_noise) / 0.15;
-                        height =
-                            (height as f32 * (1.0 - depth_factor) + 110.0 * depth_factor) as i32;
-                    }
-                }
-
-                let height = height.clamp(0, CHUNK_HEIGHT as i32 - 1) as usize;
+                let (height, biome) = terrain_height_and_biome(world_x, world_z, self.seed);
 
                 for y in 0..CHUNK_HEIGHT {
                     let b = if y == 0 {
@@ -210,7 +538,7 @@ impl Chunk {
                                 Biome::Plains => BlockType::Grass,
                             }
                         }
-                    } else if y < 124 {
+                    } else if y < SEA_LEVEL {
                         BlockType::Water
                     } else {
                         BlockType::Air
@@ -225,10 +553,10 @@ impl Chunk {
 
         // PASS 3: Coal Ores
         for _ in 0..150 {
-            let x = rng.random_range(0..CHUNK_WIDTH) as i32;
-            let y = rng.random_range(0..CHUNK_HEIGHT) as i32;
-            let z = rng.random_range(0..CHUNK_DEPTH) as i32;
-            let vein_size = rng.random_range(1..=17);
+            let x = rng.range_usize(0, CHUNK_WIDTH) as i32;
+            let y = rng.range_usize(0, CHUNK_HEIGHT) as i32;
+            let z = rng.range_usize(0, CHUNK_DEPTH) as i32;
+            let vein_size = rng.range_i32_inclusive(1, 17);
             let mut current_x = x;
             let mut current_y = y;
             let mut current_z = z;
@@ -247,7 +575,7 @@ impl Chunk {
                         self.blocks[cx][cy][cz] = BlockType::CoalOre;
                     }
                 }
-                let dir = rng.random_range(0..6);
+                let dir = rng.range_i32(0, 6);
                 match dir {
                     0 => current_x += 1,
                     1 => current_x -= 1,
@@ -262,10 +590,10 @@ impl Chunk {
 
         // PASS 3b: Iron Ores (Slightly rarer, deeper)
         for _ in 0..80 {
-            let x = rng.random_range(0..CHUNK_WIDTH) as i32;
-            let y = rng.random_range(0..64) as i32;
-            let z = rng.random_range(0..CHUNK_DEPTH) as i32;
-            let vein_size = rng.random_range(1..=9);
+            let x = rng.range_usize(0, CHUNK_WIDTH) as i32;
+            let y = rng.range_i32(0, 64);
+            let z = rng.range_usize(0, CHUNK_DEPTH) as i32;
+            let vein_size = rng.range_i32_inclusive(1, 9);
             let mut current_x = x;
             let mut current_y = y;
             let mut current_z = z;
@@ -284,7 +612,7 @@ impl Chunk {
                         self.blocks[cx][cy][cz] = BlockType::IronOre;
                     }
                 }
-                let dir = rng.random_range(0..6);
+                let dir = rng.range_i32(0, 6);
                 match dir {
                     0 => current_x += 1,
                     1 => current_x -= 1,
@@ -297,13 +625,57 @@ impl Chunk {
             }
         }
 
+        // PASS 3c: Rare progression ores
+        for (block, attempts, max_y, max_vein) in [
+            (BlockType::GoldOre, 18, 32, 9),
+            (BlockType::DiamondOre, 7, 16, 7),
+            (BlockType::LapisOre, 8, 32, 7),
+            (BlockType::RedstoneOre, 12, 16, 8),
+        ] {
+            for _ in 0..attempts {
+                let x = rng.range_usize(0, CHUNK_WIDTH) as i32;
+                let y = rng.range_i32(1, max_y);
+                let z = rng.range_usize(0, CHUNK_DEPTH) as i32;
+                let vein_size = rng.range_i32_inclusive(1, max_vein);
+                let mut current_x = x;
+                let mut current_y = y;
+                let mut current_z = z;
+                for _ in 0..vein_size {
+                    if current_x >= 0
+                        && current_x < CHUNK_WIDTH as i32
+                        && current_z >= 0
+                        && current_z < CHUNK_DEPTH as i32
+                        && current_y >= 0
+                        && current_y < CHUNK_HEIGHT as i32
+                    {
+                        let cx = current_x as usize;
+                        let cy = current_y as usize;
+                        let cz = current_z as usize;
+                        if self.blocks[cx][cy][cz] == BlockType::Stone {
+                            self.blocks[cx][cy][cz] = block;
+                        }
+                    }
+                    let dir = rng.range_i32(0, 6);
+                    match dir {
+                        0 => current_x += 1,
+                        1 => current_x -= 1,
+                        2 => current_y += 1,
+                        3 => current_y -= 1,
+                        4 => current_z += 1,
+                        5 => current_z -= 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         // PASS 4: Gravel
         for _ in 0..8 {
-            let x = rng.random_range(0..CHUNK_WIDTH) as i32;
-            let y = rng.random_range(64..128) as i32;
-            let z = rng.random_range(0..CHUNK_DEPTH) as i32;
+            let x = rng.range_usize(0, CHUNK_WIDTH) as i32;
+            let y = rng.range_i32(64, 128);
+            let z = rng.range_usize(0, CHUNK_DEPTH) as i32;
 
-            let vein_size = rng.random_range(16..=47);
+            let vein_size = rng.range_i32_inclusive(16, 47);
             let mut current_x = x;
             let mut current_y = y;
             let mut current_z = z;
@@ -325,7 +697,7 @@ impl Chunk {
                     }
                 }
 
-                let dir = rng.random_range(0..6);
+                let dir = rng.range_i32(0, 6);
                 match dir {
                     0 => current_x += 1,
                     1 => current_x -= 1,
@@ -338,15 +710,9 @@ impl Chunk {
             }
         }
 
-        // PASS 5: Caves — Authentic Minecraft 1.0 "Perlin Worm" carvers
-        // A simple deterministic PRNG based on chunk coords and an arbitrary seed
-        let world_seed: i32 = 42; // Ideally would come from World struct, but hardcoded for now
-
         let cave_rng = |mut seed: u64| -> f32 {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            ((seed % 10000) as f32) / 10000.0
+            seed = mix64(seed);
+            ((seed >> 40) as f32) / ((1u64 << 24) as f32)
         };
 
         // Carve caves coming from neighboring chunks to ensure seamless tunnels
@@ -356,35 +722,37 @@ impl Chunk {
                 let neighbor_z = self.z + cz;
 
                 // Deterministic seed for this chunk
-                let base_seed = (world_seed as i64)
-                    .wrapping_mul(341873128712)
-                    .wrapping_add((neighbor_x as i64).wrapping_mul(132897987541))
-                    .wrapping_add((neighbor_z as i64).wrapping_mul(341873128712))
-                    as u64;
+                let base_seed = mix64(
+                    self.seed
+                        ^ (neighbor_x as i64 as u64).wrapping_mul(341_873_128_712)
+                        ^ (neighbor_z as i64 as u64).wrapping_mul(132_897_987_541)
+                        ^ 0xC0A5_E51D_5EED_0001,
+                );
 
-                let num_caves = ((cave_rng(base_seed) * 15.0) as i32).max(0);
+                let num_caves = ((cave_rng(base_seed) * 11.0) as i32).max(0);
 
                 for i in 0..num_caves {
                     let cave_seed = base_seed.wrapping_add((i * 9283711) as u64);
 
                     let start_x =
                         (neighbor_x * CHUNK_WIDTH as i32) as f32 + cave_rng(cave_seed) * 16.0;
-                    let start_y = cave_rng(cave_seed.wrapping_add(1)) * 120.0 + 8.0;
+                    let depth_roll = cave_rng(cave_seed.wrapping_add(1));
+                    let start_y = 8.0 + depth_roll * depth_roll * 86.0;
                     let start_z = (neighbor_z * CHUNK_DEPTH as i32) as f32
                         + cave_rng(cave_seed.wrapping_add(2)) * 16.0;
 
-                    let mut length = cave_rng(cave_seed.wrapping_add(3)) * 100.0 + 10.0; // 10 to 110 steps
-                    let mut radius = cave_rng(cave_seed.wrapping_add(4)) * 2.0 + 1.5; // 1.5 to 3.5 base radius
+                    let mut length = cave_rng(cave_seed.wrapping_add(3)) * 82.0 + 18.0; // 18 to 100 steps
+                    let mut radius = cave_rng(cave_seed.wrapping_add(4)) * 1.35 + 1.0; // 1.0 to 2.35 base radius
 
-                    // 25% chance of a spherical room
-                    if cave_rng(cave_seed.wrapping_add(5)) < 0.25 {
-                        radius *= 2.0;
+                    // Occasional underground rooms, kept deeper so hillside mouths stay small.
+                    if start_y < 54.0 && cave_rng(cave_seed.wrapping_add(5)) < 0.10 {
+                        radius *= 1.75;
                         length = 0.0; // Rooms don't immediately worm
                     }
 
-                    // 10% chance of a massive tunnel starting
+                    // Rare wider tunnel starting, but not a surface-breaking cavern.
                     if cave_rng(cave_seed.wrapping_add(6)) < 0.10 {
-                        radius *= cave_rng(cave_seed.wrapping_add(7)) * 2.0 + 1.0;
+                        radius *= cave_rng(cave_seed.wrapping_add(7)) * 0.85 + 1.0;
                     }
 
                     let mut current_x = start_x;
@@ -399,7 +767,9 @@ impl Chunk {
                     let mut s = cave_seed.wrapping_add(10);
 
                     while step < length || length == 0.0 {
-                        let rad = radius * (1.0 + (step / length.max(1.0)).sin());
+                        let progress = if length > 0.0 { step / length } else { 0.5 };
+                        let taper = (std::f32::consts::PI * progress).sin();
+                        let rad = radius * (0.65 + taper * 0.70);
 
                         // Carve the sphere at the current point
                         let min_cx =
@@ -420,13 +790,54 @@ impl Chunk {
                                     let global_y = by as f32;
                                     let global_z = (self.z * CHUNK_DEPTH as i32 + bz) as f32;
 
+                                    let vertical_scale = if current_y > 64.0 { 1.9 } else { 1.35 };
                                     let dist_sq = (global_x - current_x).powi(2)
-                                        + ((global_y - current_y) * 1.5).powi(2)
+                                        + ((global_y - current_y) * vertical_scale).powi(2)
                                         + (global_z - current_z).powi(2);
 
-                                    if dist_sq <= rad * rad {
-                                        let current_block =
-                                            self.blocks[bx as usize][by as usize][bz as usize];
+                                    let edge_noise = seeded_perlin_2d(
+                                        global_x + global_y * 3.0,
+                                        global_z + global_y * 11.0,
+                                        0.18,
+                                        2,
+                                        self.seed,
+                                        9101,
+                                    );
+                                    let fine_noise = seeded_perlin_2d(
+                                        global_x,
+                                        global_z + global_y * 5.0,
+                                        0.33,
+                                        1,
+                                        self.seed,
+                                        9102,
+                                    );
+                                    let mut rough_rad = (rad
+                                        * (0.86 + edge_noise * 0.18 + fine_noise * 0.08))
+                                        .max(0.65);
+                                    let ux = bx as usize;
+                                    let uz = bz as usize;
+                                    let current_block = self.blocks[ux][by as usize][uz];
+                                    let surface =
+                                        self.surface_y(ux, uz).unwrap_or(CHUNK_HEIGHT - 1);
+                                    let depth_below_surface =
+                                        (surface as i32 - by).clamp(0, CHUNK_HEIGHT as i32);
+                                    let near_surface = global_y > 44.0 && depth_below_surface <= 14;
+                                    if near_surface {
+                                        rough_rad = rough_rad.min(0.95);
+                                    }
+
+                                    if dist_sq <= rough_rad * rough_rad {
+                                        if near_surface && depth_below_surface <= 6 {
+                                            continue;
+                                        }
+                                        if near_surface
+                                            && !matches!(
+                                                current_block,
+                                                BlockType::Stone | BlockType::Gravel
+                                            )
+                                        {
+                                            continue;
+                                        }
                                         if matches!(
                                             current_block,
                                             BlockType::Stone
@@ -467,12 +878,16 @@ impl Chunk {
             }
         }
 
+        self.generate_lava_pockets();
+        self.generate_dungeon_room();
+
         // PASS 5: Trees (Moved after carvers to avoid floating)
         let mut tree_positions: Vec<(usize, usize)> = Vec::new();
 
-        let (tree_attempts, min_dist) = match get_biome(
+        let (tree_attempts, min_dist) = match get_biome_seeded(
             (self.x * CHUNK_WIDTH as i32 + 8) as f32,
             (self.z * CHUNK_DEPTH as i32 + 8) as f32,
+            self.seed,
         ) {
             Biome::Plains | Biome::HighHills => (2, 4),
             Biome::SnowyTaiga => (8, 5), // Reduced attempts and increased distance to prevent bunching
@@ -480,8 +895,8 @@ impl Chunk {
         };
 
         for i in 0..tree_attempts {
-            let x = rng.random_range(5..CHUNK_WIDTH - 5); // Increased padding
-            let z = rng.random_range(5..CHUNK_DEPTH - 5);
+            let x = rng.range_usize(5, CHUNK_WIDTH - 5); // Increased padding
+            let z = rng.range_usize(5, CHUNK_DEPTH - 5);
 
             // Distance check to prevent bunching
             let mut too_close = false;
@@ -499,8 +914,8 @@ impl Chunk {
 
             let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
             let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
-            let biome = get_biome(world_x, world_z);
-            let seed = (world_x * 73.1 + world_z * 91.7 + i as f32 * 111.1) as i32;
+            let biome = get_biome_seeded(world_x, world_z, self.seed);
+            let seed = chunk_hash(self.seed, world_x as i32, world_z as i32, 8301 + i) as i32;
 
             // Find surface
             let mut surface_y = 0;
@@ -509,8 +924,7 @@ impl Chunk {
                 if b == BlockType::Grass || b == BlockType::SnowyGrass {
                     surface_y = y;
                     break;
-                } else if b != BlockType::Air && b != BlockType::Water && b != BlockType::SnowLayer
-                {
+                } else if b.is_solid() && b != BlockType::SnowLayer {
                     // Not valid ground
                     break;
                 }
@@ -610,12 +1024,15 @@ impl Chunk {
             }
         }
 
+        self.generate_village_outpost();
+        self.generate_biome_decorations();
+
         // PASS 6: Snow layer for snowy biomes
         for x in 0..CHUNK_WIDTH {
             for z in 0..CHUNK_DEPTH {
                 let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
                 let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
-                let biome = get_biome(world_x, world_z);
+                let biome = get_biome_seeded(world_x, world_z, self.seed);
                 if biome == Biome::SnowyTundra
                     || biome == Biome::SnowyTaiga
                     || biome == Biome::Mountains
@@ -623,8 +1040,7 @@ impl Chunk {
                     // Find topmost solid block and place snow on top
                     for y in (1..CHUNK_HEIGHT - 1).rev() {
                         let b = self.blocks[x][y][z];
-                        if b != BlockType::Air && b != BlockType::Water && b != BlockType::SnowLayer
-                        {
+                        if b.is_solid() && b != BlockType::SnowLayer {
                             let above = self.blocks[x][y + 1][z];
                             if above == BlockType::Air {
                                 // Don't place snow on logs, leaves, or snowy grass (already snow-topped)
@@ -653,10 +1069,15 @@ impl Chunk {
                 for y in (0..CHUNK_HEIGHT).rev() {
                     let b = self.blocks[x][y][z];
                     match b {
-                        b if b == BlockType::Air || b == BlockType::Water || b.is_transparent() => {
+                        b if b == BlockType::Air
+                            || b == BlockType::Water
+                            || b == BlockType::Lava
+                            || b.is_transparent() =>
+                        {
                             self.light[x][y][z] = sunlight;
                         }
                         _ => {
+                            self.light[x][y][z] = 0;
                             sunlight = 0;
                         }
                     }
@@ -669,6 +1090,14 @@ impl Chunk {
         for x in 0..CHUNK_WIDTH {
             for y in 0..CHUNK_HEIGHT {
                 for z in 0..CHUNK_DEPTH {
+                    let emitted = match self.blocks[x][y][z] {
+                        BlockType::Torch => 14,
+                        BlockType::Lava => 15,
+                        _ => 0,
+                    };
+                    if emitted > self.light[x][y][z] {
+                        self.light[x][y][z] = emitted;
+                    }
                     if self.light[x][y][z] > 1 {
                         queue.push_back((x, y, z));
                     }
@@ -702,8 +1131,7 @@ impl Chunk {
                 {
                     let (ux, uy, uz) = (nx as usize, ny as usize, nz as usize);
                     let nb = self.blocks[ux][uy][uz];
-                    let occluding =
-                        nb != BlockType::Air && nb != BlockType::Water && !nb.is_transparent();
+                    let occluding = nb.is_solid() && !nb.is_transparent();
 
                     if !occluding && self.light[ux][uy][uz] < drop_light {
                         self.light[ux][uy][uz] = drop_light;
@@ -717,11 +1145,12 @@ impl Chunk {
     pub fn set_block(&mut self, x: usize, y: usize, z: usize, block: BlockType) {
         if x < CHUNK_WIDTH && y < CHUNK_HEIGHT && z < CHUNK_DEPTH {
             self.blocks[x][y][z] = block;
-            if block == BlockType::Water {
+            if block == BlockType::Water || block == BlockType::Lava {
                 self.liquid_levels[x][y][z] = WATER_SOURCE;
             } else {
                 self.liquid_levels[x][y][z] = 0;
             }
+            self.edit_revision = self.edit_revision.wrapping_add(1);
             self.dirty = true;
         }
     }
@@ -743,10 +1172,10 @@ impl Chunk {
         let mut n_op = Vec::new();
         let mut c_op = Vec::new();
 
-        let v_tr = Vec::new();
-        let t_tr = Vec::new();
-        let n_tr = Vec::new();
-        let c_tr = Vec::new();
+        let mut v_tr = Vec::new();
+        let mut t_tr = Vec::new();
+        let mut n_tr = Vec::new();
+        let mut c_tr = Vec::new();
 
         let mut v_wa = Vec::new();
         let mut t_wa = Vec::new();
@@ -762,11 +1191,13 @@ impl Chunk {
             if neighbor == BlockType::Air {
                 return true;
             }
-            if current == BlockType::Water {
-                // Liquid shell: Only draw face if neighbor is NOT water
-                return neighbor != BlockType::Water;
+            let current_is_liquid = current == BlockType::Water || current == BlockType::Lava;
+            let neighbor_is_liquid = neighbor == BlockType::Water || neighbor == BlockType::Lava;
+            if current_is_liquid {
+                // Liquid shell: only hide faces against the same liquid.
+                return neighbor != current;
             }
-            if neighbor == BlockType::Water && current != BlockType::Water {
+            if neighbor_is_liquid && !current_is_liquid {
                 return true;
             }
             if neighbor.is_transparent() && current != neighbor {
@@ -887,8 +1318,13 @@ impl Chunk {
                     let ts = 1.0 / 16.0;
                     let pad = 0.5 / 256.0;
 
-                    if block == BlockType::Water {
-                        let level = self.liquid_levels[x][y][z];
+                    if block == BlockType::Water || block == BlockType::Lava {
+                        let is_lava = block == BlockType::Lava;
+                        let level = if is_lava {
+                            WATER_SOURCE
+                        } else {
+                            self.liquid_levels[x][y][z]
+                        };
                         if level == 0 {
                             continue;
                         }
@@ -896,7 +1332,8 @@ impl Chunk {
                         let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
                         let wy = y as i32;
                         let wz = z as i32 + self.z * CHUNK_DEPTH as i32;
-                        let (tx, ty) = (13, 12);
+                        let (tx, ty) = if is_lava { (7, 7) } else { (13, 12) };
+                        let liquid_alpha = if is_lava { 255 } else { WATER_VERTEX_ALPHA };
                         let u0 = tx as f32 * ts + pad;
                         let v0 = ty as f32 * ts + pad;
                         let u1 = (tx + 1) as f32 * ts - pad;
@@ -910,13 +1347,13 @@ impl Chunk {
                                 for ddz in [-1i32, 0] {
                                     let bx = cx + ddx;
                                     let bz = cz + ddz;
-                                    if world.get_block(bx, wy + 1, bz) == BlockType::Water {
+                                    if world.get_block(bx, wy + 1, bz) == block {
                                         return 1.0;
                                     }
                                     let b = world.get_block(bx, wy, bz);
-                                    if b == BlockType::Water {
+                                    if b == block {
                                         let l = world.get_liquid_level(bx, wy, bz);
-                                        total += water_render_height(l);
+                                        total += if is_lava { 1.0 } else { water_render_height(l) };
                                         count += 1;
                                     } else if !b.is_solid() {
                                         count += 1;
@@ -941,7 +1378,7 @@ impl Chunk {
                         } else {
                             BlockType::Air
                         };
-                        if neighbor_top != BlockType::Water {
+                        if neighbor_top != block {
                             v_wa.extend_from_slice(&[
                                 fx,
                                 fy + h00,
@@ -971,7 +1408,7 @@ impl Chunk {
                             let c_val =
                                 (255.0 * calc_light_f(get_light_safe(wx, wy + 1, wz))) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[c_val, c_val, c_val, WATER_VERTEX_ALPHA]);
+                                c_wa.extend_from_slice(&[c_val, c_val, c_val, liquid_alpha]);
                             }
                         }
                         // Bottom face
@@ -980,7 +1417,7 @@ impl Chunk {
                         } else {
                             BlockType::Bedrock
                         };
-                        if neighbor_bottom != BlockType::Water {
+                        if neighbor_bottom != block {
                             v_wa.extend_from_slice(&[
                                 fx,
                                 fy,
@@ -1010,7 +1447,7 @@ impl Chunk {
                             let shade =
                                 (255.0 * 0.5 * calc_light_f(get_light_safe(wx, wy - 1, wz))) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]);
+                                c_wa.extend_from_slice(&[shade, shade, shade, liquid_alpha]);
                             }
                         }
                         // Side faces with MC-style corner heights
@@ -1020,7 +1457,7 @@ impl Chunk {
                         } else {
                             unsafe { n_pz.map_or(BlockType::Air, |c| (*c).blocks[x][y][0]) }
                         };
-                        if n_zpb != BlockType::Water {
+                        if n_zpb != block {
                             v_wa.extend_from_slice(&[
                                 fx,
                                 fy,
@@ -1050,7 +1487,7 @@ impl Chunk {
                             let shade =
                                 (255.0 * 0.6 * calc_light_f(get_light_safe(wx, wy, wz + 1))) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]);
+                                c_wa.extend_from_slice(&[shade, shade, shade, liquid_alpha]);
                             }
                         }
                         // Z- face
@@ -1061,7 +1498,7 @@ impl Chunk {
                                 n_nz.map_or(BlockType::Air, |c| (*c).blocks[x][y][CHUNK_DEPTH - 1])
                             }
                         };
-                        if n_znb != BlockType::Water {
+                        if n_znb != block {
                             v_wa.extend_from_slice(&[
                                 fx + 1.0,
                                 fy,
@@ -1091,7 +1528,7 @@ impl Chunk {
                             let shade =
                                 (255.0 * 0.6 * calc_light_f(get_light_safe(wx, wy, wz - 1))) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]);
+                                c_wa.extend_from_slice(&[shade, shade, shade, liquid_alpha]);
                             }
                         }
                         // X+ face
@@ -1100,7 +1537,7 @@ impl Chunk {
                         } else {
                             unsafe { n_px.map_or(BlockType::Air, |c| (*c).blocks[0][y][z]) }
                         };
-                        if n_xpb != BlockType::Water {
+                        if n_xpb != block {
                             v_wa.extend_from_slice(&[
                                 fx + 1.0,
                                 fy,
@@ -1130,7 +1567,7 @@ impl Chunk {
                             let shade =
                                 (255.0 * 0.8 * calc_light_f(get_light_safe(wx + 1, wy, wz))) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]);
+                                c_wa.extend_from_slice(&[shade, shade, shade, liquid_alpha]);
                             }
                         }
                         // X- face
@@ -1141,7 +1578,7 @@ impl Chunk {
                                 n_nx.map_or(BlockType::Air, |c| (*c).blocks[CHUNK_WIDTH - 1][y][z])
                             }
                         };
-                        if n_xnb != BlockType::Water {
+                        if n_xnb != block {
                             v_wa.extend_from_slice(&[
                                 fx,
                                 fy,
@@ -1171,7 +1608,86 @@ impl Chunk {
                             let shade =
                                 (255.0 * 0.8 * calc_light_f(get_light_safe(wx - 1, wy, wz))) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[shade, shade, shade, WATER_VERTEX_ALPHA]);
+                                c_wa.extend_from_slice(&[shade, shade, shade, liquid_alpha]);
+                            }
+                        }
+                        continue;
+                    }
+
+                    if block == BlockType::Wheat {
+                        let (v, t, n, c) = (&mut v_tr, &mut t_tr, &mut n_tr, &mut c_tr);
+                        let (tx, ty) = crate::item::atlas_uv(block);
+                        let u0 = tx as f32 * ts + pad;
+                        let v0 = ty as f32 * ts + pad;
+                        let u1 = (tx as f32 + 1.0) * ts - pad;
+                        let v1 = (ty as f32 + 1.0) * ts - pad;
+                        let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
+                        let wy = y as i32;
+                        let wz = z as i32 + self.z * CHUNK_DEPTH as i32;
+                        let light = calc_light_f(get_light_safe(wx, wy, wz).max(get_light_safe(
+                            wx,
+                            wy + 1,
+                            wz,
+                        )));
+                        let shade = (255.0 * light).max(70.0) as u8;
+                        let color = [shade, shade, shade, 255];
+                        let y0 = fy;
+                        let y1 = fy + 0.875;
+                        let x0 = fx + 0.12;
+                        let x1 = fx + 0.88;
+                        let z0 = fz + 0.12;
+                        let z1 = fz + 0.88;
+                        let planes = [
+                            [[x0, y0, z0], [x1, y0, z1], [x1, y1, z1], [x0, y1, z0]],
+                            [[x1, y0, z0], [x0, y0, z1], [x0, y1, z1], [x1, y1, z0]],
+                        ];
+
+                        for verts in planes {
+                            v.extend_from_slice(&[
+                                verts[0][0],
+                                verts[0][1],
+                                verts[0][2],
+                                verts[1][0],
+                                verts[1][1],
+                                verts[1][2],
+                                verts[2][0],
+                                verts[2][1],
+                                verts[2][2],
+                                verts[0][0],
+                                verts[0][1],
+                                verts[0][2],
+                                verts[2][0],
+                                verts[2][1],
+                                verts[2][2],
+                                verts[3][0],
+                                verts[3][1],
+                                verts[3][2],
+                                verts[2][0],
+                                verts[2][1],
+                                verts[2][2],
+                                verts[1][0],
+                                verts[1][1],
+                                verts[1][2],
+                                verts[0][0],
+                                verts[0][1],
+                                verts[0][2],
+                                verts[3][0],
+                                verts[3][1],
+                                verts[3][2],
+                                verts[2][0],
+                                verts[2][1],
+                                verts[2][2],
+                                verts[0][0],
+                                verts[0][1],
+                                verts[0][2],
+                            ]);
+                            t.extend_from_slice(&[
+                                u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0, u1, v0, u1, v1, u0,
+                                v1, u0, v0, u1, v0, u0, v1,
+                            ]);
+                            for _ in 0..12 {
+                                n.extend_from_slice(&[0.0, 1.0, 0.0]);
+                                c.extend_from_slice(&color);
                             }
                         }
                         continue;
@@ -1199,9 +1715,7 @@ impl Chunk {
                     let wy = y as i32;
                     let wz = z as i32 + self.z * CHUNK_DEPTH as i32;
 
-                    let is_solid = |b: BlockType| {
-                        b != BlockType::Air && b != BlockType::Water && !b.is_transparent()
-                    };
+                    let is_solid = |b: BlockType| b.is_solid() && !b.is_transparent();
 
                     // Top
                     let neighbor_top = if y < CHUNK_HEIGHT - 1 {
@@ -1550,5 +2064,53 @@ impl Chunk {
             ))
         };
         self.meshing_in_progress = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_generation_is_repeatable_for_same_seed() {
+        let mut first = Chunk::new(0, 0, 12_345);
+        let mut second = Chunk::new(0, 0, 12_345);
+
+        first.generate();
+        second.generate();
+
+        assert_eq!(first.blocks, second.blocks);
+        assert_eq!(first.liquid_levels, second.liquid_levels);
+    }
+
+    #[test]
+    fn terrain_height_stays_below_world_ceiling() {
+        for seed in [12_345_u64, 4_259_633_870_796_407_859_u64] {
+            for x in (-256..=256).step_by(7) {
+                for z in (-256..=256).step_by(7) {
+                    let (height, _) = terrain_height_and_biome(x as f32, z as f32, seed);
+                    assert!(
+                        height <= MAX_TERRAIN_HEIGHT as usize,
+                        "terrain height {height} reached ceiling near ({x}, {z}) for seed {seed}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_height_changes_smoothly_across_columns() {
+        let seed = 4_259_633_870_796_407_859_u64;
+        for x in (-192..=192).step_by(3) {
+            for z in (-192..=192).step_by(3) {
+                let (height, _) = terrain_height_and_biome(x as f32, z as f32, seed);
+                let (east, _) = terrain_height_and_biome((x + 1) as f32, z as f32, seed);
+                let (south, _) = terrain_height_and_biome(x as f32, (z + 1) as f32, seed);
+                assert!(
+                    height.abs_diff(east).max(height.abs_diff(south)) <= 28,
+                    "terrain height jumped near ({x}, {z}) for seed {seed}"
+                );
+            }
+        }
     }
 }

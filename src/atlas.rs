@@ -600,9 +600,49 @@ pub fn generate_atlas_data() -> Vec<u8> {
             draw_pixel(4 * 16 + x as i32, 16 + y as i32, r, g, b, 255);
         }
     }
+    for y in 0..16i32 {
+        for x in 0..16i32 {
+            let noise = ((x * 13 + y * 7) % 17) - 8;
+            let (r, g, b) = if (5..=10).contains(&y) {
+                let band = if y == 5 || y == 10 { 174 } else { 214 };
+                (band + noise, band + noise, band + noise)
+            } else {
+                let stripe = if (x + y) % 3 == 0 { 28 } else { 0 };
+                (186 + stripe + noise, 38 + noise / 2, 28 + noise / 3)
+            };
+            draw_pixel(
+                4 * 16 + x,
+                16 + y,
+                r.clamp(0, 255) as u8,
+                g.clamp(0, 255) as u8,
+                b.clamp(0, 255) as u8,
+                255,
+            );
+        }
+    }
+    for (x, y) in [
+        (3, 7),
+        (4, 7),
+        (5, 7),
+        (4, 8),
+        (4, 9),
+        (7, 7),
+        (8, 7),
+        (7, 8),
+        (8, 8),
+        (7, 9),
+        (8, 9),
+        (11, 7),
+        (12, 7),
+        (13, 7),
+        (12, 8),
+        (12, 9),
+    ] {
+        draw_pixel(4 * 16 + x, 16 + y, 24, 24, 24, 255);
+    }
 
-    // Nuke: High-fidelity Radiation Symbol
-    let nuke_pixels: [(u8, u8, u8); 256] = [
+    // Unused warning tile
+    let warning_pixels: [(u8, u8, u8); 256] = [
         (255, 255, 0),
         (255, 255, 0),
         (255, 255, 0),
@@ -862,7 +902,7 @@ pub fn generate_atlas_data() -> Vec<u8> {
     ];
     for y in 0..16 {
         for x in 0..16 {
-            let (r, g, b) = nuke_pixels[y * 16 + x];
+            let (r, g, b) = warning_pixels[y * 16 + x];
             draw_pixel(6 * 16 + x as i32, 7 * 16 + y as i32, r, g, b, 255);
         }
     }
@@ -1475,6 +1515,125 @@ pub fn generate_atlas_data() -> Vec<u8> {
             }
         }
 
+        // Lava (7,7)
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                let n = (crate::noise::noise_2d(x as f32 * 0.6, y as f32 * 0.6) * 35.0) as i32;
+                let vein = (x * 3 + y * 5) % 11 < 3;
+                let (r, g, b) = if vein {
+                    (255 + n, 210 + n / 2, 55)
+                } else {
+                    (220 + n, 75 + n / 3, 20)
+                };
+                sp(
+                    &mut data,
+                    7 * 16 + x,
+                    7 * 16 + y,
+                    r.clamp(0, 255) as u8,
+                    g.clamp(0, 255) as u8,
+                    b.clamp(0, 255) as u8,
+                    255,
+                );
+            }
+        }
+
+        // Cactus (8,7)
+        nb(&mut data, 8, 7, 45, 145, 55);
+        for y in 0..16i32 {
+            sp(&mut data, 8 * 16 + 2, 7 * 16 + y, 25, 95, 35, 255);
+            sp(&mut data, 8 * 16 + 13, 7 * 16 + y, 25, 95, 35, 255);
+        }
+        for y in (2..16i32).step_by(4) {
+            for x in 4..12i32 {
+                sp(&mut data, 8 * 16 + x, 7 * 16 + y, 210, 235, 160, 255);
+            }
+        }
+
+        // Clay (9,7)
+        nb(&mut data, 9, 7, 145, 155, 165);
+
+        // Farmland top (10,7)
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                let n = (crate::noise::noise_2d(x as f32 * 0.5, y as f32 * 0.5) * 10.0) as i32;
+                let furrow = x % 4 == 0 || x % 4 == 1;
+                let (r, g, b) = if furrow {
+                    (85 + n, 55 + n, 35 + n)
+                } else {
+                    (125 + n, 80 + n, 45 + n)
+                };
+                sp(
+                    &mut data,
+                    10 * 16 + x,
+                    7 * 16 + y,
+                    r.clamp(0, 255) as u8,
+                    g.clamp(0, 255) as u8,
+                    b.clamp(0, 255) as u8,
+                    255,
+                );
+            }
+        }
+
+        // Wheat crop/item (11,7)
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                sp(&mut data, 11 * 16 + x, 7 * 16 + y, 0, 0, 0, 0);
+            }
+        }
+        let wheat_stems = [
+            (4, 6, 14, 120, 135, 35),
+            (6, 4, 15, 145, 125, 35),
+            (8, 5, 15, 120, 145, 40),
+            (10, 3, 14, 170, 130, 35),
+            (12, 7, 15, 110, 130, 35),
+        ];
+        for (x, y0, y1, r, g, b) in wheat_stems {
+            for y in y0..=y1 {
+                sp(&mut data, 11 * 16 + x, 7 * 16 + y, r, g, b, 255);
+                if y > y0 + 2 && x > 1 {
+                    sp(&mut data, 11 * 16 + x - 1, 7 * 16 + y, r / 2, g, b / 2, 220);
+                }
+            }
+            for dy in 0..4 {
+                for dx in -1..=1 {
+                    if (dx + dy) % 2 == 0 {
+                        sp(
+                            &mut data,
+                            11 * 16 + x + dx,
+                            7 * 16 + y0 + dy,
+                            225,
+                            185,
+                            55,
+                            255,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Redstone Ore (12,7)
+        nb(&mut data, 12, 7, 135, 135, 135);
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                if (x * 5 + y * 7) % 10 == 0 {
+                    sp(&mut data, 12 * 16 + x, 7 * 16 + y, 210, 25, 25, 255);
+                }
+            }
+        }
+
+        // Mob spawner (13,7)
+        nb(&mut data, 13, 7, 45, 50, 60);
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                if x % 5 == 0 || y % 5 == 0 {
+                    sp(&mut data, 13 * 16 + x, 7 * 16 + y, 15, 18, 24, 255);
+                }
+                if (6..=9).contains(&x) && (6..=9).contains(&y) {
+                    sp(&mut data, 13 * 16 + x, 7 * 16 + y, 60, 100, 180, 255);
+                }
+            }
+        }
+
         // === MATERIAL ITEM SPRITES (Row 4) ===
         // Stick (0,4)
         for i in 0..12i32 {
@@ -1594,6 +1753,16 @@ pub fn generate_atlas_data() -> Vec<u8> {
                 }
             }
         }
+        // Redstone Dust (8,4)
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                let main = y == 8 && (3..=12).contains(&x);
+                let shard = (x - 8) * (x - 8) + (y - 8) * (y - 8) < 16 && (x + y) % 3 == 0;
+                if main || shard {
+                    sp(&mut data, 8 * 16 + x, 4 * 16 + y, 190, 20, 20, 255);
+                }
+            }
+        }
 
         // === TOOL SPRITES ===
         let mat_colors: [(u8, u8, u8); 5] = [
@@ -1705,22 +1874,164 @@ pub fn generate_atlas_data() -> Vec<u8> {
         }
 
         // === CRACK STAGE TEXTURES (row 3, columns 0-9) ===
-        for stage in 0..10u32 {
-            let density = (stage + 1) as f32 / 12.0;
+        // Clear the crack tiles to fully transparent before drawing.
+        for stage in 0..10i32 {
             for x in 0..16i32 {
                 for y in 0..16i32 {
-                    let hash = ((x * 374761393 + y * 668265263 + stage as i32 * 1274126177) as u32)
-                        .wrapping_mul(1103515245)
-                        .wrapping_add(12345);
-                    let frac = (hash % 1000) as f32 / 1000.0;
-                    if frac < density {
-                        let alpha = (80 + stage * 18).min(255) as u8;
-                        sp(&mut data, stage as i32 * 16 + x, 3 * 16 + y, 0, 0, 0, alpha);
+                    sp(&mut data, stage * 16 + x, 3 * 16 + y, 0, 0, 0, 0);
+                }
+            }
+        }
+
+        let crack_segments: [(i32, i32, i32, i32, i32); 31] = [
+            (8, 8, 7, 6, 0),
+            (8, 8, 10, 8, 0),
+            (8, 8, 7, 10, 0),
+            (7, 6, 5, 5, 1),
+            (10, 8, 12, 7, 1),
+            (7, 10, 5, 12, 1),
+            (5, 5, 3, 4, 2),
+            (12, 7, 14, 6, 2),
+            (5, 12, 4, 14, 2),
+            (7, 6, 8, 4, 2),
+            (10, 8, 11, 10, 2),
+            (8, 4, 9, 2, 3),
+            (11, 10, 13, 12, 3),
+            (3, 4, 1, 3, 3),
+            (4, 14, 2, 15, 3),
+            (5, 5, 4, 7, 4),
+            (4, 7, 2, 8, 4),
+            (12, 7, 13, 9, 4),
+            (13, 9, 15, 10, 4),
+            (7, 10, 9, 11, 4),
+            (9, 11, 10, 14, 5),
+            (8, 4, 6, 3, 5),
+            (6, 3, 5, 1, 5),
+            (11, 10, 9, 8, 5),
+            (1, 3, 0, 2, 6),
+            (14, 6, 15, 5, 6),
+            (15, 10, 15, 12, 6),
+            (2, 15, 1, 15, 6),
+            (6, 3, 3, 2, 7),
+            (9, 11, 12, 13, 7),
+            (4, 7, 1, 9, 8),
+        ];
+
+        let draw_crack_line =
+            |data: &mut [u8], stage: i32, x1: i32, y1: i32, x2: i32, y2: i32, thick: bool| {
+                let dx = (x2 - x1).abs();
+                let dy = (y2 - y1).abs();
+                let sx = if x1 < x2 { 1 } else { -1 };
+                let sy = if y1 < y2 { 1 } else { -1 };
+                let mut err = dx - dy;
+                let mut x = x1;
+                let mut y = y1;
+                loop {
+                    if (0..16).contains(&x) && (0..16).contains(&y) {
+                        sp(data, stage * 16 + x, 3 * 16 + y, 0, 0, 0, 230);
+                        if thick {
+                            for (ox, oy) in [(1, 0), (0, 1)] {
+                                let nx = x + ox;
+                                let ny = y + oy;
+                                if (0..16).contains(&nx) && (0..16).contains(&ny) {
+                                    sp(data, stage * 16 + nx, 3 * 16 + ny, 0, 0, 0, 180);
+                                }
+                            }
+                        }
                     }
+                    if x == x2 && y == y2 {
+                        break;
+                    }
+                    let e2 = err * 2;
+                    if e2 > -dy {
+                        err -= dy;
+                        x += sx;
+                    }
+                    if e2 < dx {
+                        err += dx;
+                        y += sy;
+                    }
+                }
+            };
+
+        for stage in 0..10i32 {
+            for &(x1, y1, x2, y2, start_stage) in &crack_segments {
+                if stage >= start_stage {
+                    draw_crack_line(&mut data, stage, x1, y1, x2, y2, stage >= 8);
+                }
+            }
+            if stage >= 6 {
+                for &(x, y) in &[(6, 9), (9, 7), (11, 11), (3, 11), (12, 4)] {
+                    sp(&mut data, stage * 16 + x, 3 * 16 + y, 0, 0, 0, 210);
                 }
             }
         }
     }
 
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generate_atlas_data;
+
+    const ATLAS_SIZE: usize = 256;
+    const TILE_SIZE: usize = 16;
+
+    fn pixel(data: &[u8], x: usize, y: usize) -> [u8; 4] {
+        let i = (y * ATLAS_SIZE + x) * 4;
+        [data[i], data[i + 1], data[i + 2], data[i + 3]]
+    }
+
+    #[test]
+    fn tnt_tile_is_opaque_and_visibly_red() {
+        let data = generate_atlas_data();
+        let mut opaque_pixels = 0;
+        let mut red_pixels = 0;
+        let mut pale_label_pixels = 0;
+
+        for y in 0..TILE_SIZE {
+            for x in 0..TILE_SIZE {
+                let [r, g, b, a] = pixel(&data, 4 * TILE_SIZE + x, TILE_SIZE + y);
+                if a == 255 {
+                    opaque_pixels += 1;
+                }
+                if r > 150 && g < 85 && b < 75 {
+                    red_pixels += 1;
+                }
+                if r > 165 && g > 165 && b > 165 {
+                    pale_label_pixels += 1;
+                }
+            }
+        }
+
+        assert_eq!(opaque_pixels, TILE_SIZE * TILE_SIZE);
+        assert!(red_pixels > 120, "TNT tile should be mostly red");
+        assert!(
+            pale_label_pixels > 50,
+            "TNT tile should have a clear label band"
+        );
+    }
+
+    #[test]
+    fn crack_tiles_have_transparent_backgrounds_and_progress() {
+        let data = generate_atlas_data();
+        let mut stage_counts = [0usize; 10];
+
+        for stage in 0..10 {
+            for y in 0..TILE_SIZE {
+                for x in 0..TILE_SIZE {
+                    let [_, _, _, a] = pixel(&data, stage * TILE_SIZE + x, 3 * TILE_SIZE + y);
+                    if a > 0 {
+                        stage_counts[stage] += 1;
+                    }
+                }
+            }
+        }
+
+        assert!(stage_counts[0] > 0);
+        assert!(stage_counts[0] < TILE_SIZE * TILE_SIZE / 3);
+        assert!(stage_counts[9] > stage_counts[0]);
+        assert!(stage_counts[9] < TILE_SIZE * TILE_SIZE);
+    }
 }

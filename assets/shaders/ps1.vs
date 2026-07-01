@@ -26,5 +26,5 @@ void main() {
     fragPos = (uModel * vec4(pos, 1.0)).xyz;
     fragNormal = normalize((uModel * vec4(vertexNormal, 0.0)).xyz);
 
-    gl_Position = uMVP * vec4(pos, 1.0);
+    gl_Position = uMVP * (uModel * vec4(pos, 1.0));
 }
