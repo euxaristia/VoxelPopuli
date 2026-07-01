@@ -18,7 +18,8 @@ if ($javaFiles.Count -eq 0) {
 
 # Collect all jar files in lib
 $jars = Get-ChildItem -Path "lib" -Filter "*.jar" | ForEach-Object { $_.FullName }
-$classpath = ($jars -join ";") + ";target\classes"
+$sep = [IO.Path]::PathSeparator
+$classpath = ($jars -join $sep) + $sep + "target\classes"
 
 Write-Host "Compiling $($javaFiles.Count) Java source files..."
 & $javac -d target\classes -cp $classpath $javaFiles
