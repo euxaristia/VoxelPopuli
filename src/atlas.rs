@@ -377,6 +377,45 @@ pub fn generate_atlas_data() -> Vec<u8> {
         draw_pixel(4 * 16 + x, 16 + y, 24, 24, 24, 255);
     }
 
+    // Bell (12,1): gold dome and flared lip on a transparent tile
+    for y in 0..16i32 {
+        for x in 0..16i32 {
+            draw_pixel(12 * 16 + x, 16 + y, 0, 0, 0, 0);
+        }
+    }
+    for y in 0..16i32 {
+        // Half-width of the bell body at this row (0 = skip)
+        let hw = match y {
+            0..=2 => -1, // handled below as the hanger stub
+            3 => 0,
+            4..=8 => 2,
+            9..=10 => 3, // flared lip
+            _ => -2,     // clapper rows
+        };
+        if hw >= 0 {
+            for x in (7 - hw)..=(8 + hw) {
+                let (r, g, b) = if y >= 9 {
+                    (188, 148, 48) // darker lip
+                } else if x <= 6 {
+                    (244, 208, 96) // lit side
+                } else {
+                    (226, 186, 66)
+                };
+                draw_pixel(12 * 16 + x, 16 + y, r, g, b, 255);
+            }
+        } else if hw == -1 {
+            // Hanger stub at the top center
+            for x in 7..=8 {
+                draw_pixel(12 * 16 + x, 16 + y, 92, 70, 28, 255);
+            }
+        } else if (11..=12).contains(&y) {
+            // Clapper peeking under the lip
+            for x in 7..=8 {
+                draw_pixel(12 * 16 + x, 16 + y, 92, 70, 28, 255);
+            }
+        }
+    }
+
     // Unused warning tile
     let warning_pixels: [(u8, u8, u8); 256] = [
         (255, 255, 0),

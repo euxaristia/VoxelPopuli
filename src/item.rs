@@ -114,6 +114,9 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
         // TNT drops itself
         TNT => s(0.0, TT::None, TM::None, false, TNT, 1),
 
+        // Village bell
+        Bell => s(5.0, TT::Pickaxe, TM::Wood, true, Bell, 1),
+
         // Items don't have block hardness (shouldn't be mined)
         _ => s(0.0, TT::None, TM::None, false, b, 1),
     }
@@ -278,6 +281,7 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         IronOre => (3, 1),
         TNT => (4, 1),
         IronBlock => (6, 1),
+        Bell => (12, 1),
         RawIron => (7, 1),
         IronIngot => (8, 1),
         FlintAndSteel => (9, 1),

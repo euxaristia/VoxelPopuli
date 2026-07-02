@@ -7,8 +7,10 @@ mod explosion;
 mod item;
 mod java_compat;
 mod mining;
+mod mob;
 mod noise;
 mod renderer;
+mod village;
 mod world;
 
 use crate::world::{CLOUD_HEIGHT, VIEW_DISTANCE, World};
@@ -2528,9 +2530,10 @@ fn main() {
             }
         }
 
-        // Render Explosives and Particles
+        // Render Explosives, Particles, and Village Mobs
         world.render_explosives(&shader, &mvp, current_time as f32);
         world.render_particles(&shader, &mvp);
+        world.render_mobs(&shader);
 
         // Transparency render order depends on whether the camera is above or below
         // the cloud layer, so each transparent layer is drawn back-to-front.

@@ -73,7 +73,7 @@ fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn chunk_hash(seed: u64, x: i32, z: i32, salt: i32) -> u32 {
+pub(crate) fn chunk_hash(seed: u64, x: i32, z: i32, salt: i32) -> u32 {
     let mixed = mix64(
         seed ^ (x as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
             ^ (z as i64 as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
@@ -82,16 +82,16 @@ fn chunk_hash(seed: u64, x: i32, z: i32, salt: i32) -> u32 {
     (mixed ^ (mixed >> 32)) as u32
 }
 
-fn hash_unit(seed: u64, x: i32, z: i32, salt: i32) -> f32 {
+pub(crate) fn hash_unit(seed: u64, x: i32, z: i32, salt: i32) -> f32 {
     chunk_hash(seed, x, z, salt) as f32 / u32::MAX as f32
 }
 
-struct ChunkRng {
+pub(crate) struct ChunkRng {
     state: u64,
 }
 
 impl ChunkRng {
-    fn new(seed: u64, x: i32, z: i32, salt: u64) -> Self {
+    pub(crate) fn new(seed: u64, x: i32, z: i32, salt: u64) -> Self {
         let state = mix64(
             seed ^ (x as i64 as u64).wrapping_mul(0xD1B5_4A32_D192_ED03)
                 ^ (z as i64 as u64).wrapping_mul(0xABC9_83DB_5F35_53B5)
@@ -100,7 +100,7 @@ impl ChunkRng {
         Self { state }
     }
 
-    fn next_u32(&mut self) -> u32 {
+    pub(crate) fn next_u32(&mut self) -> u32 {
         self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         (mix64(self.state) >> 32) as u32
     }
@@ -128,7 +128,7 @@ pub const WATER_VERTEX_ALPHA: u8 = 180;
 const SEA_LEVEL: usize = 124;
 const MAX_TERRAIN_HEIGHT: i32 = CHUNK_HEIGHT as i32 - 18;
 
-fn terrain_height_and_biome(world_x: f32, world_z: f32, seed: u64) -> (usize, Biome) {
+pub(crate) fn terrain_height_and_biome(world_x: f32, world_z: f32, seed: u64) -> (usize, Biome) {
     let biome = get_biome_seeded(world_x, world_z, seed);
     let continental = seeded_perlin_2d(world_x, world_z, 0.005, 3, seed, 100);
     let detail = seeded_perlin_2d(world_x, world_z, 0.03, 4, seed, 110);
@@ -472,7 +472,7 @@ impl Chunk {
         }
     }
 
-    fn surface_y(&self, x: usize, z: usize) -> Option<usize> {
+    pub(crate) fn surface_y(&self, x: usize, z: usize) -> Option<usize> {
         for y in (1..CHUNK_HEIGHT - 2).rev() {
             let b = self.blocks[x][y][z];
             if b.is_solid() && b != BlockType::SnowLayer {
@@ -566,6 +566,10 @@ impl Chunk {
 
     fn generate_village_outpost(&mut self) {
         if hash_unit(self.seed, self.x, self.z, 7201) > 0.07 {
+            return;
+        }
+        // Lone cabins don't spawn inside village bounds
+        if crate::village::chunk_in_village(self.seed, self.x, self.z) {
             return;
         }
 
@@ -1276,6 +1280,9 @@ impl Chunk {
             }
         }
 
+        // PASS 8: Villages (multi-chunk, seed-deterministic)
+        crate::village::stamp_chunk(self);
+
         self.calculate_lighting();
     }
 
@@ -1817,6 +1824,8 @@ impl ChunkData {
                         0.125
                     } else if block == BlockType::Torch {
                         0.625
+                    } else if block == BlockType::Bell {
+                        0.6
                     } else {
                         1.0
                     };
