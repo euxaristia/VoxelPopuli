@@ -484,7 +484,9 @@ impl World {
         let mut nz = 0;
         while t < max_distance {
             let block = self.get_block(ix, iy, iz);
-            if block != BlockType::Air && block != BlockType::Water && block != BlockType::Lava {
+            // Lava stops the ray so it can't be mined through; the mining
+            // state rejects Lava hits itself.
+            if block != BlockType::Air && block != BlockType::Water {
                 return RaycastResult {
                     hit: true,
                     x: ix,
@@ -569,6 +571,12 @@ impl World {
                                 Some(c) => c.x != x || c.z != z,
                             };
                             if should_replace {
+                                // The displaced chunk's dirty flag was counted; drop its count
+                                if let Some(old) = &self.chunks[index]
+                                    && old.dirty
+                                {
+                                    self.dirty_count -= 1;
+                                }
                                 let mut chunk = Box::new(Chunk::new(x, z, self.seed));
                                 chunk.generate();
                                 self.chunks[index] = Some(chunk);
@@ -614,15 +622,22 @@ impl World {
                                 Some(c) => c.x != x || c.z != z,
                             };
                             if should_replace {
+                                // The displaced chunk's dirty flag was counted; drop its count
+                                if let Some(old) = &self.chunks[index]
+                                    && old.dirty
+                                {
+                                    self.dirty_count -= 1;
+                                }
                                 let mut chunk = Box::new(Chunk::new(x, z, self.seed));
                                 chunk.generate();
                                 self.chunks[index] = Some(chunk);
                                 self.apply_edits_to_chunk(x, z);
 
-                                // Dirty the new chunk AND its neighbors to fix lighting/meshing gaps
-                                if let Some(c) = &mut self.chunks[index]
-                                    && !c.dirty
-                                {
+                                // Dirty the new chunk AND its neighbors to fix lighting/meshing gaps.
+                                // Fresh chunks are born dirty but were never counted, so count
+                                // unconditionally — the old `!c.dirty` guard never fired and let
+                                // dirty_count drift negative, stalling the mesh scan entirely.
+                                if let Some(c) = &mut self.chunks[index] {
                                     c.dirty = true;
                                     self.dirty_count += 1;
                                 }
@@ -813,7 +828,13 @@ impl World {
         // --- Process Detonations ---
         let dets: Vec<glam::Vec3> = std::mem::take(&mut self.detonations);
         for pos in dets {
-            crate::explosion::explode(self, pos.x as i32, pos.y as i32, pos.z as i32, 4);
+            crate::explosion::explode(
+                self,
+                pos.x.floor() as i32,
+                pos.y.floor() as i32,
+                pos.z.floor() as i32,
+                4,
+            );
         }
 
         // --- Particle Ticking ---

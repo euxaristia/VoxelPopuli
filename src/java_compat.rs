@@ -147,6 +147,10 @@ pub struct ExportSummary {
 impl ExportConfig {
     pub fn from_args() -> Option<Self> {
         let args: Vec<String> = std::env::args().skip(1).collect();
+        Self::parse(&args)
+    }
+
+    fn parse(args: &[String]) -> Option<Self> {
         let mut output_dir: Option<PathBuf> = None;
         let mut radius = 4;
         let mut i = 0;
@@ -164,9 +168,12 @@ impl ExportConfig {
                 }
             } else if let Some(value) = arg.strip_prefix("--export-radius=") {
                 radius = value.parse().unwrap_or(radius);
-            } else if arg == "--export-radius" && i + 1 < args.len() {
-                radius = args[i + 1].parse().unwrap_or(radius);
-                i += 1;
+            } else if arg == "--export-radius" {
+                // Only consume the next arg as a value if it isn't another flag
+                if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                    radius = args[i + 1].parse().unwrap_or(radius);
+                    i += 1;
+                }
             }
             i += 1;
         }
@@ -664,6 +671,32 @@ mod tests {
             None,
             "inventory redstone dust is not a placed block in VoxelPopuli yet"
         );
+    }
+
+    #[test]
+    fn export_radius_without_value_does_not_consume_next_flag() {
+        let args: Vec<String> = ["--export-radius", "--export-java17", "out"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let config = ExportConfig::parse(&args).expect("--export-java17 must still be parsed");
+        assert_eq!(config.output_dir, PathBuf::from("out"));
+        assert_eq!(config.radius, 4);
+    }
+
+    #[test]
+    fn export_radius_parses_valid_forms() {
+        let args: Vec<String> = ["--export-java17", "out", "--export-radius", "7"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(ExportConfig::parse(&args).unwrap().radius, 7);
+
+        let args: Vec<String> = ["--export-java17=out", "--export-radius=9"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(ExportConfig::parse(&args).unwrap().radius, 9);
     }
 
     #[test]
