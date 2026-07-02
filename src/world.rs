@@ -131,6 +131,7 @@ pub struct World {
     pub water_tick_timer: f32,
     pub visible_chunks: Vec<usize>,
     pub meshing_in_flight: i32,
+    next_mesh_job_id: u64,
     mesh_result_tx: std::sync::mpsc::Sender<MeshResult>,
     mesh_result_rx: std::sync::mpsc::Receiver<MeshResult>,
 }
@@ -168,6 +169,7 @@ impl World {
             water_tick_timer: 0.0,
             visible_chunks: Vec::new(),
             meshing_in_flight: 0,
+            next_mesh_job_id: 1,
             mesh_result_tx,
             mesh_result_rx,
         }
@@ -664,8 +666,11 @@ impl World {
         if self.meshing_in_flight > 0 {
             while let Ok(result) = self.mesh_result_rx.try_recv() {
                 self.meshing_in_flight -= 1;
+                // The job id check drops stale results when the chunk was
+                // replaced and re-dispatched while this job was in flight.
                 if let Some(chunk) = self.get_chunk_mut(result.x, result.z)
                     && chunk.meshing_in_progress
+                    && chunk.mesh_job_id == result.job_id
                 {
                     chunk.light = result.light;
                     chunk.upload_mesh(result.opaque, result.transparent, result.water);
@@ -702,10 +707,13 @@ impl World {
                 // the worker an owned copy — it never touches World or the live
                 // chunk, so block edits can't race the mesher.
                 let snap = MeshSnapshot::capture(self, cx, cz);
+                let job_id = self.next_mesh_job_id;
+                self.next_mesh_job_id += 1;
                 let mut work = {
                     let chunk = self.chunks[index].as_mut().unwrap();
                     chunk.dirty = false;
                     chunk.meshing_in_progress = true;
+                    chunk.mesh_job_id = job_id;
                     chunk.snapshot_data()
                 };
                 self.dirty_count -= 1;
@@ -718,6 +726,7 @@ impl World {
                     let _ = tx.send(MeshResult {
                         x: work.x,
                         z: work.z,
+                        job_id,
                         light: work.light,
                         opaque,
                         transparent,

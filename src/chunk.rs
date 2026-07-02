@@ -225,9 +225,13 @@ pub struct ChunkData {
 }
 
 // Finished meshing job, sent back to the main thread over a channel.
+// job_id ties the result to a specific dispatch: if the chunk was replaced
+// and re-dispatched while this job was in flight, a stale result must not
+// upload over the newer job's output.
 pub struct MeshResult {
     pub x: i32,
     pub z: i32,
+    pub job_id: u64,
     pub light: LightArray,
     pub opaque: MeshData,
     pub transparent: MeshData,
@@ -370,11 +374,19 @@ impl MeshSnapshot {
                     }
                     None => {
                         // Unloaded neighbor: fall back to the edits map,
-                        // matching what World::get_block would return.
+                        // matching what World::get_block would return. Edited
+                        // liquids get source level, as Chunk::set_block would.
                         let wx = cx * CHUNK_WIDTH as i32 + lx;
                         let wz = cz * CHUNK_DEPTH as i32 + lz;
                         for y in 0..CHUNK_HEIGHT {
-                            snap.blocks[sx][y][sz] = world.get_block(wx, y as i32, wz);
+                            let block = world.get_block(wx, y as i32, wz);
+                            snap.blocks[sx][y][sz] = block;
+                            snap.liquid[sx][y][sz] =
+                                if block == BlockType::Water || block == BlockType::Lava {
+                                    WATER_SOURCE
+                                } else {
+                                    0
+                                };
                         }
                     }
                 }
@@ -434,6 +446,9 @@ pub struct Chunk {
     pub mesh_water: Option<Mesh>,
     pub dirty: bool,
     pub meshing_in_progress: bool,
+    // Identity of the most recent mesh dispatch for this chunk; results
+    // carrying a different id are stale and must be dropped.
+    pub mesh_job_id: u64,
     pub x: i32,
     pub z: i32,
     pub seed: u64,
@@ -450,6 +465,7 @@ impl Chunk {
             mesh_water: None,
             dirty: true,
             meshing_in_progress: false,
+            mesh_job_id: 0,
             x,
             z,
             seed,
