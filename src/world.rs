@@ -1,7 +1,7 @@
 use crate::block::BlockType;
 use crate::chunk::{
-    CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, water_decay, water_is_falling, water_is_source,
-    water_level_from_decay,
+    CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, MeshResult, MeshSnapshot, water_decay,
+    water_is_falling, water_is_source, water_level_from_decay,
 };
 use crate::renderer;
 use crate::renderer::{Mesh, Shader, Texture2D};
@@ -131,6 +131,9 @@ pub struct World {
     pub water_tick_timer: f32,
     pub visible_chunks: Vec<usize>,
     pub meshing_in_flight: i32,
+    next_mesh_job_id: u64,
+    mesh_result_tx: std::sync::mpsc::Sender<MeshResult>,
+    mesh_result_rx: std::sync::mpsc::Receiver<MeshResult>,
 }
 
 impl World {
@@ -139,6 +142,7 @@ impl World {
         for _ in 0..CHUNK_POOL_SIZE {
             chunks.push(None);
         }
+        let (mesh_result_tx, mesh_result_rx) = std::sync::mpsc::channel();
         Self {
             seed,
             chunks,
@@ -165,6 +169,9 @@ impl World {
             water_tick_timer: 0.0,
             visible_chunks: Vec::new(),
             meshing_in_flight: 0,
+            next_mesh_job_id: 1,
+            mesh_result_tx,
+            mesh_result_rx,
         }
     }
 
@@ -303,17 +310,6 @@ impl World {
             && chunk.z == cz
         {
             return Some(chunk.as_mut());
-        }
-        None
-    }
-
-    pub fn get_chunk_ptr(&self, cx: i32, cz: i32) -> Option<*const Chunk> {
-        let index = self.get_pool_index(cx, cz);
-        if let Some(chunk) = &self.chunks[index]
-            && chunk.x == cx
-            && chunk.z == cz
-        {
-            return Some(chunk.as_ref() as *const Chunk);
         }
         None
     }
@@ -665,42 +661,19 @@ impl World {
         }
 
         // --- Prioritized Meshing ---
-        // 1. Collect and upload finished meshes to GPU (skip scan if nothing in flight)
+        // 1. Collect finished meshing jobs from the workers and upload to GPU.
+        //    Results for chunks that scrolled out of the pool are dropped.
         if self.meshing_in_flight > 0 {
-            let mut ready_indices = Vec::new();
-            for i in 0..CHUNK_POOL_SIZE {
-                if let Some(chunk) = &self.chunks[i]
+            while let Ok(result) = self.mesh_result_rx.try_recv() {
+                self.meshing_in_flight -= 1;
+                // The job id check drops stale results when the chunk was
+                // replaced and re-dispatched while this job was in flight.
+                if let Some(chunk) = self.get_chunk_mut(result.x, result.z)
                     && chunk.meshing_in_progress
-                    && chunk.pending_mesh_opaque.is_some()
+                    && chunk.mesh_job_id == result.job_id
                 {
-                    let dx = chunk.x as f32 * CHUNK_WIDTH as f32 + 8.0 - player_pos.x;
-                    let dz = chunk.z as f32 * CHUNK_DEPTH as f32 + 8.0 - player_pos.z;
-                    let dist_sq = dx * dx + dz * dz;
-                    ready_indices.push((i, dist_sq));
-                }
-            }
-            ready_indices.sort_unstable_by(|a, b| {
-                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            for (index, _) in ready_indices {
-                if let Some(chunk) = &mut self.chunks[index]
-                    && let (Some(opaque), Some(trans), Some(water)) = (
-                        chunk.pending_mesh_opaque.take(),
-                        chunk.pending_mesh_transparent.take(),
-                        chunk.pending_mesh_water.take(),
-                    )
-                {
-                    if chunk.pending_mesh_revision == chunk.edit_revision {
-                        chunk.upload_mesh(opaque, trans, water);
-                    } else {
-                        chunk.meshing_in_progress = false;
-                        if !chunk.dirty {
-                            chunk.dirty = true;
-                            self.dirty_count += 1;
-                        }
-                    }
-                    self.meshing_in_flight -= 1;
+                    chunk.light = result.light;
+                    chunk.upload_mesh(result.opaque, result.transparent, result.water);
                 }
             }
         }
@@ -725,32 +698,45 @@ impl World {
 
             let mut dispatches_this_frame = 0;
             for (index, _) in dirty_indices {
-                let world_ptr = self as *const World as usize;
-                if let Some(chunk) = &mut self.chunks[index] {
+                let (cx, cz) = match &self.chunks[index] {
+                    Some(chunk) => (chunk.x, chunk.z),
+                    None => continue,
+                };
+
+                // Snapshot chunk + neighbor border on the main thread, then hand
+                // the worker an owned copy — it never touches World or the live
+                // chunk, so block edits can't race the mesher.
+                let snap = MeshSnapshot::capture(self, cx, cz);
+                let job_id = self.next_mesh_job_id;
+                self.next_mesh_job_id += 1;
+                let mut work = {
+                    let chunk = self.chunks[index].as_mut().unwrap();
                     chunk.dirty = false;
                     chunk.meshing_in_progress = true;
-                    chunk.meshing_revision = chunk.edit_revision;
-                    self.dirty_count -= 1;
-                    self.meshing_in_flight += 1;
+                    chunk.mesh_job_id = job_id;
+                    chunk.snapshot_data()
+                };
+                self.dirty_count -= 1;
+                self.meshing_in_flight += 1;
 
-                    let chunk_ptr = chunk.as_mut() as *mut Chunk as usize;
-                    rayon::spawn(move || {
-                        let w = unsafe { &*(world_ptr as *const World) };
-                        let c = unsafe { &mut *(chunk_ptr as *mut Chunk) };
-
-                        c.calculate_lighting();
-                        let (op, tr, wa) = c.calculate_mesh_data(w);
-
-                        c.pending_mesh_revision = c.meshing_revision;
-                        c.pending_mesh_opaque = Some(op);
-                        c.pending_mesh_transparent = Some(tr);
-                        c.pending_mesh_water = Some(wa);
+                let tx = self.mesh_result_tx.clone();
+                rayon::spawn(move || {
+                    work.calculate_lighting();
+                    let (opaque, transparent, water) = work.calculate_mesh_data(&snap);
+                    let _ = tx.send(MeshResult {
+                        x: work.x,
+                        z: work.z,
+                        job_id,
+                        light: work.light,
+                        opaque,
+                        transparent,
+                        water,
                     });
+                });
 
-                    dispatches_this_frame += 1;
-                    if dispatches_this_frame >= 16 {
-                        break;
-                    }
+                dispatches_this_frame += 1;
+                if dispatches_this_frame >= 16 {
+                    break;
                 }
             }
         }
