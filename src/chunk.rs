@@ -2187,6 +2187,20 @@ mod tests {
     }
 
     #[test]
+    fn chunk_generation_differs_across_seeds() {
+        let mut first = Chunk::new(0, 0, 12_345);
+        let mut second = Chunk::new(0, 0, 54_321);
+
+        first.generate();
+        second.generate();
+
+        assert_ne!(
+            first.blocks, second.blocks,
+            "different seeds should produce different terrain"
+        );
+    }
+
+    #[test]
     fn terrain_height_stays_below_world_ceiling() {
         for seed in [12_345_u64, 4_259_633_870_796_407_859_u64] {
             for x in (-256..=256).step_by(7) {

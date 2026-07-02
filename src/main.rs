@@ -553,13 +553,17 @@ const RENDER_WIDTH: i32 = 750;
 const RENDER_HEIGHT: i32 = 422;
 
 fn render_target_size_for_framebuffer(width: i32, height: i32) -> (i32, i32) {
-    let width = width.max(1);
-    let height = height.max(1);
+    // Minimized or degenerate framebuffers (e.g. 3840x0) would otherwise
+    // produce an extreme aspect and an absurdly wide target texture.
+    if width <= 0 || height <= 0 {
+        return (RENDER_WIDTH, RENDER_HEIGHT);
+    }
     let aspect = width as f32 / height as f32;
     let pixel_budget = (RENDER_WIDTH * RENDER_HEIGHT) as f32;
     let target_height = (pixel_budget / aspect).sqrt().round().max(1.0) as i32;
     let target_width = (target_height as f32 * aspect).round().max(1.0) as i32;
-    (target_width, target_height)
+    // Never exceed the actual framebuffer size
+    (target_width.min(width), target_height.min(height))
 }
 
 #[cfg(test)]
@@ -588,6 +592,29 @@ mod render_target_tests {
     fn render_target_tracks_wide_framebuffer_aspect() {
         let size = render_target_size_for_framebuffer(2560, 1080);
         assert!(aspect_error(size, 2560, 1080) < 0.002);
+    }
+
+    #[test]
+    fn render_target_falls_back_for_degenerate_framebuffers() {
+        assert_eq!(
+            render_target_size_for_framebuffer(3840, 0),
+            (RENDER_WIDTH, RENDER_HEIGHT)
+        );
+        assert_eq!(
+            render_target_size_for_framebuffer(0, 0),
+            (RENDER_WIDTH, RENDER_HEIGHT)
+        );
+        assert_eq!(
+            render_target_size_for_framebuffer(-1, 720),
+            (RENDER_WIDTH, RENDER_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn render_target_never_exceeds_framebuffer() {
+        let (w, h) = render_target_size_for_framebuffer(320, 200);
+        assert!(w <= 320 && h <= 200);
+        assert!(w >= 1 && h >= 1);
     }
 }
 
@@ -1006,6 +1033,28 @@ impl Player {
         is_sneaking: bool,
         current_time: f64,
     ) {
+        // Hazard damage ticks even while the inventory is open — the world
+        // keeps updating, so standing in lava must keep hurting.
+        let in_lava = world.get_block(
+            self.position.x.floor() as i32,
+            (self.position.y + 0.9).floor() as i32,
+            self.position.z.floor() as i32,
+        ) == BlockType::Lava
+            || world.get_block(
+                self.position.x.floor() as i32,
+                (self.position.y + 0.1).floor() as i32,
+                self.position.z.floor() as i32,
+            ) == BlockType::Lava;
+        if in_lava {
+            self.damage_cooldown -= dt;
+            if self.damage_cooldown <= 0.0 {
+                self.health = (self.health - 2).max(0);
+                self.damage_cooldown = 0.5;
+            }
+        } else if self.damage_cooldown > 0.0 {
+            self.damage_cooldown = (self.damage_cooldown - dt).max(0.0);
+        }
+
         if self.inventory_open {
             return;
         }
@@ -1045,16 +1094,6 @@ impl Player {
             (self.position.y + 1.6).floor() as i32,
             self.position.z.floor() as i32,
         ) == BlockType::Water;
-        let in_lava = world.get_block(
-            self.position.x.floor() as i32,
-            (self.position.y + 0.9).floor() as i32,
-            self.position.z.floor() as i32,
-        ) == BlockType::Lava
-            || world.get_block(
-                self.position.x.floor() as i32,
-                (self.position.y + 0.1).floor() as i32,
-                self.position.z.floor() as i32,
-            ) == BlockType::Lava;
         let in_water = waist_in_w || feet_in_w;
 
         // Apply movement input
@@ -1159,16 +1198,6 @@ impl Player {
         if self.air_seconds <= 0.0 {
             // Drowning damage (not fully implemented, just draining health for now)
             // real implementation would need a timer
-        }
-
-        if in_lava {
-            self.damage_cooldown -= dt;
-            if self.damage_cooldown <= 0.0 {
-                self.health = (self.health - 2).max(0);
-                self.damage_cooldown = 0.5;
-            }
-        } else if self.damage_cooldown > 0.0 {
-            self.damage_cooldown = (self.damage_cooldown - dt).max(0.0);
         }
     }
 }
