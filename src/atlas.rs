@@ -335,46 +335,74 @@ pub fn generate_atlas_data() -> Vec<u8> {
         }
     }
 
-    // TNT: Red with white stripe and "TNT" text
+    // TNT side (4,1): bundled red sticks with a white label band
     for y in 0..16i32 {
         for x in 0..16i32 {
-            let noise = ((x * 13 + y * 7) % 17) - 8;
-            let (r, g, b) = if (5..=10).contains(&y) {
-                let band = if y == 5 || y == 10 { 174 } else { 214 };
-                (band + noise, band + noise, band + noise)
-            } else {
-                let stripe = if (x + y) % 3 == 0 { 28 } else { 0 };
-                (186 + stripe + noise, 38 + noise / 2, 28 + noise / 3)
+            // 4px-wide vertical sticks: dark seam, bright center, mid body
+            let (mut r, mut g, mut b) = match x % 4 {
+                0 => (156i32, 30i32, 24i32), // seam between sticks
+                2 => (208, 54, 40),          // rounded highlight
+                _ => (186, 42, 30),          // stick body
             };
-            draw_pixel(
-                4 * 16 + x,
-                16 + y,
-                r.clamp(0, 255) as u8,
-                g.clamp(0, 255) as u8,
-                b.clamp(0, 255) as u8,
-                255,
-            );
+            // Edge shading so stacked blocks read as separate
+            if y == 0 || y == 15 {
+                r -= 30;
+                g -= 8;
+                b -= 6;
+            }
+            draw_pixel(4 * 16 + x, 16 + y, r as u8, g as u8, b as u8, 255);
         }
     }
-    for (x, y) in [
-        (3, 7),
-        (4, 7),
-        (5, 7),
-        (4, 8),
-        (4, 9),
-        (7, 7),
-        (8, 7),
-        (7, 8),
-        (8, 8),
-        (7, 9),
-        (8, 9),
-        (11, 7),
-        (12, 7),
-        (13, 7),
-        (12, 8),
-        (12, 9),
-    ] {
-        draw_pixel(4 * 16 + x, 16 + y, 24, 24, 24, 255);
+    // Label band across the middle, faint shadow on its edge rows
+    for y in 5..=10i32 {
+        let c = if y == 5 || y == 10 { 198 } else { 233 };
+        for x in 0..16i32 {
+            draw_pixel(4 * 16 + x, 16 + y, c, c, c, 255);
+        }
+    }
+    // "TNT" lettering: 4-tall glyphs, T=3px and N=4px wide, centered
+    let t_glyph: [&[u8]; 4] = [b"XXX", b".X.", b".X.", b".X."];
+    let n_glyph: [&[u8]; 4] = [b"X..X", b"XX.X", b"X.XX", b"X..X"];
+    let mut pen_x = 2i32;
+    for glyph in [&t_glyph[..], &n_glyph[..], &t_glyph[..]] {
+        for (row, line) in glyph.iter().enumerate() {
+            for (col, &ch) in line.iter().enumerate() {
+                if ch == b'X' {
+                    draw_pixel(4 * 16 + pen_x + col as i32, 16 + 6 + row as i32, 32, 28, 28, 255);
+                }
+            }
+        }
+        pen_x += glyph[0].len() as i32 + 1;
+    }
+
+    // TNT top (10,1): stick ends seen from above — tan discs with fuse dots
+    for y in 0..16i32 {
+        for x in 0..16i32 {
+            let (r, g, b) = if x == 0 || x == 15 || y == 0 || y == 15 {
+                (148, 30, 22)
+            } else {
+                (176, 40, 28)
+            };
+            draw_pixel(10 * 16 + x, 16 + y, r, g, b, 255);
+        }
+    }
+    for gy in 0..3i32 {
+        for gx in 0..3i32 {
+            let cx = 10 * 16 + 3 + gx * 5;
+            let cy = 16 + 3 + gy * 5;
+            for dy in -1..=1i32 {
+                for dx in -1..=1i32 {
+                    // Diamond core bright, corners darker, so the disc reads round
+                    let (r, g, b) = if dx.abs() + dy.abs() <= 1 {
+                        (224, 192, 150)
+                    } else {
+                        (196, 160, 120)
+                    };
+                    draw_pixel(cx + dx, cy + dy, r, g, b, 255);
+                }
+            }
+            draw_pixel(cx, cy, 62, 46, 36, 255);
+        }
     }
 
     // Unused warning tile
@@ -1273,16 +1301,48 @@ pub fn generate_atlas_data() -> Vec<u8> {
             }
         }
 
-        // Cactus (8,7)
-        nb(&mut data, 8, 7, 45, 145, 55);
+        // Cactus side (8,7): vertical ribs with highlights and spines
         for y in 0..16i32 {
-            sp(&mut data, 8 * 16 + 2, 7 * 16 + y, 25, 95, 35, 255);
-            sp(&mut data, 8 * 16 + 13, 7 * 16 + y, 25, 95, 35, 255);
-        }
-        for y in (2..16i32).step_by(4) {
-            for x in 4..12i32 {
-                sp(&mut data, 8 * 16 + x, 7 * 16 + y, 210, 235, 160, 255);
+            for x in 0..16i32 {
+                let (r, g, b) = match x {
+                    0 | 15 => (18, 70, 24), // silhouette edge
+                    _ => match x % 4 {
+                        1 => (26, 96, 32),  // rib shadow
+                        3 => (98, 170, 78), // rib highlight
+                        _ => (58, 134, 50), // flesh
+                    },
+                };
+                sp(&mut data, 8 * 16 + x, 7 * 16 + y, r, g, b, 255);
             }
+        }
+        // Spines along the highlight ribs, staggered per rib
+        for (i, &x) in [3i32, 7, 11].iter().enumerate() {
+            let mut y = 1 + (i as i32 % 2) * 2;
+            while y < 16 {
+                sp(&mut data, 8 * 16 + x, 7 * 16 + y, 226, 232, 190, 255);
+                if y + 1 < 16 {
+                    sp(&mut data, 8 * 16 + x, 7 * 16 + y + 1, 14, 52, 18, 255);
+                }
+                y += 5;
+            }
+        }
+
+        // Cactus top (11,1): dark rim around a pale fleshy core
+        for y in 0..16i32 {
+            for x in 0..16i32 {
+                let ring = x.min(15 - x).min(y).min(15 - y);
+                let (r, g, b) = match ring {
+                    0 => (18, 70, 24),    // rim
+                    1 => (40, 110, 40),   // shoulder
+                    2..=4 => (70, 144, 56),
+                    _ => (132, 188, 104), // core
+                };
+                sp(&mut data, 11 * 16 + x, 16 + y, r, g, b, 255);
+            }
+        }
+        // A few spines poking up from the core
+        for (x, y) in [(6i32, 6i32), (9, 7), (7, 9), (10, 10), (5, 10)] {
+            sp(&mut data, 11 * 16 + x, 16 + y, 20, 78, 26, 255);
         }
 
         // Clay (9,7)
@@ -1769,5 +1829,16 @@ mod tests {
         assert!(stage_counts[0] < TILE_SIZE * TILE_SIZE / 3);
         assert!(stage_counts[9] > stage_counts[0]);
         assert!(stage_counts[9] < TILE_SIZE * TILE_SIZE);
+    }
+}
+
+#[cfg(test)]
+mod atlas_dump_tests {
+    #[test]
+    #[ignore]
+    fn dump_atlas_png() {
+        let data = super::generate_atlas_data();
+        let path = std::env::var("ATLAS_DUMP_PATH").unwrap_or_else(|_| "atlas_dump.png".into());
+        image::save_buffer(&path, &data, 256, 256, image::ExtendedColorType::Rgba8).unwrap();
     }
 }
