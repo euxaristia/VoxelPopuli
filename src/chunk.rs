@@ -564,105 +564,6 @@ impl Chunk {
         self.set_local(cx, cy + 1, cz + 3, BlockType::Torch);
     }
 
-    fn generate_village_outpost(&mut self) {
-        if hash_unit(self.seed, self.x, self.z, 7201) > 0.07 {
-            return;
-        }
-        // Lone cabins don't spawn inside village bounds
-        if crate::village::chunk_in_village(self.seed, self.x, self.z) {
-            return;
-        }
-
-        let world_x = (self.x * CHUNK_WIDTH as i32 + 8) as f32;
-        let world_z = (self.z * CHUNK_DEPTH as i32 + 8) as f32;
-        let biome = get_biome_seeded(world_x, world_z, self.seed);
-        if biome != Biome::Plains && biome != Biome::Desert {
-            return;
-        }
-
-        let (x0, z0) = (4usize, 4usize);
-        let (x1, z1) = (11usize, 11usize);
-        let mut min_y = CHUNK_HEIGHT;
-        let mut max_y = 0usize;
-        for x in x0..=x1 {
-            for z in z0..=z1 {
-                let Some(y) = self.surface_y(x, z) else {
-                    return;
-                };
-                if self.blocks[x][y + 1][z] == BlockType::Water {
-                    return;
-                }
-                min_y = min_y.min(y);
-                max_y = max_y.max(y);
-            }
-        }
-        if max_y - min_y > 3 || max_y + 6 >= CHUNK_HEIGHT {
-            return;
-        }
-
-        let base_y = max_y + 1;
-        let wall = if biome == Biome::Desert {
-            BlockType::Sandstone
-        } else {
-            BlockType::OakPlanks
-        };
-        let roof = if biome == Biome::Desert {
-            BlockType::Sandstone
-        } else {
-            BlockType::OakLog
-        };
-
-        for x in x0..=x1 {
-            for z in z0..=z1 {
-                if let Some(surface) = self.surface_y(x, z) {
-                    for y in surface + 1..base_y {
-                        self.blocks[x][y][z] = wall;
-                    }
-                }
-                self.blocks[x][base_y][z] = wall;
-                for y in base_y + 1..=base_y + 3 {
-                    let edge = x == x0 || x == x1 || z == z0 || z == z1;
-                    self.blocks[x][y][z] = if edge { wall } else { BlockType::Air };
-                }
-                self.blocks[x][base_y + 4][z] = roof;
-            }
-        }
-
-        for y in base_y + 1..=base_y + 2 {
-            self.blocks[7][y][z0] = BlockType::Air;
-            self.blocks[8][y][z0] = BlockType::Air;
-        }
-        self.blocks[5][base_y + 2][z0] = BlockType::Glass;
-        self.blocks[10][base_y + 2][z0] = BlockType::Glass;
-        self.blocks[5][base_y + 2][z1] = BlockType::Glass;
-        self.blocks[10][base_y + 2][z1] = BlockType::Glass;
-        self.blocks[6][base_y + 1][9] = BlockType::Chest;
-        self.blocks[9][base_y + 1][9] = BlockType::CraftingTable;
-        self.blocks[7][base_y + 2][10] = BlockType::Torch;
-        self.blocks[8][base_y + 2][10] = BlockType::Torch;
-
-        let farm_y = base_y;
-        for x in 1usize..=3 {
-            for z in 4usize..=12 {
-                for y in 1..farm_y {
-                    if self.blocks[x][y][z] == BlockType::Air
-                        || self.blocks[x][y][z] == BlockType::Water
-                    {
-                        self.set_local(x as i32, y as i32, z as i32, BlockType::Dirt);
-                    }
-                }
-                if z == 8 && x == 2 {
-                    self.set_local(x as i32, farm_y as i32, z as i32, BlockType::Water);
-                } else {
-                    self.set_local(x as i32, farm_y as i32, z as i32, BlockType::Farmland);
-                    if (x + z) % 2 == 0 && farm_y + 1 < CHUNK_HEIGHT {
-                        self.set_local(x as i32, (farm_y + 1) as i32, z as i32, BlockType::Wheat);
-                    }
-                }
-            }
-        }
-    }
-
     fn generate_biome_decorations(&mut self) {
         for x in 1..CHUNK_WIDTH - 1 {
             for z in 1..CHUNK_DEPTH - 1 {
@@ -1246,7 +1147,6 @@ impl Chunk {
             }
         }
 
-        self.generate_village_outpost();
         self.generate_biome_decorations();
 
         // PASS 6: Snow layer for snowy biomes

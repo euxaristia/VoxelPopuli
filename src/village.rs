@@ -327,12 +327,6 @@ fn villages_near_chunk(seed: u64, cx: i32, cz: i32) -> Vec<Arc<Village>> {
     villages
 }
 
-/// True if the chunk lies within any village's influence (used to suppress
-/// the lone outpost cabin inside villages).
-pub fn chunk_in_village(seed: u64, cx: i32, cz: i32) -> bool {
-    !villages_near_chunk(seed, cx, cz).is_empty()
-}
-
 /// Nearest village to a world position, searching outward by region rings.
 /// `max_rings` bounds the search (each ring is REGION_CHUNKS * 16 blocks).
 pub fn nearest_village(seed: u64, wx: i32, wz: i32, max_rings: i32) -> Option<Arc<Village>> {
