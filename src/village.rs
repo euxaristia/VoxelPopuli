@@ -12,6 +12,32 @@ use crate::chunk::{
     terrain_height_and_biome,
 };
 use glam::Vec3;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
+
+// Region lookups are pure but expensive (each candidate site samples the
+// terrain noise dozens of times), and every generated chunk consults up to
+// four regions. Cache results process-wide: entries are small and a region
+// spans ~384 blocks, so the map stays tiny even over long sessions. Keyed
+// by seed so tests and reseeded worlds can't cross-contaminate.
+type RegionCache = RwLock<HashMap<(u64, i32, i32), Option<Arc<Village>>>>;
+static REGION_CACHE: OnceLock<RegionCache> = OnceLock::new();
+
+pub(crate) fn region_village(seed: u64, rx: i32, rz: i32) -> Option<Arc<Village>> {
+    let cache = REGION_CACHE.get_or_init(Default::default);
+    if let Ok(map) = cache.read()
+        && let Some(hit) = map.get(&(seed, rx, rz))
+    {
+        return hit.clone();
+    }
+    // Compute outside the lock; a racing thread may duplicate the work,
+    // which is harmless since the result is deterministic.
+    let computed = Village::for_region(seed, rx, rz).map(Arc::new);
+    if let Ok(mut map) = cache.write() {
+        map.insert((seed, rx, rz), computed.clone());
+    }
+    computed
+}
 
 pub const REGION_CHUNKS: i32 = 24;
 // How far roads run from the well, in blocks. Everything a village stamps
@@ -278,7 +304,7 @@ impl Village {
 }
 
 /// Villages whose influence could touch the given chunk.
-fn villages_near_chunk(seed: u64, cx: i32, cz: i32) -> Vec<Village> {
+fn villages_near_chunk(seed: u64, cx: i32, cz: i32) -> Vec<Arc<Village>> {
     let reach_chunks = VILLAGE_RADIUS / CHUNK_WIDTH as i32 + 1;
     let r0x = (cx - reach_chunks).div_euclid(REGION_CHUNKS);
     let r1x = (cx + reach_chunks).div_euclid(REGION_CHUNKS);
@@ -287,7 +313,7 @@ fn villages_near_chunk(seed: u64, cx: i32, cz: i32) -> Vec<Village> {
     let mut villages = Vec::new();
     for rx in r0x..=r1x {
         for rz in r0z..=r1z {
-            if let Some(v) = Village::for_region(seed, rx, rz) {
+            if let Some(v) = region_village(seed, rx, rz) {
                 let bx = cx * CHUNK_WIDTH as i32 + 8;
                 let bz = cz * CHUNK_DEPTH as i32 + 8;
                 if (v.center_x - bx).abs() <= VILLAGE_RADIUS + 8
@@ -309,17 +335,17 @@ pub fn chunk_in_village(seed: u64, cx: i32, cz: i32) -> bool {
 
 /// Nearest village to a world position, searching outward by region rings.
 /// `max_rings` bounds the search (each ring is REGION_CHUNKS * 16 blocks).
-pub fn nearest_village(seed: u64, wx: i32, wz: i32, max_rings: i32) -> Option<Village> {
+pub fn nearest_village(seed: u64, wx: i32, wz: i32, max_rings: i32) -> Option<Arc<Village>> {
     let rx0 = wx.div_euclid(REGION_CHUNKS * CHUNK_WIDTH as i32);
     let rz0 = wz.div_euclid(REGION_CHUNKS * CHUNK_DEPTH as i32);
-    let mut best: Option<(i64, Village)> = None;
+    let mut best: Option<(i64, Arc<Village>)> = None;
     for ring in 0..=max_rings {
         for rx in (rx0 - ring)..=(rx0 + ring) {
             for rz in (rz0 - ring)..=(rz0 + ring) {
                 if (rx - rx0).abs().max((rz - rz0).abs()) != ring {
                     continue;
                 }
-                if let Some(v) = Village::for_region(seed, rx, rz) {
+                if let Some(v) = region_village(seed, rx, rz) {
                     let dx = (v.center_x - wx) as i64;
                     let dz = (v.center_z - wz) as i64;
                     let d2 = dx * dx + dz * dz;
@@ -341,10 +367,10 @@ pub fn nearest_village(seed: u64, wx: i32, wz: i32, max_rings: i32) -> Option<Vi
 }
 
 /// The village whose center chunk is exactly (cx, cz), for mob spawning.
-pub fn village_for_center_chunk(seed: u64, cx: i32, cz: i32) -> Option<Village> {
+pub fn village_for_center_chunk(seed: u64, cx: i32, cz: i32) -> Option<Arc<Village>> {
     let rx = cx.div_euclid(REGION_CHUNKS);
     let rz = cz.div_euclid(REGION_CHUNKS);
-    let v = Village::for_region(seed, rx, rz)?;
+    let v = region_village(seed, rx, rz)?;
     if v.center_x.div_euclid(CHUNK_WIDTH as i32) == cx
         && v.center_z.div_euclid(CHUNK_DEPTH as i32) == cz
     {
@@ -753,6 +779,18 @@ mod tests {
                 assert!(!overlap, "{:?} overlaps {:?}", a, b);
             }
         }
+    }
+
+    #[test]
+    fn cached_region_lookup_matches_fresh_compute() {
+        let seed = 12_345u64;
+        let (rx, rz, fresh) = find_test_village(seed);
+        // First call populates the cache, second call hits it
+        let a = region_village(seed, rx, rz).expect("cached lookup");
+        let b = region_village(seed, rx, rz).expect("cache hit");
+        assert_eq!(a.center_x, fresh.center_x);
+        assert_eq!(a.structures.len(), fresh.structures.len());
+        assert!(Arc::ptr_eq(&a, &b), "second lookup should share the cached Arc");
     }
 
     #[test]
