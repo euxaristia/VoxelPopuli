@@ -1683,6 +1683,19 @@ fn main() {
     let mut world = World::new(world_seed as u64);
     world.generate_atlas();
     world.init_celestial();
+    match village::nearest_village(world_seed as u64, 32, 32, 8) {
+        Some(v) => {
+            let dist = (((v.center_x - 32).pow(2) + (v.center_z - 32).pow(2)) as f64).sqrt();
+            println!(
+                "Nearest village: ({}, {}) — {:.0} blocks from spawn{}",
+                v.center_x,
+                v.center_z,
+                dist,
+                if v.desert { " (desert)" } else { "" }
+            );
+        }
+        None => println!("No village within 8 regions of spawn for this seed"),
+    }
     let shader = Shader::new(&load_shader("ps1.vs"), &load_shader("ps1.fs"))
         .expect("Failed to compile PS1 shader");
     let water_shader = Shader::new(&load_shader("water.vs"), &load_shader("water.fs"))

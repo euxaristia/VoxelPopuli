@@ -307,6 +307,39 @@ pub fn chunk_in_village(seed: u64, cx: i32, cz: i32) -> bool {
     !villages_near_chunk(seed, cx, cz).is_empty()
 }
 
+/// Nearest village to a world position, searching outward by region rings.
+/// `max_rings` bounds the search (each ring is REGION_CHUNKS * 16 blocks).
+pub fn nearest_village(seed: u64, wx: i32, wz: i32, max_rings: i32) -> Option<Village> {
+    let rx0 = wx.div_euclid(REGION_CHUNKS * CHUNK_WIDTH as i32);
+    let rz0 = wz.div_euclid(REGION_CHUNKS * CHUNK_DEPTH as i32);
+    let mut best: Option<(i64, Village)> = None;
+    for ring in 0..=max_rings {
+        for rx in (rx0 - ring)..=(rx0 + ring) {
+            for rz in (rz0 - ring)..=(rz0 + ring) {
+                if (rx - rx0).abs().max((rz - rz0).abs()) != ring {
+                    continue;
+                }
+                if let Some(v) = Village::for_region(seed, rx, rz) {
+                    let dx = (v.center_x - wx) as i64;
+                    let dz = (v.center_z - wz) as i64;
+                    let d2 = dx * dx + dz * dz;
+                    if best.as_ref().is_none_or(|(bd, _)| d2 < *bd) {
+                        best = Some((d2, v));
+                    }
+                }
+            }
+        }
+        // A hit this ring can't be beaten by a ring more than one further out
+        if let Some((d2, _)) = &best {
+            let safe = ((ring + 1) * REGION_CHUNKS * CHUNK_WIDTH as i32) as i64;
+            if *d2 <= safe * safe {
+                break;
+            }
+        }
+    }
+    best.map(|(_, v)| v)
+}
+
 /// The village whose center chunk is exactly (cx, cz), for mob spawning.
 pub fn village_for_center_chunk(seed: u64, cx: i32, cz: i32) -> Option<Village> {
     let rx = cx.div_euclid(REGION_CHUNKS);
@@ -812,5 +845,26 @@ mod layout_probe {
         }
         println!("center=({},{}) base_y={} desert={} structures={}",
             v.center_x, v.center_z, v.base_y, v.desert, v.structures.len());
+    }
+}
+
+#[cfg(test)]
+mod seed_probe {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn find_nearest_village_for_seed() {
+        let seed: u64 = std::env::var("VP_SEED")
+            .expect("set VP_SEED")
+            .parse::<i64>()
+            .expect("VP_SEED must be an integer") as u64;
+        match nearest_village(seed, 32, 32, 12) {
+            Some(v) => println!(
+                "nearest village: ({}, {}) desert={} base_y={} structures={}",
+                v.center_x, v.center_z, v.desert, v.base_y, v.structures.len()
+            ),
+            None => println!("no village within 12 regions"),
+        }
     }
 }
