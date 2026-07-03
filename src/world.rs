@@ -14,6 +14,9 @@ pub const VIEW_DISTANCE: i32 = 35;
 pub const POOL_WIDTH: i32 = VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
 pub const CLOUD_HEIGHT: f32 = 200.0;
+// Upper bound on chunk-generation jobs queued to the worker pool; bounds
+// memory for finished-but-unintegrated chunks without starving meshing jobs.
+const MAX_GEN_IN_FLIGHT: usize = 64;
 
 // WorldEdit removed in favor of HashMap edits
 
@@ -135,6 +138,10 @@ pub struct World {
     next_mesh_job_id: u64,
     mesh_result_tx: std::sync::mpsc::Sender<MeshResult>,
     mesh_result_rx: std::sync::mpsc::Receiver<MeshResult>,
+    gen_result_tx: std::sync::mpsc::Sender<Box<Chunk>>,
+    gen_result_rx: std::sync::mpsc::Receiver<Box<Chunk>>,
+    // Chunk coordinates currently being generated on a worker
+    gen_in_flight: std::collections::HashSet<(i32, i32)>,
     pub mobs: Vec<Mob>,
     // Village center chunks whose inhabitants have already been spawned
     spawned_villages: std::collections::HashSet<(i32, i32)>,
@@ -149,6 +156,7 @@ impl World {
             chunks.push(None);
         }
         let (mesh_result_tx, mesh_result_rx) = std::sync::mpsc::channel();
+        let (gen_result_tx, gen_result_rx) = std::sync::mpsc::channel();
         Self {
             seed,
             chunks,
@@ -178,6 +186,9 @@ impl World {
             next_mesh_job_id: 1,
             mesh_result_tx,
             mesh_result_rx,
+            gen_result_tx,
+            gen_result_rx,
+            gen_in_flight: std::collections::HashSet::new(),
             mobs: Vec::new(),
             spawned_villages: std::collections::HashSet::new(),
             villager_mesh: Self::create_textured_cube_mesh(BlockType::Wool),
@@ -617,10 +628,12 @@ impl World {
                     self.last_pcz = pcz;
                 }
             } else {
-                // NORMAL MODE: Non-blocking spiral (Discovery)
-                // Throttle generation to prevent massive stutters when crossing boundaries
-                let mut generated_this_frame = 0;
-                for r in 0..=VIEW_DISTANCE {
+                // NORMAL MODE: dispatch missing chunks to background workers,
+                // nearest ring first. Generation is a pure function of
+                // (seed, x, z), so workers need no access to World; finished
+                // chunks come back over a channel and are integrated below.
+                let mut scan_complete = true;
+                'scan: for r in 0..=VIEW_DISTANCE {
                     for x in (pcx - r)..=(pcx + r) {
                         for z in (pcz - r)..=(pcz + r) {
                             if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
@@ -628,63 +641,80 @@ impl World {
                             }
 
                             let index = self.get_pool_index(x, z);
-                            let should_replace = match &self.chunks[index] {
+                            let needed = match &self.chunks[index] {
                                 None => true,
                                 Some(c) => c.x != x || c.z != z,
                             };
-                            if should_replace {
-                                // The displaced chunk's dirty flag was counted; drop its count
-                                if let Some(old) = &self.chunks[index]
-                                    && old.dirty
-                                {
-                                    self.dirty_count -= 1;
-                                }
-                                let mut chunk = Box::new(Chunk::new(x, z, self.seed));
-                                chunk.generate();
-                                self.chunks[index] = Some(chunk);
-                                self.apply_edits_to_chunk(x, z);
-
-                                // Dirty the new chunk AND its neighbors to fix lighting/meshing gaps.
-                                // Fresh chunks are born dirty but were never counted, so count
-                                // unconditionally — the old `!c.dirty` guard never fired and let
-                                // dirty_count drift negative, stalling the mesh scan entirely.
-                                if let Some(c) = &mut self.chunks[index] {
-                                    c.dirty = true;
-                                    self.dirty_count += 1;
-                                }
-                                let neighbors = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)];
-                                for (nx, nz) in neighbors {
-                                    if let Some(nc) = self.get_chunk_mut(nx, nz)
-                                        && !nc.dirty
-                                    {
-                                        nc.dirty = true;
-                                        self.dirty_count += 1;
-                                    }
-                                }
-                                self.try_spawn_village_mobs(x, z);
-
-                                generated_this_frame += 1;
-                                if generated_this_frame >= 8 {
-                                    break;
-                                }
+                            if !needed || self.gen_in_flight.contains(&(x, z)) {
+                                continue;
                             }
+                            if self.gen_in_flight.len() >= MAX_GEN_IN_FLIGHT {
+                                scan_complete = false;
+                                break 'scan;
+                            }
+                            self.gen_in_flight.insert((x, z));
+                            let seed = self.seed;
+                            let tx = self.gen_result_tx.clone();
+                            rayon::spawn(move || {
+                                let mut chunk = Box::new(Chunk::new(x, z, seed));
+                                chunk.generate();
+                                let _ = tx.send(chunk);
+                            });
                         }
-                        if generated_this_frame >= 8 {
-                            break;
-                        }
-                    }
-                    if generated_this_frame >= 8 {
-                        break;
                     }
                 }
-
-                // Only update last_pcx/last_pcz once we've at least tried to load the immediate ring
-                // Actually, let's keep the boundary check simple.
-                if generated_this_frame < 8 {
+                // Stop rescanning once every missing chunk is at least in
+                // flight; a later boundary cross restarts the scan.
+                if scan_complete {
                     self.last_pcx = pcx;
                     self.last_pcz = pcz;
                 }
             }
+        }
+
+        // --- Integrate chunks generated in the background ---
+        while let Ok(chunk) = self.gen_result_rx.try_recv() {
+            let (x, z) = (chunk.x, chunk.z);
+            self.gen_in_flight.remove(&(x, z));
+            // Discard arrivals the player has since moved away from; the
+            // scan re-dispatches them if the player comes back.
+            if (x - pcx).abs() > VIEW_DISTANCE || (z - pcz).abs() > VIEW_DISTANCE {
+                continue;
+            }
+            let index = self.get_pool_index(x, z);
+            if let Some(existing) = &self.chunks[index]
+                && existing.x == x
+                && existing.z == z
+            {
+                continue;
+            }
+            // The displaced chunk's dirty flag was counted; drop its count
+            if let Some(old) = &self.chunks[index]
+                && old.dirty
+            {
+                self.dirty_count -= 1;
+            }
+            self.chunks[index] = Some(chunk);
+            self.apply_edits_to_chunk(x, z);
+
+            // Dirty the new chunk AND its neighbors to fix lighting/meshing
+            // gaps. Fresh chunks are born dirty but were never counted, so
+            // count unconditionally.
+            if let Some(c) = &mut self.chunks[index] {
+                c.dirty = true;
+                self.dirty_count += 1;
+            }
+            let neighbors = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)];
+            for (nx, nz) in neighbors {
+                if let Some(nc) = self.get_chunk_mut(nx, nz)
+                    && !nc.dirty
+                {
+                    nc.dirty = true;
+                    self.dirty_count += 1;
+                }
+            }
+            self.try_spawn_village_mobs(x, z);
+            self.chunks_generated_count += 1;
         }
 
         // --- Prioritized Meshing ---
