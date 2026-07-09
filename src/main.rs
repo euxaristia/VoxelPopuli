@@ -1730,7 +1730,7 @@ fn main() {
         Some(v) => {
             let dist = (((v.center_x - 32).pow(2) + (v.center_z - 32).pow(2)) as f64).sqrt();
             println!(
-                "Nearest village: ({}, {}) — {:.0} blocks from spawn{}",
+                "Nearest village: X={} Z={} — {:.0} blocks from spawn{}",
                 v.center_x,
                 v.center_z,
                 dist,

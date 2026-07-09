@@ -881,7 +881,7 @@ mod layout_probe {
             }
             println!("{row}");
         }
-        println!("center=({},{}) base_y={} desert={} structures={}",
+        println!("center X={} Z={} base_y={} desert={} structures={}",
             v.center_x, v.center_z, v.base_y, v.desert, v.structures.len());
     }
 }
@@ -899,7 +899,7 @@ mod seed_probe {
             .expect("VP_SEED must be an integer") as u64;
         match nearest_village(seed, 32, 32, 12) {
             Some(v) => println!(
-                "nearest village: ({}, {}) desert={} base_y={} structures={}",
+                "nearest village: X={} Z={} desert={} base_y={} structures={}",
                 v.center_x, v.center_z, v.desert, v.base_y, v.structures.len()
             ),
             None => println!("no village within 12 regions"),
