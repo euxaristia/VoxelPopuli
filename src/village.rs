@@ -336,8 +336,9 @@ fn villages_near_chunk(seed: u64, cx: i32, cz: i32) -> Vec<Arc<Village>> {
 /// Nearest village to a world position, searching outward by region rings.
 /// `max_rings` bounds the search (each ring is REGION_CHUNKS * 16 blocks).
 pub fn nearest_village(seed: u64, wx: i32, wz: i32, max_rings: i32) -> Option<Arc<Village>> {
-    let rx0 = wx.div_euclid(REGION_CHUNKS * CHUNK_WIDTH as i32);
-    let rz0 = wz.div_euclid(REGION_CHUNKS * CHUNK_DEPTH as i32);
+    let region_size = REGION_CHUNKS * CHUNK_WIDTH as i32;
+    let rx0 = wx.div_euclid(region_size);
+    let rz0 = wz.div_euclid(region_size);
     let mut best: Option<(i64, Arc<Village>)> = None;
     for ring in 0..=max_rings {
         for rx in (rx0 - ring)..=(rx0 + ring) {
@@ -355,10 +356,23 @@ pub fn nearest_village(seed: u64, wx: i32, wz: i32, max_rings: i32) -> Option<Ar
                 }
             }
         }
-        // A hit this ring can't be beaten by a ring more than one further out
+        // After this ring, every region within Chebyshev distance `ring` of
+        // (rx0, rz0) has been searched, covering the block-space rectangle
+        // [(rx0-ring)*region_size, (rx0+ring+1)*region_size) on each axis.
+        // No unsearched region can contain a village closer than the
+        // distance from (wx, wz) to the nearest edge of that rectangle, so
+        // stop once the current best beats that bound. Unlike a bound based
+        // on ring count alone, this accounts for (wx, wz)'s own offset
+        // within its region, which a village near a region's edge can make
+        // much smaller than a full region width.
         if let Some((d2, _)) = &best {
-            let safe = ((ring + 1) * REGION_CHUNKS * CHUNK_WIDTH as i32) as i64;
-            if *d2 <= safe * safe {
+            let xmin = (rx0 - ring) * region_size;
+            let xmax = (rx0 + ring + 1) * region_size;
+            let zmin = (rz0 - ring) * region_size;
+            let zmax = (rz0 + ring + 1) * region_size;
+            let escape = (wx - xmin).min(xmax - wx).min(wz - zmin).min(zmax - wz);
+            let escape = escape.max(0) as i64;
+            if *d2 <= escape * escape {
                 break;
             }
         }
@@ -791,6 +805,55 @@ mod tests {
         assert_eq!(a.center_x, fresh.center_x);
         assert_eq!(a.structures.len(), fresh.structures.len());
         assert!(Arc::ptr_eq(&a, &b), "second lookup should share the cached Arc");
+    }
+
+    #[test]
+    fn nearest_village_matches_brute_force_scan() {
+        // The ring search stops early once it can prove no closer village
+        // exists; a query point near its region's edge can bring the next
+        // ring much closer than a full region width away, which an earlier
+        // version of the early-exit bound didn't account for. Cross-check
+        // against a brute-force scan far enough out to catch that.
+        let region_size = REGION_CHUNKS * CHUNK_WIDTH as i32;
+        let max_rings = 6;
+        for seed in [1u64, 42, 12_345, 999_999] {
+            for (wx, wz) in [
+                (0, 0),
+                (region_size - 1, 0),
+                (region_size / 2, region_size / 2),
+                (-500, 300),
+            ] {
+                let found = nearest_village(seed, wx, wz, max_rings);
+
+                let rx0 = wx.div_euclid(region_size);
+                let rz0 = wz.div_euclid(region_size);
+                let mut brute: Option<(i64, i32, i32)> = None;
+                for rx in (rx0 - max_rings - 1)..=(rx0 + max_rings + 1) {
+                    for rz in (rz0 - max_rings - 1)..=(rz0 + max_rings + 1) {
+                        if let Some(v) = Village::for_region(seed, rx, rz) {
+                            let dx = (v.center_x - wx) as i64;
+                            let dz = (v.center_z - wz) as i64;
+                            let d2 = dx * dx + dz * dz;
+                            if brute.as_ref().is_none_or(|b| d2 < b.0) {
+                                brute = Some((d2, v.center_x, v.center_z));
+                            }
+                        }
+                    }
+                }
+
+                match (found, brute) {
+                    (Some(f), Some((_, bx, bz))) => {
+                        assert_eq!(
+                            (f.center_x, f.center_z),
+                            (bx, bz),
+                            "seed {seed} pos ({wx},{wz})"
+                        );
+                    }
+                    (None, None) => {}
+                    other => panic!("seed {seed} pos ({wx},{wz}): {other:?}"),
+                }
+            }
+        }
     }
 
     #[test]
