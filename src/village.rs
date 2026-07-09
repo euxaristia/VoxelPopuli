@@ -17,11 +17,14 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 // Region lookups are pure but expensive (each candidate site samples the
 // terrain noise dozens of times), and every generated chunk consults up to
-// four regions. Cache results process-wide: entries are small and a region
-// spans ~384 blocks, so the map stays tiny even over long sessions. Keyed
-// by seed so tests and reseeded worlds can't cross-contaminate.
+// four regions. Cache results process-wide, keyed by seed so tests and
+// reseeded worlds can't cross-contaminate. A long session that explores far
+// enough visits unboundedly many distinct regions, so the map is capped: once
+// it would grow past REGION_CACHE_CAP entries, it's dropped and rebuilt from
+// scratch rather than growing forever.
 type RegionCache = RwLock<HashMap<(u64, i32, i32), Option<Arc<Village>>>>;
 static REGION_CACHE: OnceLock<RegionCache> = OnceLock::new();
+const REGION_CACHE_CAP: usize = 20_000;
 
 pub(crate) fn region_village(seed: u64, rx: i32, rz: i32) -> Option<Arc<Village>> {
     let cache = REGION_CACHE.get_or_init(Default::default);
@@ -34,6 +37,9 @@ pub(crate) fn region_village(seed: u64, rx: i32, rz: i32) -> Option<Arc<Village>
     // which is harmless since the result is deterministic.
     let computed = Village::for_region(seed, rx, rz).map(Arc::new);
     if let Ok(mut map) = cache.write() {
+        if map.len() >= REGION_CACHE_CAP {
+            map.clear();
+        }
         map.insert((seed, rx, rz), computed.clone());
     }
     computed
