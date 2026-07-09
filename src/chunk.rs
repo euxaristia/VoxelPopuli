@@ -1417,6 +1417,43 @@ impl ChunkData {
             if avg < 0.1 { 0.1 } else { avg }
         };
 
+        let is_solid = |b: BlockType| b.is_solid() && !b.is_transparent();
+
+        // Smooth (per-vertex) lighting + AO for a face, generalizing the
+        // corner sampling the top face already used by hand. `base` is the
+        // neighbor cell one step along the face normal; `u_axis`/`v_axis`
+        // are the two in-plane world-space unit steps. Returns light*AO for
+        // corners (-,-), (+,-), (+,+), (-,+) in that order; callers still
+        // apply their own directional darkening factor and floor.
+        let face_shading = |base: (i32, i32, i32),
+                            u_axis: (i32, i32, i32),
+                            v_axis: (i32, i32, i32)|
+         -> [f32; 4] {
+            let offset = |du: i32, dv: i32| -> (i32, i32, i32) {
+                (
+                    base.0 + u_axis.0 * du + v_axis.0 * dv,
+                    base.1 + u_axis.1 * du + v_axis.1 * dv,
+                    base.2 + u_axis.2 * du + v_axis.2 * dv,
+                )
+            };
+            let solid_at = |du: i32, dv: i32| -> bool {
+                let (px, py, pz) = offset(du, dv);
+                is_solid(get_block_safe(px, py, pz))
+            };
+            let light_at = |du: i32, dv: i32| -> u8 {
+                let (px, py, pz) = offset(du, dv);
+                get_light_safe(px, py, pz)
+            };
+            let l_center = light_at(0, 0);
+            let corner = |du: i32, dv: i32| -> f32 {
+                let ao = calc_ao(solid_at(du, 0), solid_at(0, dv), solid_at(du, dv));
+                let light =
+                    calc_vertex_light(l_center, light_at(du, 0), light_at(0, dv), light_at(du, dv));
+                light * ao
+            };
+            [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)]
+        };
+
         for x in 0..CHUNK_WIDTH {
             for y in 0..CHUNK_HEIGHT {
                 for z in 0..CHUNK_DEPTH {
@@ -1824,8 +1861,6 @@ impl ChunkData {
                     let wy = y as i32;
                     let wz = z as i32 + self.z * CHUNK_DEPTH as i32;
 
-                    let is_solid = |b: BlockType| b.is_solid() && !b.is_transparent();
-
                     // Top
                     let neighbor_top = if y < CHUNK_HEIGHT - 1 {
                         self.blocks[x][y + 1][z]
@@ -1956,10 +1991,10 @@ impl ChunkData {
                         for _ in 0..6 {
                             n.extend_from_slice(&[0.0, -1.0, 0.0]);
                         }
-                        let light = calc_light_f(get_light_safe(wx, wy - 1, wz));
-                        let shade = (255.0 * light * 0.5).max(35.0) as u8;
-                        for _ in 0..6 {
-                            c.extend_from_slice(&[shade, shade, shade, 255]);
+                        let s = face_shading((wx, wy - 1, wz), (1, 0, 0), (0, 0, 1));
+                        for idx in [0usize, 2, 3, 0, 1, 2] {
+                            let g = (255.0 * s[idx] * 0.5).max(35.0) as u8;
+                            c.extend_from_slice(&[g, g, g, 255]);
                         }
                     }
 
@@ -2097,13 +2132,20 @@ impl ChunkData {
                             for _ in 0..6 {
                                 n.extend_from_slice(norm);
                             }
-                            let l1 = get_light_safe(wx + norm[0] as i32, wy, wz + norm[2] as i32);
-                            let l2 =
-                                get_light_safe(wx + norm[0] as i32, wy + 1, wz + norm[2] as i32);
-                            let light = calc_light_f(l1.max(l2));
-                            let shade = (255.0 * light * s_mul).max(35.0) as u8;
-                            for _ in 0..6 {
-                                c.extend_from_slice(&[shade, shade, shade, 255]);
+                            let base = (wx + norm[0] as i32, wy, wz + norm[2] as i32);
+                            // Z+/Z- faces are in the X,Y plane; X+/X- faces
+                            // are in the Z,Y plane. Winding matches each
+                            // face's vertex order above.
+                            let u_axis = if i < 2 { (1, 0, 0) } else { (0, 0, 1) };
+                            let winding: [usize; 6] = if i == 0 || i == 3 {
+                                [0, 1, 2, 0, 2, 3]
+                            } else {
+                                [1, 0, 3, 1, 3, 2]
+                            };
+                            let s = face_shading(base, u_axis, (0, 1, 0));
+                            for idx in winding {
+                                let g = (255.0 * s[idx] * s_mul).max(35.0) as u8;
+                                c.extend_from_slice(&[g, g, g, 255]);
                             }
                         }
                     }
