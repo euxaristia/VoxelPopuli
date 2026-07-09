@@ -872,6 +872,49 @@ fn draw_text(
     }
 }
 
+/// Minecraft-style F3 debug overlay, anchored to the top-left corner.
+#[allow(clippy::too_many_arguments)]
+fn draw_debug_overlay(
+    ui_shader: &Shader,
+    tex_shader: &Shader,
+    font_tex: &Texture2D,
+    lines: &[String],
+    sw: f32,
+    sh: f32,
+) {
+    // The font atlas is 16px per glyph; rendering at a clean multiple of
+    // that keeps nearest-neighbor sampling crisp instead of dropping rows
+    // and columns of each glyph the way an uneven downscale would.
+    let text_size = 32.0;
+    let line_height = text_size + 6.0;
+    let pad = 8.0;
+    let longest = lines.iter().map(|l| l.len()).max().unwrap_or(0) as f32;
+    let panel_w = longest * text_size * 0.55 + pad * 2.0;
+    let panel_h = lines.len() as f32 * line_height + pad * 2.0;
+    draw_rect(
+        ui_shader,
+        pad,
+        pad,
+        panel_w,
+        panel_h,
+        [0, 0, 0, 140],
+        sw,
+        sh,
+    );
+    for (i, line) in lines.iter().enumerate() {
+        draw_text(
+            font_tex,
+            line,
+            pad * 2.0,
+            pad * 2.0 + i as f32 * line_height,
+            text_size,
+            tex_shader,
+            sw,
+            sh,
+        );
+    }
+}
+
 fn draw_screen_quad(shader: &Shader, color: glam::Vec4) {
     let v = [
         -1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, 1.0,
@@ -1720,6 +1763,7 @@ fn main() {
     let mut is_fullscreen = false;
     let mut win_pos = (state.x, state.y);
     let mut win_size = (state.width, state.height);
+    let mut show_debug_overlay = false;
 
     let mut game_state = GameState::Loading;
     let mut spawn_y = 150.0;
@@ -1754,6 +1798,7 @@ fn main() {
     let mut last_time = glfw.get_time();
     let mut fps_last_time = last_time;
     let mut fps_frames: u32 = 0;
+    let mut current_fps: f32 = 0.0;
     while !window.should_close() {
         let current_time = glfw.get_time();
         let delta_time = (current_time - last_time) as f32;
@@ -1762,12 +1807,12 @@ fn main() {
         fps_frames += 1;
         let fps_elapsed = current_time - fps_last_time;
         if fps_elapsed >= 1.0 {
-            let fps = (fps_frames as f64 / fps_elapsed) as f32;
+            current_fps = (fps_frames as f64 / fps_elapsed) as f32;
             fps_frames = 0;
             fps_last_time = current_time;
             window.set_title(&format!(
                 "VoxelPopuli Rust - Seed {} - {:.0} FPS",
-                world_seed, fps
+                world_seed, current_fps
             ));
         }
         glfw.poll_events();
@@ -1953,6 +1998,9 @@ fn main() {
                             window.set_cursor_mode(glfw::CursorMode::Disabled);
                         }
                     }
+                }
+                glfw::WindowEvent::Key(Key::F3, _, Action::Press, _) => {
+                    show_debug_overlay = !show_debug_overlay;
                 }
                 glfw::WindowEvent::Key(Key::F11, _, Action::Press, _) => {
                     is_fullscreen = !is_fullscreen;
@@ -2698,6 +2746,51 @@ fn main() {
                 4.0,
                 4.4,
                 [255, 255, 255, 255],
+                sw,
+                sh,
+            );
+        }
+
+        // F3 debug overlay
+        if show_debug_overlay {
+            let biome =
+                chunk::terrain_height_and_biome(player.position.x, player.position.z, world.seed).1;
+            let yaw_deg = camera_angle.x.to_degrees().rem_euclid(360.0);
+            let pitch_deg = camera_angle.y.to_degrees();
+            let compass = [
+                "South",
+                "Southeast",
+                "East",
+                "Northeast",
+                "North",
+                "Northwest",
+                "West",
+                "Southwest",
+            ][(((yaw_deg + 22.5) / 45.0) as usize) % 8];
+            let cx = (player.position.x / chunk::CHUNK_WIDTH as f32).floor() as i32;
+            let cz = (player.position.z / chunk::CHUNK_DEPTH as f32).floor() as i32;
+            let lines = [
+                format!("VoxelPopuli ({:.0} fps)", current_fps),
+                format!(
+                    "XYZ: {:.3} / {:.3} / {:.3}",
+                    player.position.x, player.position.y, player.position.z
+                ),
+                format!(
+                    "Block: {} {} {}",
+                    player.position.x.floor() as i32,
+                    player.position.y.floor() as i32,
+                    player.position.z.floor() as i32
+                ),
+                format!("Chunk: {cx} {cz}"),
+                format!("Facing: {compass} (yaw {yaw_deg:.1}, pitch {pitch_deg:.1})"),
+                format!("Biome: {biome:?}"),
+                format!("Seed: {}", world.seed),
+            ];
+            draw_debug_overlay(
+                &ui_shader,
+                &texture_ui_shader,
+                &font_texture,
+                &lines,
                 sw,
                 sh,
             );
