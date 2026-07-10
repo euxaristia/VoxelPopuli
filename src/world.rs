@@ -283,10 +283,7 @@ impl World {
         if let Some(atlas) = &self.atlas {
             atlas.bind(0);
         }
-        unsafe {
-            gl::Enable(gl::BLEND);
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-        }
+        crate::renderer::set_blend(true);
 
         for p in &self.particles {
             let alpha = (p.life / p.max_life).clamp(0.0, 1.0);
@@ -302,9 +299,7 @@ impl World {
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
-        unsafe {
-            gl::Disable(gl::BLEND);
-        }
+        crate::renderer::set_blend(false);
     }
 
     fn get_pool_index(&self, cx: i32, cz: i32) -> usize {
@@ -1745,11 +1740,8 @@ impl World {
     }
 
     pub fn render_transparent(&self, _frustum: &Frustum) {
-        unsafe {
-            gl::Enable(gl::BLEND);
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::Enable(gl::CULL_FACE);
-        }
+        crate::renderer::set_blend(true);
+        crate::renderer::set_cull(true);
         for &i in &self.visible_chunks {
             if let Some(chunk) = &self.chunks[i]
                 && let Some(mesh) = &chunk.mesh_transparent
@@ -1760,12 +1752,9 @@ impl World {
     }
 
     pub fn render_water(&self, _frustum: &Frustum) {
-        unsafe {
-            gl::Enable(gl::BLEND);
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::DepthMask(gl::FALSE);
-            gl::Enable(gl::CULL_FACE);
-        }
+        crate::renderer::set_blend(true);
+        crate::renderer::set_depth_write(false);
+        crate::renderer::set_cull(true);
         for &i in &self.visible_chunks {
             if let Some(chunk) = &self.chunks[i]
                 && let Some(mesh) = &chunk.mesh_water
@@ -1773,9 +1762,7 @@ impl World {
                 mesh.draw();
             }
         }
-        unsafe {
-            gl::DepthMask(gl::TRUE);
-        }
+        crate::renderer::set_depth_write(true);
     }
 
     pub fn render_clouds(&self, shader: &Shader, mvp: &Mat4) {
@@ -1783,16 +1770,13 @@ impl World {
             shader.bind();
             shader.set_mat4(shader.get_uniform_location("uMVP"), mvp);
             shader.set_int(shader.get_uniform_location("uIsCircle"), 0);
-            unsafe {
-                gl::Disable(gl::CULL_FACE);
-                gl::Enable(gl::BLEND);
-                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-                gl::DepthMask(gl::FALSE);
-                mesh.draw();
-                gl::DepthMask(gl::TRUE);
-                gl::Disable(gl::BLEND);
-                gl::Enable(gl::CULL_FACE);
-            }
+            crate::renderer::set_cull(false);
+            crate::renderer::set_blend(true);
+            crate::renderer::set_depth_write(false);
+            mesh.draw();
+            crate::renderer::set_depth_write(true);
+            crate::renderer::set_blend(false);
+            crate::renderer::set_cull(true);
         }
     }
 
@@ -1812,11 +1796,9 @@ impl World {
             shader.set_int(shader.get_uniform_location("uIsCircle"), 0);
             let star_mvp = *mvp * Mat4::from_translation(player_pos);
             shader.set_mat4(shader.get_uniform_location("uMVP"), &star_mvp);
-            unsafe {
-                gl::Disable(gl::DEPTH_TEST);
-                mesh.draw();
-                gl::Enable(gl::DEPTH_TEST);
-            }
+            crate::renderer::set_depth_test(false);
+            mesh.draw();
+            crate::renderer::set_depth_test(true);
         }
     }
 }
