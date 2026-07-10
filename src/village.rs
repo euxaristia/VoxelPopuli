@@ -36,13 +36,14 @@ pub(crate) fn region_village(seed: u64, rx: i32, rz: i32) -> Option<Arc<Village>
     // Compute outside the lock; a racing thread may duplicate the work,
     // which is harmless since the result is deterministic.
     let computed = Village::for_region(seed, rx, rz).map(Arc::new);
-    if let Ok(mut map) = cache.write() {
-        if map.len() >= REGION_CACHE_CAP {
-            map.clear();
-        }
-        map.insert((seed, rx, rz), computed.clone());
+    let Ok(mut map) = cache.write() else {
+        return computed;
+    };
+    if map.len() >= REGION_CACHE_CAP {
+        map.clear();
     }
-    computed
+    // Keep the first cached Arc so racing inserts stay ptr-identical
+    map.entry((seed, rx, rz)).or_insert(computed).clone()
 }
 
 pub const REGION_CHUNKS: i32 = 24;
@@ -51,6 +52,18 @@ pub const REGION_CHUNKS: i32 = 24;
 const ROAD_REACH: i32 = 34;
 // Total half-extent of a village's influence, in blocks.
 const VILLAGE_RADIUS: i32 = ROAD_REACH + 12;
+
+// Offsets of the walkable apron ring the well builder stamps around the
+// plaza, in ring order. Mob spawn points anchor to these cells so mobs
+// always start on stamped, cleared ground.
+const APRON_RING: [(i32, i32); 24] = [
+    (-3, -3), (-2, -3), (-1, -3), (0, -3), (1, -3), (2, -3), (3, -3),
+    (3, -2), (3, -1), (3, 0), (3, 1), (3, 2), (3, 3),
+    (2, 3), (1, 3), (0, 3), (-1, 3), (-2, 3), (-3, 3),
+    (-3, 2), (-3, 1), (-3, 0), (-3, -1), (-3, -2),
+];
+// The apron corner reserved for the iron golem.
+const GOLEM_PAD: (i32, i32) = (-3, 3);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StructureKind {
@@ -160,13 +173,13 @@ impl Village {
         let cx = self.center_x;
         let cz = self.center_z;
 
-        // Well plaza at the center
+        // Well plaza at the center, plus a one-block walkable apron ring
         self.structures.push(Structure {
             kind: StructureKind::Well,
-            x0: cx - 2,
-            z0: cz - 2,
-            x1: cx + 2,
-            z1: cz + 2,
+            x0: cx - 3,
+            z0: cz - 3,
+            x1: cx + 3,
+            z1: cz + 3,
             floor_y: self.base_y,
             facing: 0,
             variant: rng.next_u32(),
@@ -286,17 +299,18 @@ impl Village {
             .count()
     }
 
-    /// Spawn points for the village's inhabitants, on the plaza edge.
+    /// Spawn points for the village's inhabitants, spread around the
+    /// plaza apron ring the well builder stamps and clears.
     pub fn villager_spawns(&self) -> Vec<Vec3> {
+        let pads: Vec<_> = APRON_RING.iter().filter(|&&p| p != GOLEM_PAD).collect();
         let n = 2 + self.house_count().min(6);
-        let y = (self.base_y + 1) as f32;
         (0..n)
             .map(|i| {
-                let angle = i as f32 / n as f32 * std::f32::consts::TAU;
+                let (dx, dz) = *pads[i * pads.len() / n];
                 Vec3::new(
-                    self.center_x as f32 + 0.5 + angle.cos() * 4.5,
-                    y,
-                    self.center_z as f32 + 0.5 + angle.sin() * 4.5,
+                    (self.center_x + dx) as f32 + 0.5,
+                    (self.base_y + 1) as f32,
+                    (self.center_z + dz) as f32 + 0.5,
                 )
             })
             .collect()
@@ -304,9 +318,9 @@ impl Village {
 
     pub fn golem_spawn(&self) -> Vec3 {
         Vec3::new(
-            self.center_x as f32 - 3.5,
+            (self.center_x + GOLEM_PAD.0) as f32 + 0.5,
             (self.base_y + 1) as f32,
-            self.center_z as f32 + 3.5,
+            (self.center_z + GOLEM_PAD.1) as f32 + 0.5,
         )
     }
 }
@@ -506,8 +520,8 @@ impl Stamper<'_> {
                 if !(on_x_road || on_z_road) {
                     continue;
                 }
-                // Leave the plaza to the well builder
-                if (wx - v.center_x).abs() <= 2 && (wz - v.center_z).abs() <= 2 {
+                // Leave the plaza and its apron to the well builder
+                if (wx - v.center_x).abs() <= 3 && (wz - v.center_z).abs() <= 3 {
                     continue;
                 }
                 let Some(surface) = self.chunk.surface_y(lx, lz) else {
@@ -617,7 +631,14 @@ impl Stamper<'_> {
         };
         self.set(ux, fy + 1, uz, furniture);
         if s.variant.is_multiple_of(4) {
-            self.set(bx, fy + 1, uz, BlockType::Chest);
+            // Third corner, clear of both the torch and the furniture
+            let (kx, kz) = match s.facing {
+                0 => (s.x1 - 1, s.z0 + 1),
+                1 => (s.x0 + 1, s.z1 - 1),
+                2 => (s.x0 + 1, s.z1 - 1),
+                _ => (s.x1 - 1, s.z0 + 1),
+            };
+            self.set(kx, fy + 1, kz, BlockType::Chest);
         }
     }
 
@@ -663,33 +684,34 @@ impl Stamper<'_> {
         } else {
             BlockType::Cobblestone
         };
+        // Desert wells trade cobble for sandstone rims
+        let rim = if v.desert { BlockType::Sandstone } else { stone };
         let fy = s.floor_y;
+        let cx = (s.x0 + s.x1) / 2;
+        let cz = (s.z0 + s.z1) / 2;
         for wx in s.x0..=s.x1 {
             for wz in s.z0..=s.z1 {
                 self.foundation(wx, wz, fy, BlockType::Cobblestone);
                 self.clear_above(wx, wz, fy + 1, 6);
-                let is_edge = wx == s.x0 || wx == s.x1 || wz == s.z0 || wz == s.z1;
-                if is_edge {
-                    self.set(wx, fy, wz, stone);
+                let ring = (wx - cx).abs().max((wz - cz).abs());
+                if ring >= 2 {
+                    // Well rim plus the apron ring mob spawns anchor to
+                    self.set(wx, fy, wz, rim);
                 } else {
                     // Water basin two deep with a stone bottom
                     self.set(wx, fy - 2, wz, BlockType::Cobblestone);
                     self.set(wx, fy - 1, wz, BlockType::Water);
                     self.set(wx, fy, wz, BlockType::Water);
                 }
-                if v.desert && is_edge {
-                    // Desert wells trade cobble for sandstone rims
-                    self.set(wx, fy, wz, BlockType::Sandstone);
-                }
             }
         }
-        // Corner posts and a flat canopy
-        for (wx, wz) in [(s.x0, s.z0), (s.x0, s.z1), (s.x1, s.z0), (s.x1, s.z1)] {
+        // Corner posts and a flat canopy over the basin and rim
+        for (wx, wz) in [(cx - 2, cz - 2), (cx - 2, cz + 2), (cx + 2, cz - 2), (cx + 2, cz + 2)] {
             self.set(wx, fy + 1, wz, stone);
             self.set(wx, fy + 2, wz, stone);
         }
-        for wx in s.x0..=s.x1 {
-            for wz in s.z0..=s.z1 {
+        for wx in cx - 2..=cx + 2 {
+            for wz in cz - 2..=cz + 2 {
                 self.set(wx, fy + 3, wz, stone);
             }
         }
@@ -793,6 +815,33 @@ mod tests {
                 let overlap =
                     a.x0 <= b.x1 && a.x1 >= b.x0 && a.z0 <= b.z1 && a.z1 >= b.z0;
                 assert!(!overlap, "{:?} overlaps {:?}", a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn mob_spawns_land_on_stamped_cleared_blocks() {
+        for seed in [1u64, 42, 4242, 12_345] {
+            let (_, _, v) = find_test_village(seed);
+            let ccx = v.center_x.div_euclid(CHUNK_WIDTH as i32);
+            let ccz = v.center_z.div_euclid(CHUNK_DEPTH as i32);
+            let mut chunk = Chunk::new(ccx, ccz, seed);
+            chunk.generate();
+            for pos in v.villager_spawns().into_iter().chain([v.golem_spawn()]) {
+                let lx = (pos.x.floor() as i32).rem_euclid(CHUNK_WIDTH as i32) as usize;
+                let lz = (pos.z.floor() as i32).rem_euclid(CHUNK_DEPTH as i32) as usize;
+                let feet = pos.y.floor() as usize;
+                assert!(
+                    chunk.blocks[lx][feet - 1][lz].is_solid(),
+                    "seed {seed}: no ground under spawn at {pos:?}"
+                );
+                for y in feet..feet + 3 {
+                    assert_eq!(
+                        chunk.blocks[lx][y][lz],
+                        BlockType::Air,
+                        "seed {seed}: spawn blocked at {pos:?} y={y}"
+                    );
+                }
             }
         }
     }
