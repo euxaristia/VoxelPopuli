@@ -12,9 +12,9 @@ lto = true
 
 [dependencies]
 flate2 = "1.1.9"
-gl = "0.14.0"
 glam = "0.33"
 glfw = "0.62.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rand = "0.10"
 rayon = "1.11.0"
+wgpu = "30.0.0"
