@@ -922,22 +922,31 @@ impl World {
     }
 
     fn solid_at(&self, x: f32, y: f32, z: f32) -> bool {
-        self.get_block(x.floor() as i32, y.floor() as i32, z.floor() as i32)
-            .is_solid()
+        let (x, y, z) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+        // Unloaded chunks read as Air from get_block; treat them as solid
+        // so mobs can't wander into ungenerated terrain and freeze there.
+        let cx = x.div_euclid(CHUNK_WIDTH as i32);
+        let cz = z.div_euclid(CHUNK_DEPTH as i32);
+        self.get_chunk(cx, cz).is_none() || self.get_block(x, y, z).is_solid()
     }
 
     /// True if a mob-sized box at `pos` (feet center) intersects any solid block.
     fn mob_box_blocked(&self, pos: Vec3, hw: f32, height: f32) -> bool {
-        for (dx, dz) in [(-hw, -hw), (-hw, hw), (hw, -hw), (hw, hw)] {
-            let mut y = pos.y + 0.05;
-            loop {
-                if self.solid_at(pos.x + dx, y, pos.z + dz) {
-                    return true;
+        // Cover every voxel the box overlaps; corner sampling misses the
+        // middle column when a wide mob straddles three columns.
+        let min_x = (pos.x - hw).floor() as i32;
+        let max_x = (pos.x + hw).floor() as i32;
+        let min_y = (pos.y + 0.05).floor() as i32;
+        let max_y = (pos.y + height - 0.1).floor() as i32;
+        let min_z = (pos.z - hw).floor() as i32;
+        let max_z = (pos.z + hw).floor() as i32;
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                for z in min_z..=max_z {
+                    if self.solid_at(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5) {
+                        return true;
+                    }
                 }
-                if y >= pos.y + height - 0.1 {
-                    break;
-                }
-                y = (y + 0.9).min(pos.y + height - 0.1);
             }
         }
         false
@@ -1045,6 +1054,13 @@ impl World {
         }
 
         for mob in &self.mobs {
+            // Mobs in unloaded chunks are frozen by update_mobs; skip
+            // drawing them too instead of paying draw calls off-screen.
+            let mcx = (mob.position.x / CHUNK_WIDTH as f32).floor() as i32;
+            let mcz = (mob.position.z / CHUNK_DEPTH as f32).floor() as i32;
+            if self.get_chunk(mcx, mcz).is_none() {
+                continue;
+            }
             let base = Mat4::from_translation(mob.position) * Mat4::from_rotation_y(-mob.yaw);
             let part = |mesh: &Mesh, center: Vec3, size: Vec3, tint: glam::Vec4| {
                 shader.set_vec4(loc_diff, tint);

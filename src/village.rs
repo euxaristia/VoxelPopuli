@@ -221,11 +221,8 @@ impl Village {
                         } else {
                             continue;
                         };
-                        if kind == StructureKind::House {
-                            if houses >= 6 {
-                                continue;
-                            }
-                            houses += 1;
+                        if kind == StructureKind::House && houses >= 6 {
+                            continue;
                         }
 
                         // Anchor: distance `along` down the road, plot pushed
@@ -269,6 +266,11 @@ impl Village {
                             s.x0 <= o.x1 + 1 && s.x1 >= o.x0 - 1 && s.z0 <= o.z1 + 1 && s.z1 >= o.z0 - 1
                         });
                         if !collides {
+                            // Count houses only once actually placed so
+                            // rejected plots don't consume the budget.
+                            if kind == StructureKind::House {
+                                houses += 1;
+                            }
                             self.structures.push(s);
                         }
                     }
