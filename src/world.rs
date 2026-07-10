@@ -3,6 +3,7 @@ use crate::chunk::{
     CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, MeshResult, MeshSnapshot, water_decay,
     water_is_falling, water_is_source, water_level_from_decay,
 };
+use crate::mob::{Mob, MobKind};
 use crate::renderer;
 use crate::renderer::{Mesh, Shader, Texture2D};
 use glam::{Mat4, Vec3};
@@ -13,6 +14,9 @@ pub const VIEW_DISTANCE: i32 = 35;
 pub const POOL_WIDTH: i32 = VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
 pub const CLOUD_HEIGHT: f32 = 200.0;
+// Upper bound on chunk-generation jobs queued to the worker pool; bounds
+// memory for finished-but-unintegrated chunks without starving meshing jobs.
+const MAX_GEN_IN_FLIGHT: usize = 64;
 
 // WorldEdit removed in favor of HashMap edits
 
@@ -134,6 +138,15 @@ pub struct World {
     next_mesh_job_id: u64,
     mesh_result_tx: std::sync::mpsc::Sender<MeshResult>,
     mesh_result_rx: std::sync::mpsc::Receiver<MeshResult>,
+    gen_result_tx: std::sync::mpsc::Sender<Box<Chunk>>,
+    gen_result_rx: std::sync::mpsc::Receiver<Box<Chunk>>,
+    // Chunk coordinates currently being generated on a worker
+    gen_in_flight: std::collections::HashSet<(i32, i32)>,
+    pub mobs: Vec<Mob>,
+    // Village center chunks whose inhabitants have already been spawned
+    spawned_villages: std::collections::HashSet<(i32, i32)>,
+    villager_mesh: renderer::Mesh,
+    golem_mesh: renderer::Mesh,
 }
 
 impl World {
@@ -143,6 +156,7 @@ impl World {
             chunks.push(None);
         }
         let (mesh_result_tx, mesh_result_rx) = std::sync::mpsc::channel();
+        let (gen_result_tx, gen_result_rx) = std::sync::mpsc::channel();
         Self {
             seed,
             chunks,
@@ -172,23 +186,34 @@ impl World {
             next_mesh_job_id: 1,
             mesh_result_tx,
             mesh_result_rx,
+            gen_result_tx,
+            gen_result_rx,
+            gen_in_flight: std::collections::HashSet::new(),
+            mobs: Vec::new(),
+            spawned_villages: std::collections::HashSet::new(),
+            villager_mesh: Self::create_textured_cube_mesh(BlockType::Wool),
+            golem_mesh: Self::create_textured_cube_mesh(BlockType::IronBlock),
         }
     }
 
     fn create_textured_cube_mesh(block: BlockType) -> renderer::Mesh {
+        // Every face wound counter-clockwise seen from outside; the previous
+        // winding had bottom/back/left inverted, so back-face culling opened
+        // see-through holes in mobs and particles at certain view angles.
+        #[rustfmt::skip]
         let v: Vec<f32> = vec![
-            0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0,
-            0.0, // bottom
-            0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-            0.0, // top
-            0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0,
-            0.0, // front
-            0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0,
-            1.0, // back
-            0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0,
-            1.0, // left
-            1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0,
-            1.0, // right
+            0.0, 0.0, 0.0,  1.0, 0.0, 0.0,  1.0, 0.0, 1.0,
+            0.0, 0.0, 0.0,  1.0, 0.0, 1.0,  0.0, 0.0, 1.0, // bottom (-Y)
+            0.0, 1.0, 0.0,  0.0, 1.0, 1.0,  1.0, 1.0, 1.0,
+            0.0, 1.0, 0.0,  1.0, 1.0, 1.0,  1.0, 1.0, 0.0, // top (+Y)
+            0.0, 0.0, 0.0,  0.0, 1.0, 0.0,  1.0, 1.0, 0.0,
+            0.0, 0.0, 0.0,  1.0, 1.0, 0.0,  1.0, 0.0, 0.0, // front (-Z)
+            0.0, 0.0, 1.0,  1.0, 0.0, 1.0,  1.0, 1.0, 1.0,
+            0.0, 0.0, 1.0,  1.0, 1.0, 1.0,  0.0, 1.0, 1.0, // back (+Z)
+            0.0, 0.0, 0.0,  0.0, 0.0, 1.0,  0.0, 1.0, 1.0,
+            0.0, 0.0, 0.0,  0.0, 1.0, 1.0,  0.0, 1.0, 0.0, // left (-X)
+            1.0, 0.0, 0.0,  1.0, 1.0, 0.0,  1.0, 1.0, 1.0,
+            1.0, 0.0, 0.0,  1.0, 1.0, 1.0,  1.0, 0.0, 1.0, // right (+X)
         ];
         let (tx, ty) = crate::item::atlas_uv(block);
         let ts = 1.0 / 16.0;
@@ -262,10 +287,7 @@ impl World {
         if let Some(atlas) = &self.atlas {
             atlas.bind(0);
         }
-        unsafe {
-            gl::Enable(gl::BLEND);
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-        }
+        crate::renderer::set_blend(true);
 
         for p in &self.particles {
             let alpha = (p.life / p.max_life).clamp(0.0, 1.0);
@@ -281,9 +303,7 @@ impl World {
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
-        unsafe {
-            gl::Disable(gl::BLEND);
-        }
+        crate::renderer::set_blend(false);
     }
 
     fn get_pool_index(&self, cx: i32, cz: i32) -> usize {
@@ -585,6 +605,7 @@ impl World {
                                     c.dirty = true;
                                     self.dirty_count += 1;
                                 }
+                                self.try_spawn_village_mobs(x, z);
                                 self.chunks_generated_count += 1;
                                 generated_this_frame += 1;
                                 if generated_this_frame >= 64 {
@@ -606,10 +627,12 @@ impl World {
                     self.last_pcz = pcz;
                 }
             } else {
-                // NORMAL MODE: Non-blocking spiral (Discovery)
-                // Throttle generation to prevent massive stutters when crossing boundaries
-                let mut generated_this_frame = 0;
-                for r in 0..=VIEW_DISTANCE {
+                // NORMAL MODE: dispatch missing chunks to background workers,
+                // nearest ring first. Generation is a pure function of
+                // (seed, x, z), so workers need no access to World; finished
+                // chunks come back over a channel and are integrated below.
+                let mut scan_complete = true;
+                'scan: for r in 0..=VIEW_DISTANCE {
                     for x in (pcx - r)..=(pcx + r) {
                         for z in (pcz - r)..=(pcz + r) {
                             if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
@@ -617,62 +640,80 @@ impl World {
                             }
 
                             let index = self.get_pool_index(x, z);
-                            let should_replace = match &self.chunks[index] {
+                            let needed = match &self.chunks[index] {
                                 None => true,
                                 Some(c) => c.x != x || c.z != z,
                             };
-                            if should_replace {
-                                // The displaced chunk's dirty flag was counted; drop its count
-                                if let Some(old) = &self.chunks[index]
-                                    && old.dirty
-                                {
-                                    self.dirty_count -= 1;
-                                }
-                                let mut chunk = Box::new(Chunk::new(x, z, self.seed));
-                                chunk.generate();
-                                self.chunks[index] = Some(chunk);
-                                self.apply_edits_to_chunk(x, z);
-
-                                // Dirty the new chunk AND its neighbors to fix lighting/meshing gaps.
-                                // Fresh chunks are born dirty but were never counted, so count
-                                // unconditionally — the old `!c.dirty` guard never fired and let
-                                // dirty_count drift negative, stalling the mesh scan entirely.
-                                if let Some(c) = &mut self.chunks[index] {
-                                    c.dirty = true;
-                                    self.dirty_count += 1;
-                                }
-                                let neighbors = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)];
-                                for (nx, nz) in neighbors {
-                                    if let Some(nc) = self.get_chunk_mut(nx, nz)
-                                        && !nc.dirty
-                                    {
-                                        nc.dirty = true;
-                                        self.dirty_count += 1;
-                                    }
-                                }
-
-                                generated_this_frame += 1;
-                                if generated_this_frame >= 8 {
-                                    break;
-                                }
+                            if !needed || self.gen_in_flight.contains(&(x, z)) {
+                                continue;
                             }
+                            if self.gen_in_flight.len() >= MAX_GEN_IN_FLIGHT {
+                                scan_complete = false;
+                                break 'scan;
+                            }
+                            self.gen_in_flight.insert((x, z));
+                            let seed = self.seed;
+                            let tx = self.gen_result_tx.clone();
+                            rayon::spawn(move || {
+                                let mut chunk = Box::new(Chunk::new(x, z, seed));
+                                chunk.generate();
+                                let _ = tx.send(chunk);
+                            });
                         }
-                        if generated_this_frame >= 8 {
-                            break;
-                        }
-                    }
-                    if generated_this_frame >= 8 {
-                        break;
                     }
                 }
-
-                // Only update last_pcx/last_pcz once we've at least tried to load the immediate ring
-                // Actually, let's keep the boundary check simple.
-                if generated_this_frame < 8 {
+                // Stop rescanning once every missing chunk is at least in
+                // flight; a later boundary cross restarts the scan.
+                if scan_complete {
                     self.last_pcx = pcx;
                     self.last_pcz = pcz;
                 }
             }
+        }
+
+        // --- Integrate chunks generated in the background ---
+        while let Ok(chunk) = self.gen_result_rx.try_recv() {
+            let (x, z) = (chunk.x, chunk.z);
+            self.gen_in_flight.remove(&(x, z));
+            // Discard arrivals the player has since moved away from; the
+            // scan re-dispatches them if the player comes back.
+            if (x - pcx).abs() > VIEW_DISTANCE || (z - pcz).abs() > VIEW_DISTANCE {
+                continue;
+            }
+            let index = self.get_pool_index(x, z);
+            if let Some(existing) = &self.chunks[index]
+                && existing.x == x
+                && existing.z == z
+            {
+                continue;
+            }
+            // The displaced chunk's dirty flag was counted; drop its count
+            if let Some(old) = &self.chunks[index]
+                && old.dirty
+            {
+                self.dirty_count -= 1;
+            }
+            self.chunks[index] = Some(chunk);
+            self.apply_edits_to_chunk(x, z);
+
+            // Dirty the new chunk AND its neighbors to fix lighting/meshing
+            // gaps. Fresh chunks are born dirty but were never counted, so
+            // count unconditionally.
+            if let Some(c) = &mut self.chunks[index] {
+                c.dirty = true;
+                self.dirty_count += 1;
+            }
+            let neighbors = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)];
+            for (nx, nz) in neighbors {
+                if let Some(nc) = self.get_chunk_mut(nx, nz)
+                    && !nc.dirty
+                {
+                    nc.dirty = true;
+                    self.dirty_count += 1;
+                }
+            }
+            self.try_spawn_village_mobs(x, z);
+            self.chunks_generated_count += 1;
         }
 
         // --- Prioritized Meshing ---
@@ -853,6 +894,265 @@ impl World {
         // --- Physics Simulation ---
         self.update_water(_time);
         self.update_falling_blocks();
+        self.update_mobs(_time);
+    }
+
+    /// Spawn a village's inhabitants the first time its center chunk
+    /// generates. Session-scoped: they don't respawn when the pool cycles.
+    fn try_spawn_village_mobs(&mut self, cx: i32, cz: i32) {
+        if self.spawned_villages.contains(&(cx, cz)) {
+            return;
+        }
+        let Some(village) = crate::village::village_for_center_chunk(self.seed, cx, cz) else {
+            return;
+        };
+        self.spawned_villages.insert((cx, cz));
+        let home = Vec3::new(
+            village.center_x as f32 + 0.5,
+            (village.base_y + 1) as f32,
+            village.center_z as f32 + 0.5,
+        );
+        for (i, pos) in village.villager_spawns().into_iter().enumerate() {
+            self.mobs
+                .push(Mob::new(MobKind::Villager, pos, home, i as u8));
+        }
+        self.mobs
+            .push(Mob::new(MobKind::Golem, village.golem_spawn(), home, 0));
+    }
+
+    fn solid_at(&self, x: f32, y: f32, z: f32) -> bool {
+        let (x, y, z) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+        // Unloaded chunks read as Air from get_block; treat them as solid
+        // so mobs can't wander into ungenerated terrain and freeze there.
+        let cx = x.div_euclid(CHUNK_WIDTH as i32);
+        let cz = z.div_euclid(CHUNK_DEPTH as i32);
+        self.get_chunk(cx, cz).is_none() || self.get_block(x, y, z).is_solid()
+    }
+
+    /// True if a mob-sized box at `pos` (feet center) intersects any solid block.
+    fn mob_box_blocked(&self, pos: Vec3, hw: f32, height: f32) -> bool {
+        // Cover every voxel the box overlaps; corner sampling misses the
+        // middle column when a wide mob straddles three columns.
+        let min_x = (pos.x - hw).floor() as i32;
+        let max_x = (pos.x + hw).floor() as i32;
+        let min_y = (pos.y + 0.05).floor() as i32;
+        let max_y = (pos.y + height - 0.1).floor() as i32;
+        let min_z = (pos.z - hw).floor() as i32;
+        let max_z = (pos.z + hw).floor() as i32;
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                for z in min_z..=max_z {
+                    if self.solid_at(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn update_mobs(&mut self, dt: f32) {
+        let dt = dt.min(0.1);
+        let mut mobs = std::mem::take(&mut self.mobs);
+        for mob in &mut mobs {
+            // Freeze mobs whose chunk is unloaded so they don't fall
+            // through ungenerated terrain.
+            let mcx = (mob.position.x / CHUNK_WIDTH as f32).floor() as i32;
+            let mcz = (mob.position.z / CHUNK_DEPTH as f32).floor() as i32;
+            if self.get_chunk(mcx, mcz).is_none() {
+                continue;
+            }
+
+            mob.wander_timer -= dt;
+            if mob.wander_timer <= 0.0 {
+                if rand::random::<f32>() < 0.35 {
+                    mob.walk_speed = 0.0;
+                } else {
+                    mob.yaw = rand::random::<f32>() * std::f32::consts::TAU;
+                    mob.walk_speed = mob.base_speed();
+                }
+                mob.wander_timer = 1.5 + rand::random::<f32>() * 3.5;
+            }
+            // Head back when wandering past the leash
+            let to_home = Vec3::new(
+                mob.home.x - mob.position.x,
+                0.0,
+                mob.home.z - mob.position.z,
+            );
+            if to_home.length() > mob.leash_range() {
+                mob.yaw = to_home.z.atan2(to_home.x);
+                mob.walk_speed = mob.base_speed();
+            }
+
+            mob.velocity.x = mob.yaw.cos() * mob.walk_speed;
+            mob.velocity.z = mob.yaw.sin() * mob.walk_speed;
+            mob.velocity.y = (mob.velocity.y - 22.0 * dt).max(-40.0);
+
+            let hw = mob.half_width();
+            let height = mob.height();
+
+            // Horizontal movement axis by axis, with a one-block step-up
+            for axis in 0..2usize {
+                let step = if axis == 0 {
+                    mob.velocity.x * dt
+                } else {
+                    mob.velocity.z * dt
+                };
+                if step == 0.0 {
+                    continue;
+                }
+                let mut cand = mob.position;
+                if axis == 0 {
+                    cand.x += step;
+                } else {
+                    cand.z += step;
+                }
+                if !self.mob_box_blocked(cand, hw, height) {
+                    mob.position = cand;
+                } else if mob.grounded {
+                    let mut up = cand;
+                    up.y += 1.0;
+                    if !self.mob_box_blocked(up, hw, height) {
+                        mob.position = up;
+                    } else {
+                        // Walled in: re-roll direction soon
+                        mob.wander_timer = mob.wander_timer.min(0.2);
+                    }
+                } else {
+                    mob.wander_timer = mob.wander_timer.min(0.2);
+                }
+            }
+
+            // Vertical movement
+            let mut cand = mob.position;
+            cand.y += mob.velocity.y * dt;
+            if cand.y < 1.0 {
+                cand.y = 1.0;
+            }
+            if !self.mob_box_blocked(cand, hw, height) {
+                mob.position = cand;
+                mob.grounded = false;
+            } else {
+                if mob.velocity.y < 0.0 {
+                    mob.grounded = true;
+                }
+                mob.velocity.y = 0.0;
+            }
+        }
+        self.mobs = mobs;
+    }
+
+    pub fn render_mobs(&self, shader: &Shader) {
+        if self.mobs.is_empty() {
+            return;
+        }
+        let loc_model = shader.get_uniform_location("uModel");
+        let loc_diff = shader.get_uniform_location("colDiffuse");
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
+
+        for mob in &self.mobs {
+            // Mobs in unloaded chunks are frozen by update_mobs; skip
+            // drawing them too instead of paying draw calls off-screen.
+            let mcx = (mob.position.x / CHUNK_WIDTH as f32).floor() as i32;
+            let mcz = (mob.position.z / CHUNK_DEPTH as f32).floor() as i32;
+            if self.get_chunk(mcx, mcz).is_none() {
+                continue;
+            }
+            let base = Mat4::from_translation(mob.position) * Mat4::from_rotation_y(-mob.yaw);
+            let part = |mesh: &Mesh, center: Vec3, size: Vec3, tint: glam::Vec4| {
+                shader.set_vec4(loc_diff, tint);
+                let model =
+                    base * Mat4::from_translation(center - size * 0.5) * Mat4::from_scale(size);
+                shader.set_mat4(loc_model, &model);
+                mesh.draw();
+            };
+            match mob.kind {
+                MobKind::Villager => {
+                    let robe = match mob.variant % 3 {
+                        0 => glam::Vec4::new(0.45, 0.33, 0.22, 1.0),
+                        1 => glam::Vec4::new(0.34, 0.40, 0.27, 1.0),
+                        _ => glam::Vec4::new(0.42, 0.42, 0.46, 1.0),
+                    };
+                    let dark_robe = glam::Vec4::new(robe.x * 0.8, robe.y * 0.8, robe.z * 0.8, 1.0);
+                    let skin = glam::Vec4::new(0.82, 0.64, 0.47, 1.0);
+                    let nose = glam::Vec4::new(0.72, 0.53, 0.38, 1.0);
+                    // Robe body
+                    part(
+                        &self.villager_mesh,
+                        Vec3::new(0.0, 0.625, 0.0),
+                        Vec3::new(0.5, 1.25, 0.42),
+                        robe,
+                    );
+                    // Folded arms bar across the chest (forward is +x)
+                    part(
+                        &self.villager_mesh,
+                        Vec3::new(0.2, 0.98, 0.0),
+                        Vec3::new(0.2, 0.24, 0.6),
+                        dark_robe,
+                    );
+                    // Head
+                    part(
+                        &self.villager_mesh,
+                        Vec3::new(0.0, 1.53, 0.0),
+                        Vec3::new(0.5, 0.56, 0.5),
+                        skin,
+                    );
+                    // The all-important nose
+                    part(
+                        &self.villager_mesh,
+                        Vec3::new(0.3, 1.4, 0.0),
+                        Vec3::new(0.12, 0.3, 0.12),
+                        nose,
+                    );
+                }
+                MobKind::Golem => {
+                    let tint = glam::Vec4::ONE;
+                    // Legs
+                    part(
+                        &self.golem_mesh,
+                        Vec3::new(0.0, 0.525, -0.24),
+                        Vec3::new(0.34, 1.05, 0.34),
+                        tint,
+                    );
+                    part(
+                        &self.golem_mesh,
+                        Vec3::new(0.0, 0.525, 0.24),
+                        Vec3::new(0.34, 1.05, 0.34),
+                        tint,
+                    );
+                    // Torso, shoulders spanning z
+                    part(
+                        &self.golem_mesh,
+                        Vec3::new(0.0, 1.5, 0.0),
+                        Vec3::new(0.72, 0.95, 1.05),
+                        tint,
+                    );
+                    // Hanging arms
+                    part(
+                        &self.golem_mesh,
+                        Vec3::new(0.0, 1.32, -0.68),
+                        Vec3::new(0.3, 1.3, 0.3),
+                        tint,
+                    );
+                    part(
+                        &self.golem_mesh,
+                        Vec3::new(0.0, 1.32, 0.68),
+                        Vec3::new(0.3, 1.3, 0.3),
+                        tint,
+                    );
+                    // Head
+                    part(
+                        &self.golem_mesh,
+                        Vec3::new(0.0, 2.24, 0.0),
+                        Vec3::new(0.5, 0.55, 0.5),
+                        tint,
+                    );
+                }
+            }
+        }
+        shader.set_vec4(loc_diff, glam::Vec4::ONE);
     }
 
     pub fn get_liquid_level(&self, x: i32, y: i32, z: i32) -> u8 {
@@ -1444,11 +1744,8 @@ impl World {
     }
 
     pub fn render_transparent(&self, _frustum: &Frustum) {
-        unsafe {
-            gl::Enable(gl::BLEND);
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::Enable(gl::CULL_FACE);
-        }
+        crate::renderer::set_blend(true);
+        crate::renderer::set_cull(true);
         for &i in &self.visible_chunks {
             if let Some(chunk) = &self.chunks[i]
                 && let Some(mesh) = &chunk.mesh_transparent
@@ -1459,12 +1756,9 @@ impl World {
     }
 
     pub fn render_water(&self, _frustum: &Frustum) {
-        unsafe {
-            gl::Enable(gl::BLEND);
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::DepthMask(gl::FALSE);
-            gl::Enable(gl::CULL_FACE);
-        }
+        crate::renderer::set_blend(true);
+        crate::renderer::set_depth_write(false);
+        crate::renderer::set_cull(true);
         for &i in &self.visible_chunks {
             if let Some(chunk) = &self.chunks[i]
                 && let Some(mesh) = &chunk.mesh_water
@@ -1472,9 +1766,7 @@ impl World {
                 mesh.draw();
             }
         }
-        unsafe {
-            gl::DepthMask(gl::TRUE);
-        }
+        crate::renderer::set_depth_write(true);
     }
 
     pub fn render_clouds(&self, shader: &Shader, mvp: &Mat4) {
@@ -1482,16 +1774,13 @@ impl World {
             shader.bind();
             shader.set_mat4(shader.get_uniform_location("uMVP"), mvp);
             shader.set_int(shader.get_uniform_location("uIsCircle"), 0);
-            unsafe {
-                gl::Disable(gl::CULL_FACE);
-                gl::Enable(gl::BLEND);
-                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-                gl::DepthMask(gl::FALSE);
-                mesh.draw();
-                gl::DepthMask(gl::TRUE);
-                gl::Disable(gl::BLEND);
-                gl::Enable(gl::CULL_FACE);
-            }
+            crate::renderer::set_cull(false);
+            crate::renderer::set_blend(true);
+            crate::renderer::set_depth_write(false);
+            mesh.draw();
+            crate::renderer::set_depth_write(true);
+            crate::renderer::set_blend(false);
+            crate::renderer::set_cull(true);
         }
     }
 
@@ -1511,11 +1800,9 @@ impl World {
             shader.set_int(shader.get_uniform_location("uIsCircle"), 0);
             let star_mvp = *mvp * Mat4::from_translation(player_pos);
             shader.set_mat4(shader.get_uniform_location("uMVP"), &star_mvp);
-            unsafe {
-                gl::Disable(gl::DEPTH_TEST);
-                mesh.draw();
-                gl::Enable(gl::DEPTH_TEST);
-            }
+            crate::renderer::set_depth_test(false);
+            mesh.draw();
+            crate::renderer::set_depth_test(true);
         }
     }
 }

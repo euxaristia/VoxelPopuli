@@ -65,6 +65,11 @@ const CHEST: &[JavaProperty] = &[
 const FARMLAND: &[JavaProperty] = &[JavaProperty::new("moisture", "7")];
 const WHEAT: &[JavaProperty] = &[JavaProperty::new("age", "7")];
 const REDSTONE_ORE: &[JavaProperty] = &[JavaProperty::new("lit", "false")];
+const BELL: &[JavaProperty] = &[
+    JavaProperty::new("attachment", "ceiling"),
+    JavaProperty::new("facing", "north"),
+    JavaProperty::new("powered", "false"),
+];
 
 pub fn classic_world_height_matches_chunks() -> bool {
     MIN_Y == 0 && MAX_Y == 255 && CHUNK_HEIGHT == 256 && SECTIONS_PER_CHUNK == 16
@@ -122,6 +127,7 @@ pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
         Wheat => JavaBlockState::with_properties("minecraft:wheat", WHEAT),
         RedstoneOre => JavaBlockState::with_properties("minecraft:redstone_ore", REDSTONE_ORE),
         MobSpawner => JavaBlockState::new("minecraft:spawner"),
+        Bell => JavaBlockState::with_properties("minecraft:bell", BELL),
 
         RawIron | IronIngot | FlintAndSteel | Stick | Coal | GoldIngot | Diamond | LapisLazuli
         | String | Gunpowder | Leather | RedstoneDust | WoodPickaxe | StonePickaxe

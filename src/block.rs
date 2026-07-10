@@ -122,11 +122,12 @@ pub enum BlockType {
     RedstoneOre,
     RedstoneDust,
     MobSpawner,
+    Bell,
 }
 
 #[allow(dead_code)]
 impl BlockType {
-    pub const COUNT: usize = 82;
+    pub const COUNT: usize = 83;
 
     pub fn from_u8(value: u8) -> Self {
         if (value as usize) < Self::COUNT {
@@ -187,7 +188,8 @@ impl BlockType {
             | BlockType::Water
             | BlockType::Lava
             | BlockType::SnowLayer
-            | BlockType::Torch => false,
+            | BlockType::Torch
+            | BlockType::Bell => false,
             _ => !self.is_item(),
         }
     }
@@ -235,6 +237,7 @@ impl BlockType {
                 | BlockType::Glass
                 | BlockType::Torch
                 | BlockType::Wheat
+                | BlockType::Bell
         )
     }
 }
@@ -245,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_count() {
-        assert_eq!(BlockType::COUNT, 82);
+        assert_eq!(BlockType::COUNT, 83);
     }
 
     #[test]
@@ -258,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_from_u8_out_of_range() {
-        assert_eq!(BlockType::from_u8(82), BlockType::Air);
+        assert_eq!(BlockType::from_u8(BlockType::COUNT as u8), BlockType::Air);
         assert_eq!(BlockType::from_u8(128), BlockType::Air);
         assert_eq!(BlockType::from_u8(255), BlockType::Air);
     }

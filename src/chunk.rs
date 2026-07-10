@@ -73,7 +73,7 @@ fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn chunk_hash(seed: u64, x: i32, z: i32, salt: i32) -> u32 {
+pub(crate) fn chunk_hash(seed: u64, x: i32, z: i32, salt: i32) -> u32 {
     let mixed = mix64(
         seed ^ (x as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
             ^ (z as i64 as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
@@ -82,16 +82,16 @@ fn chunk_hash(seed: u64, x: i32, z: i32, salt: i32) -> u32 {
     (mixed ^ (mixed >> 32)) as u32
 }
 
-fn hash_unit(seed: u64, x: i32, z: i32, salt: i32) -> f32 {
+pub(crate) fn hash_unit(seed: u64, x: i32, z: i32, salt: i32) -> f32 {
     chunk_hash(seed, x, z, salt) as f32 / u32::MAX as f32
 }
 
-struct ChunkRng {
+pub(crate) struct ChunkRng {
     state: u64,
 }
 
 impl ChunkRng {
-    fn new(seed: u64, x: i32, z: i32, salt: u64) -> Self {
+    pub(crate) fn new(seed: u64, x: i32, z: i32, salt: u64) -> Self {
         let state = mix64(
             seed ^ (x as i64 as u64).wrapping_mul(0xD1B5_4A32_D192_ED03)
                 ^ (z as i64 as u64).wrapping_mul(0xABC9_83DB_5F35_53B5)
@@ -100,7 +100,7 @@ impl ChunkRng {
         Self { state }
     }
 
-    fn next_u32(&mut self) -> u32 {
+    pub(crate) fn next_u32(&mut self) -> u32 {
         self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         (mix64(self.state) >> 32) as u32
     }
@@ -128,7 +128,7 @@ pub const WATER_VERTEX_ALPHA: u8 = 180;
 const SEA_LEVEL: usize = 124;
 const MAX_TERRAIN_HEIGHT: i32 = CHUNK_HEIGHT as i32 - 18;
 
-fn terrain_height_and_biome(world_x: f32, world_z: f32, seed: u64) -> (usize, Biome) {
+pub(crate) fn terrain_height_and_biome(world_x: f32, world_z: f32, seed: u64) -> (usize, Biome) {
     let biome = get_biome_seeded(world_x, world_z, seed);
     let continental = seeded_perlin_2d(world_x, world_z, 0.005, 3, seed, 100);
     let detail = seeded_perlin_2d(world_x, world_z, 0.03, 4, seed, 110);
@@ -472,7 +472,7 @@ impl Chunk {
         }
     }
 
-    fn surface_y(&self, x: usize, z: usize) -> Option<usize> {
+    pub(crate) fn surface_y(&self, x: usize, z: usize) -> Option<usize> {
         for y in (1..CHUNK_HEIGHT - 2).rev() {
             let b = self.blocks[x][y][z];
             if b.is_solid() && b != BlockType::SnowLayer {
@@ -562,101 +562,6 @@ impl Chunk {
         self.set_local(cx + 2, cy + 1, cz, BlockType::Chest);
         self.set_local(cx, cy + 1, cz - 3, BlockType::Torch);
         self.set_local(cx, cy + 1, cz + 3, BlockType::Torch);
-    }
-
-    fn generate_village_outpost(&mut self) {
-        if hash_unit(self.seed, self.x, self.z, 7201) > 0.07 {
-            return;
-        }
-
-        let world_x = (self.x * CHUNK_WIDTH as i32 + 8) as f32;
-        let world_z = (self.z * CHUNK_DEPTH as i32 + 8) as f32;
-        let biome = get_biome_seeded(world_x, world_z, self.seed);
-        if biome != Biome::Plains && biome != Biome::Desert {
-            return;
-        }
-
-        let (x0, z0) = (4usize, 4usize);
-        let (x1, z1) = (11usize, 11usize);
-        let mut min_y = CHUNK_HEIGHT;
-        let mut max_y = 0usize;
-        for x in x0..=x1 {
-            for z in z0..=z1 {
-                let Some(y) = self.surface_y(x, z) else {
-                    return;
-                };
-                if self.blocks[x][y + 1][z] == BlockType::Water {
-                    return;
-                }
-                min_y = min_y.min(y);
-                max_y = max_y.max(y);
-            }
-        }
-        if max_y - min_y > 3 || max_y + 6 >= CHUNK_HEIGHT {
-            return;
-        }
-
-        let base_y = max_y + 1;
-        let wall = if biome == Biome::Desert {
-            BlockType::Sandstone
-        } else {
-            BlockType::OakPlanks
-        };
-        let roof = if biome == Biome::Desert {
-            BlockType::Sandstone
-        } else {
-            BlockType::OakLog
-        };
-
-        for x in x0..=x1 {
-            for z in z0..=z1 {
-                if let Some(surface) = self.surface_y(x, z) {
-                    for y in surface + 1..base_y {
-                        self.blocks[x][y][z] = wall;
-                    }
-                }
-                self.blocks[x][base_y][z] = wall;
-                for y in base_y + 1..=base_y + 3 {
-                    let edge = x == x0 || x == x1 || z == z0 || z == z1;
-                    self.blocks[x][y][z] = if edge { wall } else { BlockType::Air };
-                }
-                self.blocks[x][base_y + 4][z] = roof;
-            }
-        }
-
-        for y in base_y + 1..=base_y + 2 {
-            self.blocks[7][y][z0] = BlockType::Air;
-            self.blocks[8][y][z0] = BlockType::Air;
-        }
-        self.blocks[5][base_y + 2][z0] = BlockType::Glass;
-        self.blocks[10][base_y + 2][z0] = BlockType::Glass;
-        self.blocks[5][base_y + 2][z1] = BlockType::Glass;
-        self.blocks[10][base_y + 2][z1] = BlockType::Glass;
-        self.blocks[6][base_y + 1][9] = BlockType::Chest;
-        self.blocks[9][base_y + 1][9] = BlockType::CraftingTable;
-        self.blocks[7][base_y + 2][10] = BlockType::Torch;
-        self.blocks[8][base_y + 2][10] = BlockType::Torch;
-
-        let farm_y = base_y;
-        for x in 1usize..=3 {
-            for z in 4usize..=12 {
-                for y in 1..farm_y {
-                    if self.blocks[x][y][z] == BlockType::Air
-                        || self.blocks[x][y][z] == BlockType::Water
-                    {
-                        self.set_local(x as i32, y as i32, z as i32, BlockType::Dirt);
-                    }
-                }
-                if z == 8 && x == 2 {
-                    self.set_local(x as i32, farm_y as i32, z as i32, BlockType::Water);
-                } else {
-                    self.set_local(x as i32, farm_y as i32, z as i32, BlockType::Farmland);
-                    if (x + z) % 2 == 0 && farm_y + 1 < CHUNK_HEIGHT {
-                        self.set_local(x as i32, (farm_y + 1) as i32, z as i32, BlockType::Wheat);
-                    }
-                }
-            }
-        }
     }
 
     fn generate_biome_decorations(&mut self) {
@@ -1242,7 +1147,6 @@ impl Chunk {
             }
         }
 
-        self.generate_village_outpost();
         self.generate_biome_decorations();
 
         // PASS 6: Snow layer for snowy biomes
@@ -1275,6 +1179,9 @@ impl Chunk {
                 }
             }
         }
+
+        // PASS 8: Villages (multi-chunk, seed-deterministic)
+        crate::village::stamp_chunk(self);
 
         self.calculate_lighting();
     }
@@ -1817,6 +1724,8 @@ impl ChunkData {
                         0.125
                     } else if block == BlockType::Torch {
                         0.625
+                    } else if block == BlockType::Bell {
+                        0.6
                     } else {
                         1.0
                     };
