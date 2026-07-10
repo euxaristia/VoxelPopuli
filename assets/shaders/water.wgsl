@@ -44,7 +44,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.uv = in.uv;
     out.world_pos = (u.model * vec4(p, 1.0)).xyz;
     out.normal = normalize((u.model * vec4(in.normal, 0.0)).xyz);
-    out.pos = u.mvp * vec4(p, 1.0);
+    out.pos = u.mvp * (u.model * vec4(p, 1.0));
     return out;
 }
 
