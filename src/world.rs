@@ -1266,141 +1266,168 @@ impl World {
         let mut c = Vec::new();
         let mut n = Vec::new();
         let cloud_color = [225, 233, 240, 150];
+        // Use time only as a positional drift, not as a noise parameter
+        // that changes cloud shapes on regen. Clouds drift slowly via offset.
+        let drift = time * 0.0005;
+        let cloud_at = |x: i32, z: i32| -> bool {
+            let base =
+                crate::noise::perlin_2d(x as f32 * 0.18 + drift, z as f32 * 0.18 + 41.0, 0.5, 2);
+            let breakup =
+                crate::noise::perlin_2d(x as f32 * 0.48 + drift, z as f32 * 0.48 + 7.0, 0.5, 1);
+            base > 0.10 && breakup > -0.08
+        };
         for x in start_x..(start_x + range * 2) {
             for z in start_z..(start_z + range * 2) {
-                // Use time only as a positional drift, not as a noise parameter
-                // that changes cloud shapes on regen. Clouds drift slowly via offset.
-                let drift = time * 0.0005;
-                let base = crate::noise::perlin_2d(
-                    x as f32 * 0.18 + drift,
-                    z as f32 * 0.18 + 41.0,
-                    0.5,
-                    2,
-                );
-                let breakup =
-                    crate::noise::perlin_2d(x as f32 * 0.48 + drift, z as f32 * 0.48 + 7.0, 0.5, 1);
-                if base > 0.10 && breakup > -0.08 {
-                    let px = x as f32 * cloud_size;
-                    let py = cloud_height;
-                    let pz = z as f32 * cloud_size;
-                    let sx = cloud_size;
-                    let sy = 1.1;
-                    let sz = cloud_size;
-                    let cube = [
-                        px,
-                        py + sy,
-                        pz,
-                        px,
-                        py + sy,
-                        pz + sz,
-                        px + sx,
-                        py + sy,
-                        pz + sz,
-                        px,
-                        py + sy,
-                        pz,
-                        px + sx,
-                        py + sy,
-                        pz + sz,
-                        px + sx,
-                        py + sy,
-                        pz,
-                        px,
-                        py,
-                        pz,
-                        px + sx,
-                        py,
-                        pz + sz,
-                        px,
-                        py,
-                        pz + sz,
-                        px,
-                        py,
-                        pz,
-                        px + sx,
-                        py,
-                        pz,
-                        px + sx,
-                        py,
-                        pz + sz,
-                        px,
-                        py,
-                        pz + sz,
-                        px + sx,
-                        py,
-                        pz + sz,
-                        px + sx,
-                        py + sy,
-                        pz + sz,
-                        px,
-                        py,
-                        pz + sz,
-                        px + sx,
-                        py + sy,
-                        pz + sz,
-                        px,
-                        py + sy,
-                        pz + sz,
-                        px + sx,
-                        py,
-                        pz,
-                        px,
-                        py,
-                        pz,
-                        px,
-                        py + sy,
-                        pz,
-                        px + sx,
-                        py,
-                        pz,
-                        px,
-                        py + sy,
-                        pz,
-                        px + sx,
-                        py + sy,
-                        pz,
-                        px + sx,
-                        py,
-                        pz + sz,
-                        px + sx,
-                        py,
-                        pz,
-                        px + sx,
-                        py + sy,
-                        pz,
-                        px + sx,
-                        py,
-                        pz + sz,
-                        px + sx,
-                        py + sy,
-                        pz,
-                        px + sx,
-                        py + sy,
-                        pz + sz,
-                        px,
-                        py,
-                        pz,
-                        px,
-                        py,
-                        pz + sz,
-                        px,
-                        py + sy,
-                        pz + sz,
-                        px,
-                        py,
-                        pz,
-                        px,
-                        py + sy,
-                        pz + sz,
-                        px,
-                        py + sy,
-                        pz,
-                    ];
-                    v.extend_from_slice(&cube);
-                    for _ in 0..36 {
-                        c.extend_from_slice(&cloud_color);
-                        n.extend_from_slice(&[0.0, 1.0, 0.0]);
-                    }
+                if !cloud_at(x, z) {
+                    continue;
+                }
+                let px = x as f32 * cloud_size;
+                let py = cloud_height;
+                let pz = z as f32 * cloud_size;
+                let sx = cloud_size;
+                let sy = 1.1;
+                let sz = cloud_size;
+                let top = [
+                    px,
+                    py + sy,
+                    pz,
+                    px,
+                    py + sy,
+                    pz + sz,
+                    px + sx,
+                    py + sy,
+                    pz + sz,
+                    px,
+                    py + sy,
+                    pz,
+                    px + sx,
+                    py + sy,
+                    pz + sz,
+                    px + sx,
+                    py + sy,
+                    pz,
+                ];
+                let bottom = [
+                    px,
+                    py,
+                    pz,
+                    px + sx,
+                    py,
+                    pz + sz,
+                    px,
+                    py,
+                    pz + sz,
+                    px,
+                    py,
+                    pz,
+                    px + sx,
+                    py,
+                    pz,
+                    px + sx,
+                    py,
+                    pz + sz,
+                ];
+                let pos_z = [
+                    px,
+                    py,
+                    pz + sz,
+                    px + sx,
+                    py,
+                    pz + sz,
+                    px + sx,
+                    py + sy,
+                    pz + sz,
+                    px,
+                    py,
+                    pz + sz,
+                    px + sx,
+                    py + sy,
+                    pz + sz,
+                    px,
+                    py + sy,
+                    pz + sz,
+                ];
+                let neg_z = [
+                    px + sx,
+                    py,
+                    pz,
+                    px,
+                    py,
+                    pz,
+                    px,
+                    py + sy,
+                    pz,
+                    px + sx,
+                    py,
+                    pz,
+                    px,
+                    py + sy,
+                    pz,
+                    px + sx,
+                    py + sy,
+                    pz,
+                ];
+                let pos_x = [
+                    px + sx,
+                    py,
+                    pz + sz,
+                    px + sx,
+                    py,
+                    pz,
+                    px + sx,
+                    py + sy,
+                    pz,
+                    px + sx,
+                    py,
+                    pz + sz,
+                    px + sx,
+                    py + sy,
+                    pz,
+                    px + sx,
+                    py + sy,
+                    pz + sz,
+                ];
+                let neg_x = [
+                    px,
+                    py,
+                    pz,
+                    px,
+                    py,
+                    pz + sz,
+                    px,
+                    py + sy,
+                    pz + sz,
+                    px,
+                    py,
+                    pz,
+                    px,
+                    py + sy,
+                    pz + sz,
+                    px,
+                    py + sy,
+                    pz,
+                ];
+                let before = v.len();
+                v.extend_from_slice(&top);
+                v.extend_from_slice(&bottom);
+                // Side walls only at cloud boundaries. Interior walls between
+                // adjacent cells show through the translucent top/bottom as
+                // grid seams, and the coplanar pairs z-fight into speckles.
+                if !cloud_at(x, z + 1) {
+                    v.extend_from_slice(&pos_z);
+                }
+                if !cloud_at(x, z - 1) {
+                    v.extend_from_slice(&neg_z);
+                }
+                if !cloud_at(x + 1, z) {
+                    v.extend_from_slice(&pos_x);
+                }
+                if !cloud_at(x - 1, z) {
+                    v.extend_from_slice(&neg_x);
+                }
+                for _ in 0..((v.len() - before) / 3) {
+                    c.extend_from_slice(&cloud_color);
+                    n.extend_from_slice(&[0.0, 1.0, 0.0]);
                 }
             }
         }
