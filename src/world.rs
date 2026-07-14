@@ -1276,6 +1276,21 @@ impl World {
                 crate::noise::perlin_2d(x as f32 * 0.48 + drift, z as f32 * 0.48 + 7.0, 0.5, 1);
             base > 0.10 && breakup > -0.08
         };
+        // Cache cloud_at across the grid (plus a 1-cell border for neighbor
+        // checks) so each coordinate's noise evaluation happens once instead
+        // of up to 5 times (once per cell, once per neighboring cell).
+        let width = (range * 2) as usize;
+        let cloud_grid: Vec<bool> = (0..width + 2)
+            .flat_map(|gx| {
+                (0..width + 2)
+                    .map(move |gz| cloud_at(start_x - 1 + gx as i32, start_z - 1 + gz as i32))
+            })
+            .collect();
+        let cloud_at = |x: i32, z: i32| -> bool {
+            let gx = (x - (start_x - 1)) as usize;
+            let gz = (z - (start_z - 1)) as usize;
+            cloud_grid[gx * (width + 2) + gz]
+        };
         for x in start_x..(start_x + range * 2) {
             for z in start_z..(start_z + range * 2) {
                 if !cloud_at(x, z) {
@@ -1407,27 +1422,38 @@ impl World {
                     py + sy,
                     pz,
                 ];
+                let up_n = [0.0, 1.0, 0.0].repeat(6);
+                let down_n = [0.0, -1.0, 0.0].repeat(6);
+                let pos_z_n = [0.0, 0.0, 1.0].repeat(6);
+                let neg_z_n = [0.0, 0.0, -1.0].repeat(6);
+                let pos_x_n = [1.0, 0.0, 0.0].repeat(6);
+                let neg_x_n = [-1.0, 0.0, 0.0].repeat(6);
                 let before = v.len();
                 v.extend_from_slice(&top);
+                n.extend_from_slice(&up_n);
                 v.extend_from_slice(&bottom);
+                n.extend_from_slice(&down_n);
                 // Side walls only at cloud boundaries. Interior walls between
                 // adjacent cells show through the translucent top/bottom as
                 // grid seams, and the coplanar pairs z-fight into speckles.
                 if !cloud_at(x, z + 1) {
                     v.extend_from_slice(&pos_z);
+                    n.extend_from_slice(&pos_z_n);
                 }
                 if !cloud_at(x, z - 1) {
                     v.extend_from_slice(&neg_z);
+                    n.extend_from_slice(&neg_z_n);
                 }
                 if !cloud_at(x + 1, z) {
                     v.extend_from_slice(&pos_x);
+                    n.extend_from_slice(&pos_x_n);
                 }
                 if !cloud_at(x - 1, z) {
                     v.extend_from_slice(&neg_x);
+                    n.extend_from_slice(&neg_x_n);
                 }
                 for _ in 0..((v.len() - before) / 3) {
                     c.extend_from_slice(&cloud_color);
-                    n.extend_from_slice(&[0.0, 1.0, 0.0]);
                 }
             }
         }
