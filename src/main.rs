@@ -1,4 +1,4 @@
-use glfw::{Action, Context, GamepadAxis, GamepadButton, JoystickId, Key};
+use glfw::{Action, GamepadAxis, GamepadButton, JoystickId, Key};
 mod atlas;
 mod block;
 mod chunk;
@@ -7,8 +7,10 @@ mod explosion;
 mod item;
 mod java_compat;
 mod mining;
+mod mob;
 mod noise;
 mod renderer;
+mod village;
 mod world;
 
 use crate::world::{CLOUD_HEIGHT, VIEW_DISTANCE, World};
@@ -870,6 +872,49 @@ fn draw_text(
     }
 }
 
+/// Minecraft-style F3 debug overlay, anchored to the top-left corner.
+#[allow(clippy::too_many_arguments)]
+fn draw_debug_overlay(
+    ui_shader: &Shader,
+    tex_shader: &Shader,
+    font_tex: &Texture2D,
+    lines: &[String],
+    sw: f32,
+    sh: f32,
+) {
+    // The font atlas is 16px per glyph; rendering at a clean multiple of
+    // that keeps nearest-neighbor sampling crisp instead of dropping rows
+    // and columns of each glyph the way an uneven downscale would.
+    let text_size = 32.0;
+    let line_height = text_size + 6.0;
+    let pad = 8.0;
+    let longest = lines.iter().map(|l| l.len()).max().unwrap_or(0) as f32;
+    let panel_w = longest * text_size * 0.55 + pad * 2.0;
+    let panel_h = lines.len() as f32 * line_height + pad * 2.0;
+    draw_rect(
+        ui_shader,
+        pad,
+        pad,
+        panel_w,
+        panel_h,
+        [0, 0, 0, 140],
+        sw,
+        sh,
+    );
+    for (i, line) in lines.iter().enumerate() {
+        draw_text(
+            font_tex,
+            line,
+            pad * 2.0,
+            pad * 2.0 + i as f32 * line_height,
+            text_size,
+            tex_shader,
+            sw,
+            sh,
+        );
+    }
+}
+
 fn draw_screen_quad(shader: &Shader, color: glam::Vec4) {
     let v = [
         -1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, 1.0,
@@ -878,11 +923,9 @@ fn draw_screen_quad(shader: &Shader, color: glam::Vec4) {
     let mesh = renderer::Mesh::new(&v, None, None, None);
     shader.bind();
     shader.set_vec4(shader.get_uniform_location("uColor"), color);
-    unsafe {
-        gl::Disable(gl::DEPTH_TEST);
-        mesh.draw();
-        gl::Enable(gl::DEPTH_TEST);
-    }
+    renderer::set_depth_test(false);
+    mesh.draw();
+    renderer::set_depth_test(true);
 }
 
 fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
@@ -934,10 +977,8 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
     shader.bind();
     shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
 
-    unsafe {
-        gl::Disable(gl::DEPTH_TEST);
-        gl::Disable(gl::CULL_FACE);
-    }
+    renderer::set_depth_test(false);
+    renderer::set_cull(false);
 
     shader.set_int(shader.get_uniform_location("uBodyType"), 1); // 1 = Sun
     sun_mesh.draw();
@@ -946,10 +987,8 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
     moon_mesh.draw();
 
     shader.set_int(shader.get_uniform_location("uBodyType"), 0); // Reset
-    unsafe {
-        gl::Enable(gl::CULL_FACE);
-        gl::Enable(gl::DEPTH_TEST);
-    }
+    renderer::set_cull(true);
+    renderer::set_depth_test(true);
 }
 
 /// Draw a block/item icon in the UI at (x,y) with size (w,h) using atlas texture.
@@ -1639,13 +1678,9 @@ fn main() {
     // Add DualSense mappings for Linux
     glfw.update_gamepad_mappings("030000004c050000e60d000011010000,PS5 Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b10,leftshoulder:b4,leftstick:b11,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b12,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b2,y:b3,platform:Linux,\n\
                                   050000004c050000e60d0000ff070000,PS5 Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b10,leftshoulder:b4,leftstick:b11,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b12,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b2,y:b3,platform:Linux,");
-    glfw.window_hint(glfw::WindowHint::ContextVersion(3, 3));
-    glfw.window_hint(glfw::WindowHint::OpenGlProfile(
-        glfw::OpenGlProfileHint::Core,
-    ));
+    // wgpu owns the GPU; tell GLFW not to create a GL context.
+    glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
     glfw.window_hint(glfw::WindowHint::AutoIconify(false));
-    #[cfg(target_os = "macos")]
-    glfw.window_hint(glfw::WindowHint::OpenGlForwardCompat(true));
     let (mut window, events) = glfw
         .create_window(
             state.width,
@@ -1654,7 +1689,6 @@ fn main() {
             glfw::WindowMode::Windowed,
         )
         .expect("Failed to create GLFW window.");
-    window.make_current();
     window.set_pos(state.x, state.y);
     if state.maximized {
         window.maximize();
@@ -1665,37 +1699,35 @@ fn main() {
     window.set_mouse_button_polling(true);
     window.set_scroll_polling(true);
     window.set_cursor_mode(glfw::CursorMode::Disabled);
-    gl::load_with(|s| {
-        window
-            .get_proc_address(s)
-            .map_or(std::ptr::null(), |p| p as *const _)
-    });
-    unsafe {
-        gl::Enable(gl::DEPTH_TEST);
-        gl::DepthFunc(gl::LEQUAL);
-        gl::Enable(gl::CULL_FACE);
-        gl::CullFace(gl::BACK);
-        gl::Enable(gl::BLEND);
-        gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-    }
+    let (init_fb_w, init_fb_h) = window.get_framebuffer_size();
+    renderer::init(&*window, init_fb_w, init_fb_h);
     let mut world = World::new(world_seed as u64);
     world.generate_atlas();
     world.init_celestial();
-    let shader = Shader::new(&load_shader("ps1.vs"), &load_shader("ps1.fs"))
-        .expect("Failed to compile PS1 shader");
-    let water_shader = Shader::new(&load_shader("water.vs"), &load_shader("water.fs"))
-        .expect("Failed to compile water shader");
-    let flat_shader = Shader::new(&load_shader("flat.vs"), &load_shader("flat.fs"))
-        .expect("Failed to compile FLAT shader");
-    let ui_shader = Shader::new(&load_shader("ui.vs"), &load_shader("ui.fs"))
-        .expect("Failed to compile UI shader");
-    let texture_shader = Shader::new(&load_shader("texture.vs"), &load_shader("texture.fs"))
-        .expect("Failed to compile TEXTURE shader");
+    match village::nearest_village(world_seed as u64, 32, 32, 8) {
+        Some(v) => {
+            let dist = (((v.center_x - 32).pow(2) + (v.center_z - 32).pow(2)) as f64).sqrt();
+            println!(
+                "Nearest village: X={} Z={} — {:.0} blocks from spawn{}",
+                v.center_x,
+                v.center_z,
+                dist,
+                if v.desert { " (desert)" } else { "" }
+            );
+        }
+        None => println!("No village within 8 regions of spawn for this seed"),
+    }
+    let shader = Shader::new(&load_shader("ps1.wgsl")).expect("Failed to compile PS1 shader");
+    let water_shader =
+        Shader::new(&load_shader("water.wgsl")).expect("Failed to compile water shader");
+    let flat_shader = Shader::new(&load_shader("flat.wgsl")).expect("Failed to compile FLAT shader");
+    let ui_shader = Shader::new(&load_shader("ui.wgsl")).expect("Failed to compile UI shader");
+    let texture_shader =
+        Shader::new(&load_shader("texture.wgsl")).expect("Failed to compile TEXTURE shader");
     let texture_ui_shader =
-        Shader::new(&load_shader("ui_texture.vs"), &load_shader("ui_texture.fs"))
-            .expect("Failed to compile UI TEXTURE shader");
-    let color_shader = Shader::new(&load_shader("texture.vs"), &load_shader("color.fs"))
-        .expect("Failed to compile COLOR shader");
+        Shader::new(&load_shader("ui_texture.wgsl")).expect("Failed to compile UI TEXTURE shader");
+    let color_shader =
+        Shader::new(&load_shader("color.wgsl")).expect("Failed to compile COLOR shader");
     let (initial_fb_width, initial_fb_height) = window.get_framebuffer_size();
     let (target_width, target_height) =
         render_target_size_for_framebuffer(initial_fb_width, initial_fb_height);
@@ -1705,6 +1737,7 @@ fn main() {
     let mut is_fullscreen = false;
     let mut win_pos = (state.x, state.y);
     let mut win_size = (state.width, state.height);
+    let mut show_debug_overlay = false;
 
     let mut game_state = GameState::Loading;
     let mut spawn_y = 150.0;
@@ -1739,6 +1772,7 @@ fn main() {
     let mut last_time = glfw.get_time();
     let mut fps_last_time = last_time;
     let mut fps_frames: u32 = 0;
+    let mut current_fps: f32 = 0.0;
     while !window.should_close() {
         let current_time = glfw.get_time();
         let delta_time = (current_time - last_time) as f32;
@@ -1747,12 +1781,12 @@ fn main() {
         fps_frames += 1;
         let fps_elapsed = current_time - fps_last_time;
         if fps_elapsed >= 1.0 {
-            let fps = (fps_frames as f64 / fps_elapsed) as f32;
+            current_fps = (fps_frames as f64 / fps_elapsed) as f32;
             fps_frames = 0;
             fps_last_time = current_time;
             window.set_title(&format!(
                 "VoxelPopuli Rust - Seed {} - {:.0} FPS",
-                world_seed, fps
+                world_seed, current_fps
             ));
         }
         glfw.poll_events();
@@ -1776,15 +1810,10 @@ fn main() {
             let sh = win_sh as f32;
 
             // Render Loading Screen
-            unsafe {
-                gl::Viewport(0, 0, win_sw, win_sh);
-                gl::ClearColor(0.117, 0.117, 0.117, 1.0); // Exact #1e1e1e
-                gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
-                gl::Disable(gl::DEPTH_TEST);
-                gl::Disable(gl::CULL_FACE);
-                gl::Enable(gl::BLEND);
-                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            }
+            renderer::clear(0.117, 0.117, 0.117, 1.0); // Exact #1e1e1e
+            renderer::set_depth_test(false);
+            renderer::set_cull(false);
+            renderer::set_blend(true);
 
             // 1. Logo removed as requested
 
@@ -1875,17 +1904,15 @@ fn main() {
                 sh,
             );
 
-            unsafe {
-                gl::Enable(gl::DEPTH_TEST);
-            }
-            window.swap_buffers();
+            renderer::set_depth_test(true);
+            let (fb_w, fb_h) = window.get_framebuffer_size();
+            renderer::end_frame(fb_w, fb_h);
             continue;
         }
         for (_, event) in glfw::flush_messages(&events) {
             match event {
-                glfw::WindowEvent::Size(width, height) => unsafe {
-                    gl::Viewport(0, 0, width, height);
-                },
+                // Surface size follows the framebuffer in renderer::end_frame.
+                glfw::WindowEvent::Size(..) => {}
                 glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                     if game_state == GameState::Paused {
                         game_state = GameState::Playing;
@@ -1938,6 +1965,9 @@ fn main() {
                             window.set_cursor_mode(glfw::CursorMode::Disabled);
                         }
                     }
+                }
+                glfw::WindowEvent::Key(Key::F3, _, Action::Press, _) => {
+                    show_debug_overlay = !show_debug_overlay;
                 }
                 glfw::WindowEvent::Key(Key::F11, _, Action::Press, _) => {
                     is_fullscreen = !is_fullscreen;
@@ -2439,12 +2469,10 @@ fn main() {
         }
 
         target.bind();
-        unsafe {
-            gl::ClearColor(sky_c.x, sky_c.y, sky_c.z, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
-        }
+        renderer::clear(sky_c.x, sky_c.y, sky_c.z, 1.0);
         let aspect = target.texture.width as f32 / target.texture.height as f32;
-        let projection = Mat4::perspective_rh_gl(75.0_f32.to_radians(), aspect, 0.1, 1000.0);
+        // perspective_rh maps depth to wgpu's [0, 1] range (GL used [-1, 1]).
+        let projection = Mat4::perspective_rh(75.0_f32.to_radians(), aspect, 0.1, 1000.0);
         let view = Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
         let mvp = projection * view;
         world.render_stars(player.position, current_time as f32, &flat_shader, &mvp);
@@ -2508,29 +2536,22 @@ fn main() {
             if let Some(ref atlas) = world.atlas {
                 atlas.bind(0);
             }
-            unsafe {
-                gl::Enable(gl::BLEND);
-                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-                gl::DepthMask(gl::FALSE);
-                gl::Enable(gl::POLYGON_OFFSET_FILL);
-                gl::PolygonOffset(-1.0, -1.0);
-            }
+            renderer::set_blend(true);
+            renderer::set_depth_write(false);
+            renderer::set_polygon_offset(true);
             let normals = vec![0.0f32; verts.len()];
             let colors = vec![255u8; (verts.len() / 3) * 4];
             let crack_mesh = renderer::Mesh::new(&verts, Some(&uvs), Some(&normals), Some(&colors));
             crack_mesh.draw();
-            unsafe {
-                gl::Disable(gl::POLYGON_OFFSET_FILL);
-                gl::DepthMask(gl::TRUE);
-                // Restore default blend func before disabling
-                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-                gl::Disable(gl::BLEND);
-            }
+            renderer::set_polygon_offset(false);
+            renderer::set_depth_write(true);
+            renderer::set_blend(false);
         }
 
-        // Render Explosives and Particles
+        // Render Explosives, Particles, and Village Mobs
         world.render_explosives(&shader, &mvp, current_time as f32);
         world.render_particles(&shader, &mvp);
+        world.render_mobs(&shader);
 
         // Transparency render order depends on whether the camera is above or below
         // the cloud layer, so each transparent layer is drawn back-to-front.
@@ -2559,11 +2580,7 @@ fn main() {
             world.render_clouds(&flat_shader, &mvp);
         }
         RenderTexture2D::unbind();
-        unsafe {
-            gl::Viewport(0, 0, framebuffer_width, framebuffer_height);
-            gl::ClearColor(0.0, 0.0, 0.0, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
-        }
+        renderer::clear(0.0, 0.0, 0.0, 1.0);
         texture_shader.bind();
         draw_texture_quad(&target.texture);
 
@@ -2574,26 +2591,20 @@ fn main() {
             eye_pos.z.floor() as i32,
         );
         if cam_block == BlockType::Water || cam_block == BlockType::Lava {
-            unsafe {
-                gl::Enable(gl::BLEND);
-                gl::Disable(gl::DEPTH_TEST);
-            }
+            renderer::set_blend(true);
+            renderer::set_depth_test(false);
             let tint = if cam_block == BlockType::Lava {
                 glam::Vec4::new(0.65, 0.16, 0.02, 0.65)
             } else {
                 glam::Vec4::new(0.05, 0.05, 0.2, 0.55)
             };
             draw_screen_quad(&color_shader, tint);
-            unsafe {
-                gl::Enable(gl::DEPTH_TEST);
-            }
+            renderer::set_depth_test(true);
         }
 
-        unsafe {
-            gl::Disable(gl::DEPTH_TEST);
-            gl::Enable(gl::BLEND);
-            gl::Disable(gl::CULL_FACE);
-        }
+        renderer::set_depth_test(false);
+        renderer::set_blend(true);
+        renderer::set_cull(false);
         ui_shader.bind();
         ui_shader.set_vec2(
             ui_shader.get_uniform_location("uScreenSize"),
@@ -2687,14 +2698,57 @@ fn main() {
             );
         }
 
+        // F3 debug overlay
+        if show_debug_overlay {
+            let biome =
+                chunk::terrain_height_and_biome(player.position.x, player.position.z, world.seed).1;
+            let yaw_deg = camera_angle.x.to_degrees().rem_euclid(360.0);
+            let pitch_deg = camera_angle.y.to_degrees();
+            let compass = [
+                "South",
+                "Southeast",
+                "East",
+                "Northeast",
+                "North",
+                "Northwest",
+                "West",
+                "Southwest",
+            ][(((yaw_deg + 22.5) / 45.0) as usize) % 8];
+            let cx = (player.position.x / chunk::CHUNK_WIDTH as f32).floor() as i32;
+            let cz = (player.position.z / chunk::CHUNK_DEPTH as f32).floor() as i32;
+            let lines = [
+                format!("VoxelPopuli ({:.0} fps)", current_fps),
+                format!(
+                    "XYZ: {:.3} / {:.3} / {:.3}",
+                    player.position.x, player.position.y, player.position.z
+                ),
+                format!(
+                    "Block: {} {} {}",
+                    player.position.x.floor() as i32,
+                    player.position.y.floor() as i32,
+                    player.position.z.floor() as i32
+                ),
+                format!("Chunk: {cx} {cz}"),
+                format!("Facing: {compass} (yaw {yaw_deg:.1}, pitch {pitch_deg:.1})"),
+                format!("Biome: {biome:?}"),
+                format!("Seed: {}", world.seed),
+            ];
+            draw_debug_overlay(
+                &ui_shader,
+                &texture_ui_shader,
+                &font_texture,
+                &lines,
+                sw,
+                sh,
+            );
+        }
+
         // ── Crafting Table overlay (3x3) ─────────────────────────────────────
         if crafting_table_open {
             draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.0, 0.0, 0.6));
-            unsafe {
-                gl::Disable(gl::DEPTH_TEST);
-                gl::Enable(gl::BLEND);
-                gl::Disable(gl::CULL_FACE);
-            }
+            renderer::set_depth_test(false);
+            renderer::set_blend(true);
+            renderer::set_cull(false);
             ui_shader.bind();
             ui_shader.set_vec2(
                 ui_shader.get_uniform_location("uScreenSize"),
@@ -2910,11 +2964,9 @@ fn main() {
         // ── Inventory overlay (MC 1.0 layout) ─────────────────────────────────
         else if player.inventory_open {
             draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.0, 0.0, 0.6));
-            unsafe {
-                gl::Disable(gl::DEPTH_TEST);
-                gl::Enable(gl::BLEND);
-                gl::Disable(gl::CULL_FACE);
-            }
+            renderer::set_depth_test(false);
+            renderer::set_blend(true);
+            renderer::set_cull(false);
             ui_shader.bind();
             ui_shader.set_vec2(
                 ui_shader.get_uniform_location("uScreenSize"),
@@ -3383,11 +3435,9 @@ fn main() {
             );
         }
 
-        unsafe {
-            gl::Enable(gl::DEPTH_TEST);
-            gl::Enable(gl::CULL_FACE);
-        }
-        window.swap_buffers();
+        renderer::set_depth_test(true);
+        renderer::set_cull(true);
+        renderer::end_frame(framebuffer_width, framebuffer_height);
     }
     let (xw, yw) = window.get_pos();
     let (ww, hw) = window.get_size();
