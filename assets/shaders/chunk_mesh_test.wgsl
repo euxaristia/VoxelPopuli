@@ -18,7 +18,14 @@ struct Params {
     chunk_x: i32,
     chunk_z: i32,
     pool_width: i32,
-    _pad: i32,
+    // Vertical offset added to every emitted vertex. 0.0 for the M2 CPU-diff
+    // test (exact parity); nonzero for the M3 visual check, which renders the
+    // compute-meshed chunk floating above its CPU-meshed twin.
+    y_offset: f32,
+    // TEMPORARY debug: when nonzero, write_vertex overrides the packed color
+    // with a position-derived rainbow instead of real AO/light, to visually
+    // separate "wrong geometry" from "right geometry, wrong shading".
+    debug_tint: u32,
 };
 
 struct AtlasEntry {
@@ -101,6 +108,9 @@ fn read_light(wx: i32, wy: i32, wz: i32) -> u32 {
     return (word >> shift) & 0xFFu;
 }
 
+// Matches the CPU's AO-specific `is_solid` closure (chunk.rs:1342), which
+// deliberately excludes transparent blocks (leaves, glass) from counting as
+// AO occluders — not the plain BlockType::is_solid() method.
 fn is_solid_block(b: u32) -> bool {
     let e = atlas_table[b];
     return e.is_solid != 0u && e.is_transparent == 0u;
@@ -177,17 +187,26 @@ fn reserve_vertices(n: u32) -> u32 {
 
 fn write_vertex(base_word: u32, pos: vec3<f32>, uv: vec2<f32>, normal: vec3<f32>, color: vec4<f32>) {
     out_vertices[base_word + 0u] = bitcast<u32>(pos.x);
-    out_vertices[base_word + 1u] = bitcast<u32>(pos.y);
+    out_vertices[base_word + 1u] = bitcast<u32>(pos.y + params.y_offset);
     out_vertices[base_word + 2u] = bitcast<u32>(pos.z);
     out_vertices[base_word + 3u] = bitcast<u32>(uv.x);
     out_vertices[base_word + 4u] = bitcast<u32>(uv.y);
     out_vertices[base_word + 5u] = bitcast<u32>(normal.x);
     out_vertices[base_word + 6u] = bitcast<u32>(normal.y);
     out_vertices[base_word + 7u] = bitcast<u32>(normal.z);
-    let r = u32(clamp(color.x, 0.0, 255.0));
-    let g = u32(clamp(color.y, 0.0, 255.0));
-    let b = u32(clamp(color.z, 0.0, 255.0));
-    let a = u32(clamp(color.w, 0.0, 255.0));
+    var c = color;
+    if (params.debug_tint != 0u) {
+        c = vec4<f32>(
+            fract(pos.x * 0.3) * 255.0,
+            fract(pos.y * 0.3) * 255.0,
+            fract(pos.z * 0.3) * 255.0,
+            255.0,
+        );
+    }
+    let r = u32(clamp(c.x, 0.0, 255.0));
+    let g = u32(clamp(c.y, 0.0, 255.0));
+    let b = u32(clamp(c.z, 0.0, 255.0));
+    let a = u32(clamp(c.w, 0.0, 255.0));
     out_vertices[base_word + 8u] = r | (g << 8u) | (b << 16u) | (a << 24u);
 }
 

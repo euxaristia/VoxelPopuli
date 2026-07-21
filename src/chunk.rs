@@ -479,8 +479,7 @@ impl Chunk {
         // SAFETY: BlockType is #[repr(u8)] and Copy; light/liquid_levels are
         // already u8. All three are fixed-size nested arrays, contiguous in
         // memory, so a flat byte view over the whole array is valid.
-        let blocks =
-            unsafe { std::slice::from_raw_parts(self.blocks.as_ptr() as *const u8, N) };
+        let blocks = unsafe { std::slice::from_raw_parts(self.blocks.as_ptr() as *const u8, N) };
         let light = unsafe { std::slice::from_raw_parts(self.light.as_ptr() as *const u8, N) };
         let liquid =
             unsafe { std::slice::from_raw_parts(self.liquid_levels.as_ptr() as *const u8, N) };
@@ -1234,7 +1233,6 @@ impl Chunk {
             BlockType::Air
         }
     }
-
 }
 
 impl ChunkData {
@@ -2102,7 +2100,9 @@ impl ChunkData {
 
 impl Chunk {
     pub fn upload_mesh(&mut self, opaque: MeshData, transparent: MeshData, water: MeshData) {
-        record_vertex_count_sample((opaque.v.len() / 3 + transparent.v.len() / 3 + water.v.len() / 3) as u32);
+        record_vertex_count_sample(
+            (opaque.v.len() / 3 + transparent.v.len() / 3 + water.v.len() / 3) as u32,
+        );
         self.mesh_opaque = if opaque.v.is_empty() {
             None
         } else {

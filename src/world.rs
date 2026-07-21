@@ -11,8 +11,10 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 // M2 test harness (hashed-splashing-haven plan): (pos, uv, normal, color).
+#[allow(dead_code)]
 type GpuMeshTestVertex = ([f32; 3], [f32; 2], [f32; 3], [u8; 4]);
 
+#[allow(dead_code)]
 fn gpu_mesh_test_sort_key(v: &GpuMeshTestVertex) -> [i64; 9] {
     let q = |f: f32| (f * 1000.0).round() as i64;
     [
@@ -32,6 +34,7 @@ fn gpu_mesh_test_sort_key(v: &GpuMeshTestVertex) -> [i64; 9] {
 // mesher's face/vertex emission order isn't guaranteed to match the CPU's
 // (different (x,z) columns run in parallel), even when the resulting mesh
 // is geometrically identical.
+#[allow(dead_code)]
 fn compare_gpu_mesh_test(cpu: &[GpuMeshTestVertex], gpu: &[GpuMeshTestVertex], cx: i32, cz: i32) {
     println!(
         "[M2 test] chunk ({cx},{cz}): CPU {} verts, GPU {} verts",
@@ -49,14 +52,22 @@ fn compare_gpu_mesh_test(cpu: &[GpuMeshTestVertex], gpu: &[GpuMeshTestVertex], c
 
     let mut mismatches = 0;
     for (i, (c, g)) in cpu_sorted.iter().zip(gpu_sorted.iter()).enumerate() {
-        let pos_ok = c.0.iter().zip(g.0.iter()).all(|(a, b)| (a - b).abs() < 0.01);
-        let uv_ok = c.1.iter().zip(g.1.iter()).all(|(a, b)| (a - b).abs() < 0.001);
-        let normal_ok = c.2.iter().zip(g.2.iter()).all(|(a, b)| (a - b).abs() < 0.01);
-        let color_ok = c
-            .3
-            .iter()
-            .zip(g.3.iter())
-            .all(|(a, b)| (*a as i32 - *b as i32).abs() <= 2);
+        let pos_ok =
+            c.0.iter()
+                .zip(g.0.iter())
+                .all(|(a, b)| (a - b).abs() < 0.01);
+        let uv_ok =
+            c.1.iter()
+                .zip(g.1.iter())
+                .all(|(a, b)| (a - b).abs() < 0.001);
+        let normal_ok =
+            c.2.iter()
+                .zip(g.2.iter())
+                .all(|(a, b)| (a - b).abs() < 0.01);
+        let color_ok =
+            c.3.iter()
+                .zip(g.3.iter())
+                .all(|(a, b)| (*a as i32 - *b as i32).abs() <= 2);
         if !(pos_ok && uv_ok && normal_ok && color_ok) {
             mismatches += 1;
             if mismatches <= 10 {
@@ -67,7 +78,10 @@ fn compare_gpu_mesh_test(cpu: &[GpuMeshTestVertex], gpu: &[GpuMeshTestVertex], c
     if mismatches == 0 {
         println!("[M2 test] PASS: all {} vertices match", cpu.len());
     } else {
-        println!("[M2 test] FAIL: {mismatches}/{} vertices mismatched", cpu.len());
+        println!(
+            "[M2 test] FAIL: {mismatches}/{} vertices mismatched",
+            cpu.len()
+        );
     }
 }
 
@@ -380,9 +394,12 @@ impl World {
         (ix + iz * POOL_WIDTH) as usize
     }
 
-    // M2 test harness (hashed-splashing-haven plan): meshes one chunk both
-    // ways and diffs the results. Dev-only, meant to run once at startup.
-    pub fn run_gpu_mesh_m2_test(&self) {
+    // M2/M3 test harness (hashed-splashing-haven plan): meshes one chunk both
+    // ways and diffs the results (M2), then sets up the same chunk as a
+    // persistent compute-meshed indirect draw floating above its CPU-meshed
+    // twin (M3). Dev-only, meant to run once at startup.
+    #[allow(dead_code)]
+    pub fn run_gpu_mesh_tests(&self) {
         let cx = self.last_pcx;
         let cz = self.last_pcz;
         let Some(chunk) = self.get_chunk(cx, cz) else {
@@ -419,6 +436,26 @@ impl World {
                 compare_gpu_mesh_test(&cpu_verts, &gpu_verts, cx, cz);
             }
             Err(e) => println!("[M2 test] GPU dispatch failed: {e}"),
+        }
+
+        // M3: same chunk again, but meshed straight into a GPU vertex buffer
+        // + DrawIndirectArgs and rendered per-frame via draw_indirect (see
+        // render_opaque), floating 60 blocks up so both versions are visible.
+        match renderer::gpu_mesh_m3_setup(cx, cz, GPU_POOL_WIDTH, 60.0, 0, false) {
+            Ok(()) => println!(
+                "[M3 test] indirect-draw chunk ({cx},{cz}) set up, rendering 60 blocks above its CPU twin"
+            ),
+            Err(e) => println!("[M3 test] setup failed: {e}"),
+        }
+        // TEMPORARY debug: a second copy at a different height, tinted by
+        // position instead of real AO/light, rendered in the SAME frame so a
+        // single screenshot can compare "real colors" vs "position-only
+        // colors" with zero run-to-run camera/timing variance.
+        match renderer::gpu_mesh_m3_setup(cx, cz, GPU_POOL_WIDTH, 90.0, 1, true) {
+            Ok(()) => println!(
+                "[M3 test] tinted comparison copy set up, rendering 90 blocks above its CPU twin"
+            ),
+            Err(e) => println!("[M3 test] tinted setup failed: {e}"),
         }
     }
 

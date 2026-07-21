@@ -1703,7 +1703,6 @@ fn main() {
     let (init_fb_w, init_fb_h) = window.get_framebuffer_size();
     renderer::init(&*window, init_fb_w, init_fb_h);
     let mut world = World::new(world_seed as u64);
-    let mut gpu_mesh_m2_test_ran = false;
     world.generate_atlas();
     world.init_celestial();
     match village::nearest_village(world_seed as u64, 32, 32, 8) {
@@ -1722,7 +1721,8 @@ fn main() {
     let shader = Shader::new(&load_shader("ps1.wgsl")).expect("Failed to compile PS1 shader");
     let water_shader =
         Shader::new(&load_shader("water.wgsl")).expect("Failed to compile water shader");
-    let flat_shader = Shader::new(&load_shader("flat.wgsl")).expect("Failed to compile FLAT shader");
+    let flat_shader =
+        Shader::new(&load_shader("flat.wgsl")).expect("Failed to compile FLAT shader");
     let ui_shader = Shader::new(&load_shader("ui.wgsl")).expect("Failed to compile UI shader");
     let texture_shader =
         Shader::new(&load_shader("texture.wgsl")).expect("Failed to compile TEXTURE shader");
@@ -2388,10 +2388,6 @@ fn main() {
                 current_time,
             );
             world.update(player.position, delta_time as f32);
-            if !gpu_mesh_m2_test_ran && !world.is_loading {
-                gpu_mesh_m2_test_ran = true;
-                world.run_gpu_mesh_m2_test();
-            }
 
             // Per-frame mining update
             let gp_rt_held = gp_gs
