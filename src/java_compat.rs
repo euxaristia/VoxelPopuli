@@ -240,7 +240,7 @@ pub fn export_classic_java_world(seed: u64, config: &ExportConfig) -> io::Result
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum NbtTag {
+pub enum NbtTag {
     Byte(i8),
     Int(i32),
     Long(i64),
@@ -412,14 +412,14 @@ fn classic_chunk_fields(chunk: &Chunk) -> Vec<(String, NbtTag)> {
                     "Entities",
                     NbtTag::List {
                         element_type: 10,
-                        tags: Vec::new(),
+                        tags: build_entities(chunk),
                     },
                 ),
                 nbt_field(
                     "TileEntities",
                     NbtTag::List {
                         element_type: 10,
-                        tags: Vec::new(),
+                        tags: build_tile_entities(chunk),
                     },
                 ),
                 nbt_field(
@@ -446,6 +446,192 @@ fn classic_chunk_fields(chunk: &Chunk) -> Vec<(String, NbtTag)> {
             ]),
         ),
     ]
+}
+
+pub fn build_tile_entities(chunk: &Chunk) -> Vec<NbtTag> {
+    let mut tile_entities = Vec::new();
+    for y in 0..CHUNK_HEIGHT {
+        for z in 0..CHUNK_DEPTH {
+            for x in 0..CHUNK_WIDTH {
+                let block = chunk.blocks[x][y][z];
+                let world_x = chunk.x * CHUNK_WIDTH as i32 + x as i32;
+                let world_y = y as i32;
+                let world_z = chunk.z * CHUNK_DEPTH as i32 + z as i32;
+
+                match block {
+                    BlockType::Chest => {
+                        tile_entities.push(NbtTag::Compound(vec![
+                            nbt_field("id", NbtTag::String("minecraft:chest".to_owned())),
+                            nbt_field("x", NbtTag::Int(world_x)),
+                            nbt_field("y", NbtTag::Int(world_y)),
+                            nbt_field("z", NbtTag::Int(world_z)),
+                            nbt_field("Items", NbtTag::List { element_type: 10, tags: Vec::new() }),
+                            nbt_field("keepPacked", NbtTag::Byte(0)),
+                        ]));
+                    }
+                    BlockType::Furnace => {
+                        tile_entities.push(NbtTag::Compound(vec![
+                            nbt_field("id", NbtTag::String("minecraft:furnace".to_owned())),
+                            nbt_field("x", NbtTag::Int(world_x)),
+                            nbt_field("y", NbtTag::Int(world_y)),
+                            nbt_field("z", NbtTag::Int(world_z)),
+                            nbt_field("BurnTime", NbtTag::Int(0)),
+                            nbt_field("CookTime", NbtTag::Int(0)),
+                            nbt_field("CookTimeTotal", NbtTag::Int(200)),
+                            nbt_field("Items", NbtTag::List { element_type: 10, tags: Vec::new() }),
+                        ]));
+                    }
+                    BlockType::MobSpawner => {
+                        tile_entities.push(NbtTag::Compound(vec![
+                            nbt_field("id", NbtTag::String("minecraft:mob_spawner".to_owned())),
+                            nbt_field("x", NbtTag::Int(world_x)),
+                            nbt_field("y", NbtTag::Int(world_y)),
+                            nbt_field("z", NbtTag::Int(world_z)),
+                            nbt_field("SpawnData", NbtTag::Compound(vec![
+                                nbt_field("id", NbtTag::String("minecraft:zombie".to_owned())),
+                            ])),
+                            nbt_field("Delay", NbtTag::Int(20)),
+                            nbt_field("MinSpawnDelay", NbtTag::Int(200)),
+                            nbt_field("MaxSpawnDelay", NbtTag::Int(800)),
+                            nbt_field("SpawnCount", NbtTag::Int(4)),
+                            nbt_field("RequiredPlayerRange", NbtTag::Int(16)),
+                        ]));
+                    }
+                    BlockType::Bell => {
+                        tile_entities.push(NbtTag::Compound(vec![
+                            nbt_field("id", NbtTag::String("minecraft:bell".to_owned())),
+                            nbt_field("x", NbtTag::Int(world_x)),
+                            nbt_field("y", NbtTag::Int(world_y)),
+                            nbt_field("z", NbtTag::Int(world_z)),
+                        ]));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    tile_entities
+}
+
+pub fn build_entities(_chunk: &Chunk) -> Vec<NbtTag> {
+    // Basic entity serialization for exported chunks
+    Vec::new()
+}
+
+pub fn build_villager_entity_nbt(x: f64, y: f64, z: f64, yaw: f32) -> NbtTag {
+    NbtTag::Compound(vec![
+        nbt_field("id", NbtTag::String("minecraft:villager".to_owned())),
+        nbt_field(
+            "Pos",
+            NbtTag::List {
+                element_type: 6, // Double
+                tags: vec![NbtTag::Long(x as i64), NbtTag::Long(y as i64), NbtTag::Long(z as i64)],
+            },
+        ),
+        nbt_field(
+            "Rotation",
+            NbtTag::List {
+                element_type: 5, // Float
+                tags: vec![NbtTag::Int(yaw as i32)],
+            },
+        ),
+        nbt_field(
+            "VillagerData",
+            NbtTag::Compound(vec![
+                nbt_field("level", NbtTag::Int(1)),
+                nbt_field("profession", NbtTag::String("minecraft:farmer".to_owned())),
+                nbt_field("type", NbtTag::String("minecraft:plains".to_owned())),
+            ]),
+        ),
+        nbt_field("Health", NbtTag::Int(20)),
+        nbt_field("HurtTime", NbtTag::Byte(0)),
+    ])
+}
+
+pub fn build_iron_golem_entity_nbt(x: f64, y: f64, z: f64) -> NbtTag {
+    NbtTag::Compound(vec![
+        nbt_field("id", NbtTag::String("minecraft:iron_golem".to_owned())),
+        nbt_field(
+            "Pos",
+            NbtTag::List {
+                element_type: 6,
+                tags: vec![NbtTag::Long(x as i64), NbtTag::Long(y as i64), NbtTag::Long(z as i64)],
+            },
+        ),
+        nbt_field("PlayerCreated", NbtTag::Byte(0)),
+        nbt_field("Health", NbtTag::Int(100)),
+    ])
+}
+
+pub fn build_mob_entity_nbt(mob: &crate::mob::Mob) -> NbtTag {
+    use crate::mob::MobKind;
+    let entity_id = match mob.kind {
+        MobKind::Villager => "minecraft:villager",
+        MobKind::Golem => "minecraft:iron_golem",
+        MobKind::Zombie => "minecraft:zombie",
+        MobKind::Skeleton => "minecraft:skeleton",
+        MobKind::Creeper => "minecraft:creeper",
+        MobKind::Pig => "minecraft:pig",
+        MobKind::Cow => "minecraft:cow",
+        MobKind::Sheep => "minecraft:sheep",
+    };
+    NbtTag::Compound(vec![
+        nbt_field("id", NbtTag::String(entity_id.to_owned())),
+        nbt_field(
+            "Pos",
+            NbtTag::List {
+                element_type: 6,
+                tags: vec![
+                    NbtTag::Long(mob.position.x as i64),
+                    NbtTag::Long(mob.position.y as i64),
+                    NbtTag::Long(mob.position.z as i64),
+                ],
+            },
+        ),
+        nbt_field("Health", NbtTag::Int(20)),
+    ])
+}
+
+pub fn build_player_data_nbt(x: f64, y: f64, z: f64, yaw: f32, pitch: f32, health: f32) -> NbtTag {
+    NbtTag::Compound(vec![
+        nbt_field(
+            "Pos",
+            NbtTag::List {
+                element_type: 6, // Double
+                tags: vec![
+                    NbtTag::Long(x as i64),
+                    NbtTag::Long(y as i64),
+                    NbtTag::Long(z as i64),
+                ],
+            },
+        ),
+        nbt_field(
+            "Rotation",
+            NbtTag::List {
+                element_type: 5, // Float
+                tags: vec![NbtTag::Int(yaw as i32), NbtTag::Int(pitch as i32)],
+            },
+        ),
+        nbt_field("Health", NbtTag::Int(health as i32)),
+        nbt_field("foodLevel", NbtTag::Int(20)),
+        nbt_field("foodSaturationLevel", NbtTag::Int(5)),
+        nbt_field("XpLevel", NbtTag::Int(0)),
+        nbt_field("Score", NbtTag::Int(0)),
+    ])
+}
+
+pub fn build_tnt_entity_nbt(x: f64, y: f64, z: f64, fuse_ticks: i16) -> NbtTag {
+    NbtTag::Compound(vec![
+        nbt_field("id", NbtTag::String("minecraft:tnt".to_owned())),
+        nbt_field(
+            "Pos",
+            NbtTag::List {
+                element_type: 6,
+                tags: vec![NbtTag::Long(x as i64), NbtTag::Long(y as i64), NbtTag::Long(z as i64)],
+            },
+        ),
+        nbt_field("Fuse", NbtTag::Int(fuse_ticks as i32)),
+    ])
 }
 
 fn build_sections(chunk: &Chunk) -> Vec<NbtTag> {
@@ -749,5 +935,35 @@ mod tests {
         assert_eq!(len % 4096, 0);
 
         let _ = std::fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn test_tile_entities_nbt_generation() {
+        let mut chunk = Chunk::new(0, 0, 12345);
+        chunk.blocks[0][64][0] = BlockType::Chest;
+        chunk.blocks[1][64][0] = BlockType::Furnace;
+        chunk.blocks[2][64][0] = BlockType::MobSpawner;
+
+        let tile_entities = build_tile_entities(&chunk);
+        assert_eq!(tile_entities.len(), 3);
+    }
+
+    #[test]
+    fn test_entity_nbt_helpers() {
+        let villager = build_villager_entity_nbt(10.0, 64.0, 10.0, 0.0);
+        assert_eq!(villager.id(), 10); // Compound
+
+        let golem = build_iron_golem_entity_nbt(15.0, 64.0, 15.0);
+        assert_eq!(golem.id(), 10);
+
+        let tnt = build_tnt_entity_nbt(5.0, 64.0, 5.0, 80);
+        assert_eq!(tnt.id(), 10);
+
+        let mob = crate::mob::Mob::new(crate::mob::MobKind::Zombie, glam::Vec3::ZERO, glam::Vec3::ZERO, 0);
+        let mob_nbt = build_mob_entity_nbt(&mob);
+        assert_eq!(mob_nbt.id(), 10);
+
+        let player_nbt = build_player_data_nbt(0.0, 64.0, 0.0, 0.0, 0.0, 20.0);
+        assert_eq!(player_nbt.id(), 10);
     }
 }
