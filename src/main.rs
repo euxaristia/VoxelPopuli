@@ -1,5 +1,6 @@
 use glfw::{Action, GamepadAxis, GamepadButton, JoystickId, Key};
 mod atlas;
+mod atlas_table;
 mod block;
 mod chunk;
 mod crafting;
@@ -1670,7 +1671,8 @@ fn main() {
     let shader = Shader::new(&load_shader("ps1.wgsl")).expect("Failed to compile PS1 shader");
     let water_shader =
         Shader::new(&load_shader("water.wgsl")).expect("Failed to compile water shader");
-    let flat_shader = Shader::new(&load_shader("flat.wgsl")).expect("Failed to compile FLAT shader");
+    let flat_shader =
+        Shader::new(&load_shader("flat.wgsl")).expect("Failed to compile FLAT shader");
     let ui_shader = Shader::new(&load_shader("ui.wgsl")).expect("Failed to compile UI shader");
     let texture_shader =
         Shader::new(&load_shader("texture.wgsl")).expect("Failed to compile TEXTURE shader");

@@ -1,10 +1,14 @@
 // wgpu backend that keeps the old GL-style immediate API: shaders hold
 // persistent uniform values, meshes draw against whatever state is set,
 // and the frame is recorded into passes that submit on end_frame.
+use crate::chunk::{CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+// Bytes per chunk slot in the GPU voxel pool (one u8 per voxel, per array).
+const CHUNK_VOXELS: u64 = (CHUNK_WIDTH * CHUNK_HEIGHT * CHUNK_DEPTH) as u64;
 
 // One uniform layout shared by every shader. Uniform "locations" are byte
 // offsets into this block, so get_uniform_location/set_* keep GL semantics.
@@ -81,6 +85,10 @@ struct DrawRec {
     texture_id: u64,
     buffer: PoolBuffer,
     vertex_count: u32,
+    // When set, the draw's vertex count comes from this GPU-written
+    // DrawIndirectArgs buffer (compute-meshed chunks) instead of
+    // `vertex_count`, which the CPU never knew.
+    indirect: Option<wgpu::Buffer>,
 }
 
 struct PassRec {
@@ -107,6 +115,40 @@ struct PipeKey {
     flags: StateFlags,
     format: wgpu::TextureFormat,
 }
+
+// Persistent GPU-resident mirror of World's chunk pool, so chunk meshing can
+// read neighbor voxels directly instead of gathering a CPU-side snapshot per
+// dispatch (see hashed-splashing-haven plan). Populated in M1; not yet read
+// by any compute shader.
+struct GpuVoxelPool {
+    blocks: wgpu::Buffer,
+    light: wgpu::Buffer,
+    liquid: wgpu::Buffer,
+    slot_meta: wgpu::Buffer,
+    bytes_uploaded: u64,
+    upload_count: u64,
+}
+
+// M3 test state (hashed-splashing-haven plan): one compute-meshed chunk's
+// vertex buffer plus the DrawIndirectArgs the compute shader filled in,
+// rendered every frame alongside the normal CPU-meshed world.
+#[allow(dead_code)]
+struct GpuMeshM3 {
+    vertices: PoolBuffer,
+    indirect: wgpu::Buffer,
+    // TEMPORARY debug: vertex count read back at setup, so the draw can be
+    // switched to a plain non-indirect draw of the same buffer to isolate
+    // whether garbage rendering comes from the draw_indirect path.
+    debug_vertex_count: u32,
+    // TEMPORARY debug: full copy of the vertex buffer taken at setup, so a
+    // frame-time readback can detect the buffer being clobbered afterwards.
+    debug_snapshot: Vec<u8>,
+}
+
+// TEMPORARY debug toggle for the M3 garbage-rendering bug: true bypasses
+// draw_indirect and issues draw(0..debug_vertex_count) on the same buffer.
+#[allow(dead_code)]
+const M3_DEBUG_DIRECT_DRAW: bool = true;
 
 struct Ctx {
     device: wgpu::Device,
@@ -135,6 +177,15 @@ struct Ctx {
     state: StateFlags,
     bound_shader: Option<Arc<ShaderInner>>,
     bound_texture: Option<(u64, wgpu::BindGroup)>,
+    gpu_voxel_pool: Option<GpuVoxelPool>,
+    #[allow(dead_code)]
+    gpu_mesh_m3: Option<GpuMeshM3>,
+    // TEMPORARY debug: second M3 test mesh, tinted by position instead of
+    // real AO/light, rendered at a different y_offset in the SAME frame as
+    // the real one so a single screenshot can compare both with zero
+    // run-to-run camera/timing variance.
+    #[allow(dead_code)]
+    gpu_mesh_m3_tinted: Option<GpuMeshM3>,
 }
 
 thread_local! {
@@ -173,9 +224,7 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
     let surface = unsafe {
         instance
             .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: Some(
-                    window.display_handle().expect("display handle").as_raw(),
-                ),
+                raw_display_handle: Some(window.display_handle().expect("display handle").as_raw()),
                 raw_window_handle: window.window_handle().expect("window handle").as_raw(),
             })
             .expect("create surface")
@@ -188,8 +237,15 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
     .expect("no suitable GPU adapter");
     let info = adapter.get_info();
     println!("Renderer: {} ({:?})", info.name, info.backend);
-    let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-        .expect("request device");
+    let adapter_limits = adapter.limits();
+    println!("Adapter limits: {:#?}", adapter_limits);
+    let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: None,
+        required_features: wgpu::Features::empty(),
+        required_limits: adapter_limits,
+        ..Default::default()
+    }))
+    .expect("request device");
 
     let caps = surface.get_capabilities(&adapter);
     // The GL renderer used a non-sRGB default framebuffer; match it so
@@ -307,8 +363,871 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
         },
         bound_shader: None,
         bound_texture: None,
+        gpu_voxel_pool: None,
+        gpu_mesh_m3: None,
+        gpu_mesh_m3_tinted: None,
     };
     CTX.with(|c| *c.borrow_mut() = Some(ctx));
+}
+
+/// Allocates the persistent GPU voxel pool sized for `pool_size` chunk slots.
+/// Call once, after `init`, before any chunk sync calls.
+pub fn gpu_pool_init(pool_size: usize) {
+    with_ctx(|c| {
+        let voxel_buf_size = pool_size as u64 * CHUNK_VOXELS;
+        let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let blocks = c.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_voxel_pool_blocks"),
+            size: voxel_buf_size,
+            usage,
+            mapped_at_creation: false,
+        });
+        let light = c.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_voxel_pool_light"),
+            size: voxel_buf_size,
+            usage,
+            mapped_at_creation: false,
+        });
+        let liquid = c.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_voxel_pool_liquid"),
+            size: voxel_buf_size,
+            usage,
+            mapped_at_creation: false,
+        });
+        let slot_meta = c.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_voxel_pool_slot_meta"),
+            size: pool_size as u64 * 8,
+            usage,
+            mapped_at_creation: false,
+        });
+        println!(
+            "GPU voxel pool: {} slots, {:.1} MiB total",
+            pool_size,
+            (voxel_buf_size * 3 + pool_size as u64 * 8) as f64 / (1024.0 * 1024.0)
+        );
+        c.gpu_voxel_pool = Some(GpuVoxelPool {
+            blocks,
+            light,
+            liquid,
+            slot_meta,
+            bytes_uploaded: 0,
+            upload_count: 0,
+        });
+    });
+}
+
+/// Uploads one chunk's blocks/light/liquid into its GPU pool slot, replacing
+/// whatever chunk previously occupied it. `slot` must come from the same
+/// ring-buffer indexing scheme the caller uses for `pool_size` in
+/// `gpu_pool_init` (see `World::gpu_pool_index`).
+pub fn gpu_pool_upload_chunk(
+    slot: u32,
+    chunk_x: i32,
+    chunk_z: i32,
+    blocks: &[u8],
+    light: &[u8],
+    liquid: &[u8],
+) {
+    with_ctx(|c| {
+        let Some(pool) = c.gpu_voxel_pool.as_mut() else {
+            return;
+        };
+        let offset = slot as u64 * CHUNK_VOXELS;
+        c.queue.write_buffer(&pool.blocks, offset, blocks);
+        c.queue.write_buffer(&pool.light, offset, light);
+        c.queue.write_buffer(&pool.liquid, offset, liquid);
+        let meta: [i32; 2] = [chunk_x, chunk_z];
+        c.queue
+            .write_buffer(&pool.slot_meta, slot as u64 * 8, cast_slice(&meta));
+        pool.bytes_uploaded += (blocks.len() + light.len() + liquid.len() + 8) as u64;
+        pool.upload_count += 1;
+        if pool.upload_count % 64 == 0 {
+            println!(
+                "GPU voxel pool: {} chunks synced, {:.2} MiB uploaded this session",
+                pool.upload_count,
+                pool.bytes_uploaded as f64 / (1024.0 * 1024.0)
+            );
+        }
+    });
+}
+
+/// Decoded vertex read back from `gpu_mesh_test_run`'s output buffer.
+#[allow(dead_code)]
+pub struct GpuTestVertex {
+    pub pos: [f32; 3],
+    pub uv: [f32; 2],
+    pub normal: [f32; 3],
+    pub color: [u8; 4],
+}
+
+#[allow(dead_code)]
+const M2_MAX_VERTICES: u64 = 200_000;
+#[allow(dead_code)]
+const M2_WORDS_PER_VERTEX: u64 = 9;
+
+// Shared M2/M3 compute setup: loads chunk_mesh_test.wgsl and builds its
+// bind group layout + pipeline. Validation errors (shader compile, layout
+// mismatch) are surfaced via error scope rather than panicking.
+#[allow(dead_code)]
+fn mesh_test_compute_pipeline(
+    c: &Ctx,
+) -> Result<(wgpu::BindGroupLayout, wgpu::ComputePipeline), String> {
+    let scope = c.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let source = std::fs::read_to_string("assets/shaders/chunk_mesh_test.wgsl")
+        .map_err(|e| format!("read chunk_mesh_test.wgsl: {e}"))?;
+    let module = c.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("chunk_mesh_test"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    if let Some(e) = block_on(scope.pop()) {
+        return Err(e.to_string());
+    }
+
+    let storage_entry = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let bgl = c
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("gpu_mesh_test_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                storage_entry(1, true),  // blocks_pool
+                storage_entry(2, true),  // light_pool
+                storage_entry(3, true),  // slot_meta
+                storage_entry(4, true),  // atlas_table
+                storage_entry(5, false), // out_vertices
+                storage_entry(6, false), // vertex_counter / DrawIndirectArgs
+            ],
+        });
+    let pipeline_layout = c
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("gpu_mesh_test_pl"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
+        });
+    let pipeline = c
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("gpu_mesh_test_pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: Some("cs_main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+    Ok((bgl, pipeline))
+}
+
+#[allow(dead_code)]
+fn mesh_test_params_buffer(
+    c: &Ctx,
+    chunk_x: i32,
+    chunk_z: i32,
+    pool_width: i32,
+    y_offset: f32,
+    debug_tint: u32,
+) -> wgpu::Buffer {
+    let params: [i32; 5] = [
+        chunk_x,
+        chunk_z,
+        pool_width,
+        y_offset.to_bits() as i32,
+        debug_tint as i32,
+    ];
+    let params_buf = c.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("gpu_mesh_test_params"),
+        size: 20,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    c.queue.write_buffer(&params_buf, 0, cast_slice(&params));
+    params_buf
+}
+
+#[allow(dead_code)]
+fn mesh_test_atlas_buffer(c: &Ctx) -> wgpu::Buffer {
+    let atlas_data = crate::atlas_table::build_atlas_table();
+    let atlas_buf = c.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("gpu_mesh_test_atlas"),
+        size: (atlas_data.len() * std::mem::size_of::<crate::atlas_table::AtlasEntry>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    c.queue.write_buffer(&atlas_buf, 0, cast_slice(&atlas_data));
+    atlas_buf
+}
+
+/// M2 test harness (hashed-splashing-haven plan): dispatches the standard-
+/// block-only compute mesher (assets/shaders/chunk_mesh_test.wgsl) for one
+/// chunk already resident in the GPU voxel pool, reads the result back to
+/// CPU, and returns decoded vertices for comparison against the CPU mesher.
+/// Not part of the real rendering path — dev-only, run once.
+#[allow(dead_code)]
+pub fn gpu_mesh_test_run(
+    chunk_x: i32,
+    chunk_z: i32,
+    pool_width: i32,
+) -> Result<Vec<GpuTestVertex>, String> {
+    with_ctx(|c| {
+        let Some(pool) = c.gpu_voxel_pool.as_ref() else {
+            return Err("GPU voxel pool not initialized".to_string());
+        };
+        let blocks_buf = pool.blocks.clone();
+        let light_buf = pool.light.clone();
+        let slot_meta_buf = pool.slot_meta.clone();
+
+        let (bgl, pipeline) = mesh_test_compute_pipeline(c)?;
+        let params_buf = mesh_test_params_buffer(c, chunk_x, chunk_z, pool_width, 0.0, 0);
+        let atlas_buf = mesh_test_atlas_buffer(c);
+
+        let out_size = M2_MAX_VERTICES * M2_WORDS_PER_VERTEX * 4;
+        let out_buf = c.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_mesh_test_out"),
+            size: out_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let counter_buf = c.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_mesh_test_counter"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        c.queue.write_buffer(&counter_buf, 0, &0u32.to_le_bytes());
+
+        let bind_group = c.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gpu_mesh_test_bg"),
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: blocks_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: light_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: slot_meta_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: atlas_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: out_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: counter_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = c
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gpu_mesh_test_encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gpu_mesh_test_pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+
+        let readback_counter = c.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_mesh_test_counter_readback"),
+            size: 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        encoder.copy_buffer_to_buffer(&counter_buf, 0, &readback_counter, 0, 4);
+        c.queue.submit(std::iter::once(encoder.finish()));
+
+        let count = {
+            let slice = readback_counter.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            c.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(|e| e.to_string())?;
+            let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
+            u32::from_le_bytes(data[0..4].try_into().unwrap())
+        };
+        readback_counter.unmap();
+
+        if count as u64 > M2_MAX_VERTICES {
+            return Err(format!(
+                "GPU mesh test overflowed the output buffer: {count} vertices > {M2_MAX_VERTICES} capacity"
+            ));
+        }
+
+        let out_bytes = count as u64 * M2_WORDS_PER_VERTEX * 4;
+        let readback_verts = c.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_mesh_test_verts_readback"),
+            size: out_bytes.max(4),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder2 = c
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gpu_mesh_test_encoder2"),
+            });
+        encoder2.copy_buffer_to_buffer(&out_buf, 0, &readback_verts, 0, out_bytes.max(4));
+        c.queue.submit(std::iter::once(encoder2.finish()));
+
+        let vertices = {
+            let slice = readback_verts.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            c.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(|e| e.to_string())?;
+            let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
+            let words: &[u32] = bytemuck_words(&data);
+            (0..count as usize)
+                .map(|i| {
+                    let w = &words[i * 9..i * 9 + 9];
+                    let color_word = w[8];
+                    GpuTestVertex {
+                        pos: [
+                            f32::from_bits(w[0]),
+                            f32::from_bits(w[1]),
+                            f32::from_bits(w[2]),
+                        ],
+                        uv: [f32::from_bits(w[3]), f32::from_bits(w[4])],
+                        normal: [
+                            f32::from_bits(w[5]),
+                            f32::from_bits(w[6]),
+                            f32::from_bits(w[7]),
+                        ],
+                        color: [
+                            (color_word & 0xFF) as u8,
+                            ((color_word >> 8) & 0xFF) as u8,
+                            ((color_word >> 16) & 0xFF) as u8,
+                            ((color_word >> 24) & 0xFF) as u8,
+                        ],
+                    }
+                })
+                .collect()
+        };
+        readback_verts.unmap();
+
+        Ok(vertices)
+    })
+}
+
+#[allow(dead_code)]
+fn bytemuck_words(bytes: &[u8]) -> &[u32] {
+    unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, bytes.len() / 4) }
+}
+
+// TEMPORARY debug helper for the M3 garbage-rendering bug: blocking copy of
+// a GPU buffer's first `size` bytes back to the CPU.
+#[allow(dead_code)]
+fn read_back_buffer(c: &Ctx, buf: &wgpu::Buffer, size: u32) -> Result<Vec<u8>, String> {
+    let rb = c.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("m3_debug_readback"),
+        size: size as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut enc = c.device.create_command_encoder(&Default::default());
+    enc.copy_buffer_to_buffer(buf, 0, &rb, 0, size as u64);
+    c.queue.submit(std::iter::once(enc.finish()));
+    let slice = rb.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    c.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| e.to_string())?;
+    let data = {
+        let mapped = slice.get_mapped_range().map_err(|e| e.to_string())?;
+        mapped.to_vec()
+    };
+    rb.unmap();
+    Ok(data)
+}
+
+/// M3 test harness (hashed-splashing-haven plan): compute-meshes one chunk
+/// straight into a GPU-resident vertex buffer plus a DrawIndirectArgs buffer,
+/// no CPU readback. The shader's vertex counter *is* the indirect args
+/// buffer: its atomicAdd lands on word 0 (vertex_count) and the other three
+/// words are pre-seeded to {instance_count: 1, first_vertex: 0,
+/// first_instance: 0}. `gpu_mesh_m3_draw` then renders it every frame via
+/// draw_indirect, offset `y_offset` above its CPU-meshed twin for visual
+/// comparison. Dev-only, run once.
+#[allow(dead_code)]
+pub fn gpu_mesh_m3_setup(
+    chunk_x: i32,
+    chunk_z: i32,
+    pool_width: i32,
+    y_offset: f32,
+    debug_tint: u32,
+    store_tinted: bool,
+) -> Result<(), String> {
+    with_ctx(|c| {
+        let Some(pool) = c.gpu_voxel_pool.as_ref() else {
+            return Err("GPU voxel pool not initialized".to_string());
+        };
+        let blocks_buf = pool.blocks.clone();
+        let light_buf = pool.light.clone();
+        let slot_meta_buf = pool.slot_meta.clone();
+
+        let (bgl, pipeline) = mesh_test_compute_pipeline(c)?;
+        // TEMPORARY debug: debug_tint=1 makes write_vertex override color with
+        // a position-derived rainbow instead of real AO/light, to visually
+        // distinguish "wrong shape" from "right shape, wrong shading".
+        let params_buf =
+            mesh_test_params_buffer(c, chunk_x, chunk_z, pool_width, y_offset, debug_tint);
+        let atlas_buf = mesh_test_atlas_buffer(c);
+
+        let scope = c.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let out_buf = c.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_mesh_m3_verts"),
+            size: M2_MAX_VERTICES * M2_WORDS_PER_VERTEX * 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let indirect_buf = c.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_mesh_m3_indirect"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let seed: [u32; 4] = [0, 1, 0, 0];
+        c.queue.write_buffer(&indirect_buf, 0, cast_slice(&seed));
+
+        let bind_group = c.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gpu_mesh_m3_bg"),
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: blocks_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: light_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: slot_meta_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: atlas_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: out_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: indirect_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = c
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gpu_mesh_m3_encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gpu_mesh_m3_pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        c.queue.submit(std::iter::once(encoder.finish()));
+        if let Some(e) = block_on(scope.pop()) {
+            return Err(e.to_string());
+        }
+
+        // Temporary M3 debug readback: dump the DrawIndirectArgs the compute
+        // shader produced plus sample vertices at the start, end, and one
+        // past the end of the written region, to pinpoint whether garbage
+        // rendering comes from bad args or bad vertex data.
+        let debug_vertex_count = {
+            let args_rb = c.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("gpu_mesh_m3_args_rb"),
+                size: 16,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mut enc = c.device.create_command_encoder(&Default::default());
+            enc.copy_buffer_to_buffer(&indirect_buf, 0, &args_rb, 0, 16);
+            c.queue.submit(std::iter::once(enc.finish()));
+            let slice = args_rb.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            c.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(|e| e.to_string())?;
+            let args: Vec<u32> = {
+                let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
+                bytemuck_words(&data).to_vec()
+            };
+            args_rb.unmap();
+            println!(
+                "[M3 debug] indirect args: vertex_count={} instance_count={} first_vertex={} first_instance={}",
+                args[0], args[1], args[2], args[3]
+            );
+
+            let count = args[0] as u64;
+            let sample_at = |c: &Ctx, vert_index: u64| -> Result<[f32; 4], String> {
+                let rb = c.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("gpu_mesh_m3_vert_rb"),
+                    size: M2_WORDS_PER_VERTEX * 4,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let mut enc = c.device.create_command_encoder(&Default::default());
+                enc.copy_buffer_to_buffer(
+                    &out_buf,
+                    vert_index * M2_WORDS_PER_VERTEX * 4,
+                    &rb,
+                    0,
+                    M2_WORDS_PER_VERTEX * 4,
+                );
+                c.queue.submit(std::iter::once(enc.finish()));
+                let slice = rb.slice(..);
+                slice.map_async(wgpu::MapMode::Read, |_| {});
+                c.device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .map_err(|e| e.to_string())?;
+                let words: Vec<u32> = {
+                    let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
+                    bytemuck_words(&data).to_vec()
+                };
+                rb.unmap();
+                Ok([
+                    f32::from_bits(words[0]),
+                    f32::from_bits(words[1]),
+                    f32::from_bits(words[2]),
+                    f32::from_bits(words[8]), // color word reinterpreted, 0.0 = black/zero
+                ])
+            };
+            for idx in [0, count / 2, count.saturating_sub(1), count] {
+                let v = sample_at(c, idx)?;
+                println!(
+                    "[M3 debug] vertex[{idx}]: pos=({:.2}, {:.2}, {:.2}) color_word_bits={}",
+                    v[0], v[1], v[2], v[3]
+                );
+            }
+            count
+        };
+
+        // TEMPORARY debug: full buffer snapshot + quad-structure validation.
+        // Every quad is emitted as 6 contiguous vertices [A,B,C,A,C,D] (or
+        // [A,C,B,A,D,C] for bottom faces), so position 0 must equal position
+        // 3 and position 2 must equal 4 (or 1 equal 5). A violation means
+        // triangles are being assembled across quad boundaries, which the
+        // M2 sorted-multiset compare is blind to.
+        let snapshot = read_back_buffer(c, &out_buf, (debug_vertex_count * 36) as u32)?;
+        {
+            let words = bytemuck_words(&snapshot);
+            let pos =
+                |vi: usize| -> [u32; 3] { [words[vi * 9], words[vi * 9 + 1], words[vi * 9 + 2]] };
+            let mut bad = 0usize;
+            for g in 0..(debug_vertex_count as usize / 6) {
+                let b = g * 6;
+                let ok =
+                    pos(b) == pos(b + 3) && (pos(b + 2) == pos(b + 4) || pos(b + 1) == pos(b + 5));
+                if !ok {
+                    if bad < 3 {
+                        let p = |vi: usize| -> [f32; 3] {
+                            let w = pos(vi);
+                            [
+                                f32::from_bits(w[0]),
+                                f32::from_bits(w[1]),
+                                f32::from_bits(w[2]),
+                            ]
+                        };
+                        println!(
+                            "[M3 debug] quad {g} malformed: p0={:?} p1={:?} p2={:?} p3={:?} p4={:?} p5={:?}",
+                            p(b),
+                            p(b + 1),
+                            p(b + 2),
+                            p(b + 3),
+                            p(b + 4),
+                            p(b + 5)
+                        );
+                    }
+                    bad += 1;
+                }
+            }
+            println!(
+                "[M3 debug] quad structure at setup: {bad} malformed of {}",
+                debug_vertex_count / 6
+            );
+
+            // TEMPORARY debug: a real face's 6 vertices should all fit within
+            // a ~1x1x1 cube (plus the shared y_offset). Any quad whose corners
+            // spread far wider than that has a wrong vertex somewhere, even if
+            // the p0==p3/p2==p4 echo check above didn't catch it (echo only
+            // proves two corners agree with each other, not that either is
+            // actually correct).
+            let posf = |vi: usize| -> [f32; 3] {
+                let w = pos(vi);
+                [
+                    f32::from_bits(w[0]),
+                    f32::from_bits(w[1]),
+                    f32::from_bits(w[2]),
+                ]
+            };
+            let mut wild = 0usize;
+            for g in 0..(debug_vertex_count as usize / 6) {
+                let b = g * 6;
+                let corners: Vec<[f32; 3]> = (0..6).map(|k| posf(b + k)).collect();
+                let mut min = corners[0];
+                let mut max = corners[0];
+                for cnr in &corners[1..] {
+                    for a in 0..3 {
+                        min[a] = min[a].min(cnr[a]);
+                        max[a] = max[a].max(cnr[a]);
+                    }
+                }
+                let extent = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+                let max_extent = extent[0].max(extent[1]).max(extent[2]);
+                if max_extent > 2.0 {
+                    if wild < 5 {
+                        println!(
+                            "[M3 debug] quad {g} wild extent {max_extent:.1}: corners={corners:?}"
+                        );
+                    }
+                    wild += 1;
+                }
+            }
+            println!(
+                "[M3 debug] quads with >2.0 bounding extent: {wild} of {}",
+                debug_vertex_count / 6
+            );
+
+            // TEMPORARY debug: real unpacked RGBA byte stats (not the
+            // misleading f32::from_bits reinterpretation used in the earlier
+            // sample prints), to see what colors are actually being written
+            // instead of guessing from "looks dark" screenshots.
+            if debug_tint == 0 {
+                let rgba = |vi: usize| -> [u8; 4] {
+                    let w = words[vi * 9 + 8];
+                    [w as u8, (w >> 8) as u8, (w >> 16) as u8, (w >> 24) as u8]
+                };
+                let n = debug_vertex_count as usize;
+                let mut min_c = [255u8; 4];
+                let mut max_c = [0u8; 4];
+                let mut sum = [0u64; 4];
+                let mut hist_buckets = [0usize; 8]; // 0-31,32-63,...,224-255 on max(r,g,b)
+                for vi in 0..n {
+                    let c = rgba(vi);
+                    for k in 0..4 {
+                        min_c[k] = min_c[k].min(c[k]);
+                        max_c[k] = max_c[k].max(c[k]);
+                        sum[k] += c[k] as u64;
+                    }
+                    let brightest = c[0].max(c[1]).max(c[2]);
+                    hist_buckets[(brightest as usize) / 32] += 1;
+                }
+                let avg: Vec<f64> = sum.iter().map(|s| *s as f64 / n.max(1) as f64).collect();
+                println!(
+                    "[M3 debug] color stats over {n} vertices: min={min_c:?} max={max_c:?} avg_rgba={avg:.1?}"
+                );
+                println!(
+                    "[M3 debug] brightness histogram (max(r,g,b), 8 buckets of 32): {hist_buckets:?}"
+                );
+            }
+        }
+
+        let mesh = GpuMeshM3 {
+            vertices: PoolBuffer {
+                id: BUFFER_IDS.fetch_add(1, Ordering::Relaxed) as u64,
+                buffer: out_buf,
+            },
+            indirect: indirect_buf,
+            debug_vertex_count: debug_vertex_count as u32,
+            debug_snapshot: snapshot,
+        };
+        if store_tinted {
+            c.gpu_mesh_m3_tinted = Some(mesh);
+        } else {
+            c.gpu_mesh_m3 = Some(mesh);
+        }
+        Ok(())
+    })
+}
+
+/// Records an indirect draw of the M3 compute-meshed chunk using the
+/// currently bound shader/texture/state, exactly like `Mesh::draw` except
+/// the vertex count lives in the GPU-written DrawIndirectArgs buffer.
+/// No-op until `gpu_mesh_m3_setup` has run.
+#[allow(dead_code)]
+pub fn gpu_mesh_m3_draw() {
+    gpu_mesh_m3_draw_impl(false);
+}
+
+// TEMPORARY debug: draws the tinted comparison copy (see gpu_mesh_m3_tinted).
+#[allow(dead_code)]
+pub fn gpu_mesh_m3_draw_tinted() {
+    gpu_mesh_m3_draw_impl(true);
+}
+
+#[allow(dead_code)]
+fn gpu_mesh_m3_draw_impl(tinted: bool) {
+    with_ctx(|c| {
+        let Some(m3) = (if tinted {
+            &c.gpu_mesh_m3_tinted
+        } else {
+            &c.gpu_mesh_m3
+        }) else {
+            return;
+        };
+        // TEMPORARY debug: on the 120th recorded frame, read the vertex
+        // buffer back and byte-compare against the setup-time snapshot to
+        // detect the buffer being clobbered after setup.
+        static M3_DEBUG_FRAME: AtomicUsize = AtomicUsize::new(0);
+        let frame = if tinted {
+            usize::MAX
+        } else {
+            M3_DEBUG_FRAME.fetch_add(1, Ordering::Relaxed)
+        };
+        if frame == 120 {
+            match read_back_buffer(c, &m3.vertices.buffer, m3.debug_vertex_count * 36) {
+                Ok(now) => {
+                    if now == m3.debug_snapshot {
+                        println!("[M3 debug] frame-120 buffer identical to setup snapshot");
+                    } else {
+                        let first = now
+                            .iter()
+                            .zip(&m3.debug_snapshot)
+                            .position(|(a, b)| a != b)
+                            .unwrap_or(0);
+                        let diff = now
+                            .iter()
+                            .zip(&m3.debug_snapshot)
+                            .filter(|(a, b)| a != b)
+                            .count();
+                        println!(
+                            "[M3 debug] frame-120 buffer CLOBBERED: {diff} bytes differ, first at byte {first} (vertex {} word {})",
+                            first / 36,
+                            (first % 36) / 4
+                        );
+                    }
+                }
+                Err(e) => println!("[M3 debug] frame-120 readback failed: {e}"),
+            }
+        }
+        let buffer = m3.vertices.clone();
+        let indirect = m3.indirect.clone();
+        let debug_vertex_count = m3.debug_vertex_count;
+        let Some(shader) = c.bound_shader.clone() else {
+            return;
+        };
+        let uniform_offset = if !shader.dirty.get() && shader.cached_frame.get() == c.frame_stamp {
+            shader.cached_offset.get()
+        } else {
+            let offset = c.uniform_arena.len() as u32;
+            c.uniform_arena.extend_from_slice(&*shader.staging.borrow());
+            c.uniform_arena.resize(offset as usize + UNIFORM_STRIDE, 0);
+            shader.dirty.set(false);
+            shader.cached_offset.set(offset);
+            shader.cached_frame.set(c.frame_stamp);
+            offset
+        };
+        let (texture_id, texture) = c
+            .bound_texture
+            .clone()
+            .unwrap_or_else(|| (0, c.white_texture.clone()));
+        let flags = c.state;
+        // TEMPORARY debug: on the first recorded frame, print this draw's
+        // record-time state next to the previous draw in the pass (the last
+        // CPU chunk mesh) to rule out any pipeline/bind mismatch.
+        if frame == 0 {
+            let fmt = |f: &StateFlags| {
+                format!(
+                    "blend={} depth_test={} depth_write={} cull={} poly_off={}",
+                    f.blend, f.depth_test, f.depth_write, f.cull, f.polygon_offset
+                )
+            };
+            if let Some(prev) = c.passes.last().unwrap().draws.last() {
+                println!(
+                    "[M3 debug] prev draw: shader={} {} uoff={} tex={} buf={} count={}",
+                    prev.shader.id,
+                    fmt(&prev.flags),
+                    prev.uniform_offset,
+                    prev.texture_id,
+                    prev.buffer.id,
+                    prev.vertex_count
+                );
+            }
+            println!(
+                "[M3 debug] m3 draw:   shader={} {} uoff={} tex={} buf={} count={}",
+                shader.id,
+                fmt(&flags),
+                uniform_offset,
+                texture_id,
+                buffer.id,
+                debug_vertex_count
+            );
+        }
+        c.passes.last_mut().unwrap().draws.push(DrawRec {
+            shader,
+            flags,
+            uniform_offset,
+            texture,
+            texture_id,
+            buffer,
+            vertex_count: if M3_DEBUG_DIRECT_DRAW {
+                debug_vertex_count
+            } else {
+                0
+            },
+            indirect: if M3_DEBUG_DIRECT_DRAW {
+                None
+            } else {
+                Some(indirect)
+            },
+        });
+    });
 }
 
 fn make_texture_bind_group(
@@ -440,12 +1359,10 @@ impl Shader {
     pub fn new(source: &str) -> Result<Self, String> {
         with_ctx(|c| {
             let scope = c.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let module = c
-                .device
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: None,
-                    source: wgpu::ShaderSource::Wgsl(source.into()),
-                });
+            let module = c.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
             match block_on(scope.pop()) {
                 Some(e) => Err(e.to_string()),
                 None => Ok(Self {
@@ -639,8 +1556,7 @@ impl Mesh {
                 } else {
                     let offset = c.uniform_arena.len() as u32;
                     c.uniform_arena.extend_from_slice(&*shader.staging.borrow());
-                    c.uniform_arena
-                        .resize(offset as usize + UNIFORM_STRIDE, 0);
+                    c.uniform_arena.resize(offset as usize + UNIFORM_STRIDE, 0);
                     shader.dirty.set(false);
                     shader.cached_offset.set(offset);
                     shader.cached_frame.set(c.frame_stamp);
@@ -659,6 +1575,7 @@ impl Mesh {
                 texture_id,
                 buffer: self.buffer.clone(),
                 vertex_count: self.vertex_count as u32,
+                indirect: None,
             });
         });
     }
@@ -706,11 +1623,8 @@ pub struct RenderTexture2D {
 
 impl RenderTexture2D {
     pub fn new(width: i32, height: i32) -> Self {
-        let texture = Texture2D::from_data(
-            &vec![0u8; (width * height * 4) as usize],
-            width,
-            height,
-        );
+        let texture =
+            Texture2D::from_data(&vec![0u8; (width * height * 4) as usize], width, height);
         let depth = with_ctx(|c| make_depth(&c.device, width as u32, height as u32));
         Self { texture, depth }
     }
@@ -951,7 +1865,10 @@ pub fn end_frame(width: i32, height: i32) {
                     rpass.set_vertex_buffer(0, draw.buffer.buffer.slice(..));
                     last_buffer = Some(draw.buffer.id);
                 }
-                rpass.draw(0..draw.vertex_count, 0..1);
+                match &draw.indirect {
+                    Some(args) => rpass.draw_indirect(args, 0),
+                    None => rpass.draw(0..draw.vertex_count, 0..1),
+                }
             }
         }
         c.queue.submit([encoder.finish()]);
