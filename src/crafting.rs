@@ -794,7 +794,6 @@ fn matches_shapeless(grid: &[Option<BlockType>], ingredients: &[BlockType]) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use BlockType::*;
 
     fn grid_2x2(
         a: Option<BlockType>,
@@ -1098,7 +1097,7 @@ mod tests {
     #[test]
     fn test_bounding_box_empty() {
         let grid = vec![None; 9];
-        let (min_x, min_y, max_x, max_y) = bounding_box(&grid, 3, 3);
+        let (min_x, _min_y, max_x, _max_y) = bounding_box(&grid, 3, 3);
         assert!(min_x > max_x); // empty
     }
 
