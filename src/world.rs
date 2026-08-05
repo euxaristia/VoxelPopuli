@@ -10,6 +10,81 @@ use glam::{Mat4, Vec3};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+// M2 test harness (hashed-splashing-haven plan): (pos, uv, normal, color).
+#[allow(dead_code)]
+type GpuMeshTestVertex = ([f32; 3], [f32; 2], [f32; 3], [u8; 4]);
+
+#[allow(dead_code)]
+fn gpu_mesh_test_sort_key(v: &GpuMeshTestVertex) -> [i64; 9] {
+    let q = |f: f32| (f * 1000.0).round() as i64;
+    [
+        q(v.0[0]),
+        q(v.0[1]),
+        q(v.0[2]),
+        q(v.1[0]),
+        q(v.1[1]),
+        q(v.2[0]),
+        q(v.2[1]),
+        q(v.2[2]),
+        ((v.3[0] as i64) << 24) | ((v.3[1] as i64) << 16) | ((v.3[2] as i64) << 8) | v.3[3] as i64,
+    ]
+}
+
+// Sorts both vertex lists by a canonical key before comparing, since the GPU
+// mesher's face/vertex emission order isn't guaranteed to match the CPU's
+// (different (x,z) columns run in parallel), even when the resulting mesh
+// is geometrically identical.
+#[allow(dead_code)]
+fn compare_gpu_mesh_test(cpu: &[GpuMeshTestVertex], gpu: &[GpuMeshTestVertex], cx: i32, cz: i32) {
+    println!(
+        "[M2 test] chunk ({cx},{cz}): CPU {} verts, GPU {} verts",
+        cpu.len(),
+        gpu.len()
+    );
+    if cpu.len() != gpu.len() {
+        println!("[M2 test] FAIL: vertex count mismatch");
+        return;
+    }
+    let mut cpu_sorted = cpu.to_vec();
+    let mut gpu_sorted = gpu.to_vec();
+    cpu_sorted.sort_by_key(gpu_mesh_test_sort_key);
+    gpu_sorted.sort_by_key(gpu_mesh_test_sort_key);
+
+    let mut mismatches = 0;
+    for (i, (c, g)) in cpu_sorted.iter().zip(gpu_sorted.iter()).enumerate() {
+        let pos_ok =
+            c.0.iter()
+                .zip(g.0.iter())
+                .all(|(a, b)| (a - b).abs() < 0.01);
+        let uv_ok =
+            c.1.iter()
+                .zip(g.1.iter())
+                .all(|(a, b)| (a - b).abs() < 0.001);
+        let normal_ok =
+            c.2.iter()
+                .zip(g.2.iter())
+                .all(|(a, b)| (a - b).abs() < 0.01);
+        let color_ok =
+            c.3.iter()
+                .zip(g.3.iter())
+                .all(|(a, b)| (*a as i32 - *b as i32).abs() <= 2);
+        if !(pos_ok && uv_ok && normal_ok && color_ok) {
+            mismatches += 1;
+            if mismatches <= 10 {
+                println!("[M2 test]   mismatch #{i}: cpu={c:?} gpu={g:?}");
+            }
+        }
+    }
+    if mismatches == 0 {
+        println!("[M2 test] PASS: all {} vertices match", cpu.len());
+    } else {
+        println!(
+            "[M2 test] FAIL: {mismatches}/{} vertices mismatched",
+            cpu.len()
+        );
+    }
+}
+
 pub const VIEW_DISTANCE: i32 = 35;
 pub const POOL_WIDTH: i32 = VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
@@ -17,6 +92,12 @@ pub const CLOUD_HEIGHT: f32 = 200.0;
 // Upper bound on chunk-generation jobs queued to the worker pool; bounds
 // memory for finished-but-unintegrated chunks without starving meshing jobs.
 const MAX_GEN_IN_FLIGHT: usize = 64;
+// Radius the GPU voxel pool mirrors for meshing, decoupled from and smaller
+// than VIEW_DISTANCE (which governs CPU streaming/collision/water sim) to
+// bound VRAM. See the hashed-splashing-haven plan, M1.
+pub const GPU_POOL_VIEW_DISTANCE: i32 = 20;
+pub const GPU_POOL_WIDTH: i32 = GPU_POOL_VIEW_DISTANCE * 2 + 1;
+pub const GPU_POOL_SIZE: usize = (GPU_POOL_WIDTH * GPU_POOL_WIDTH) as usize;
 
 // WorldEdit removed in favor of HashMap edits
 
@@ -155,6 +236,7 @@ impl World {
         for _ in 0..CHUNK_POOL_SIZE {
             chunks.push(None);
         }
+        renderer::gpu_pool_init(GPU_POOL_SIZE);
         let (mesh_result_tx, mesh_result_rx) = std::sync::mpsc::channel();
         let (gen_result_tx, gen_result_rx) = std::sync::mpsc::channel();
         Self {
@@ -310,6 +392,95 @@ impl World {
         let ix = cx.rem_euclid(POOL_WIDTH);
         let iz = cz.rem_euclid(POOL_WIDTH);
         (ix + iz * POOL_WIDTH) as usize
+    }
+
+    // M2/M3 test harness (hashed-splashing-haven plan): meshes one chunk both
+    // ways and diffs the results (M2), then sets up the same chunk as a
+    // persistent compute-meshed indirect draw floating above its CPU-meshed
+    // twin (M3). Dev-only, meant to run once at startup.
+    #[allow(dead_code)]
+    pub fn run_gpu_mesh_tests(&self) {
+        let cx = self.last_pcx;
+        let cz = self.last_pcz;
+        let Some(chunk) = self.get_chunk(cx, cz) else {
+            println!("[M2 test] no chunk loaded at ({cx},{cz}), skipping");
+            return;
+        };
+        let snap = MeshSnapshot::capture(self, cx, cz);
+        let mut work = chunk.snapshot_data();
+        work.calculate_lighting();
+        let (opaque, _transparent, _water) = work.calculate_mesh_data(&snap);
+
+        let cpu_verts: Vec<GpuMeshTestVertex> = (0..opaque.v.len() / 3)
+            .map(|i| {
+                (
+                    [opaque.v[i * 3], opaque.v[i * 3 + 1], opaque.v[i * 3 + 2]],
+                    [opaque.t[i * 2], opaque.t[i * 2 + 1]],
+                    [opaque.n[i * 3], opaque.n[i * 3 + 1], opaque.n[i * 3 + 2]],
+                    [
+                        opaque.c[i * 4],
+                        opaque.c[i * 4 + 1],
+                        opaque.c[i * 4 + 2],
+                        opaque.c[i * 4 + 3],
+                    ],
+                )
+            })
+            .collect();
+
+        match renderer::gpu_mesh_test_run(cx, cz, GPU_POOL_WIDTH) {
+            Ok(gpu_raw) => {
+                let gpu_verts: Vec<GpuMeshTestVertex> = gpu_raw
+                    .into_iter()
+                    .map(|v| (v.pos, v.uv, v.normal, v.color))
+                    .collect();
+                compare_gpu_mesh_test(&cpu_verts, &gpu_verts, cx, cz);
+            }
+            Err(e) => println!("[M2 test] GPU dispatch failed: {e}"),
+        }
+
+        // M3: same chunk again, but meshed straight into a GPU vertex buffer
+        // + DrawIndirectArgs and rendered per-frame via draw_indirect (see
+        // render_opaque), floating 60 blocks up so both versions are visible.
+        match renderer::gpu_mesh_m3_setup(cx, cz, GPU_POOL_WIDTH, 60.0, 0, false) {
+            Ok(()) => println!(
+                "[M3 test] indirect-draw chunk ({cx},{cz}) set up, rendering 60 blocks above its CPU twin"
+            ),
+            Err(e) => println!("[M3 test] setup failed: {e}"),
+        }
+        // TEMPORARY debug: a second copy at a different height, tinted by
+        // position instead of real AO/light, rendered in the SAME frame so a
+        // single screenshot can compare "real colors" vs "position-only
+        // colors" with zero run-to-run camera/timing variance.
+        match renderer::gpu_mesh_m3_setup(cx, cz, GPU_POOL_WIDTH, 90.0, 1, true) {
+            Ok(()) => println!(
+                "[M3 test] tinted comparison copy set up, rendering 90 blocks above its CPU twin"
+            ),
+            Err(e) => println!("[M3 test] tinted setup failed: {e}"),
+        }
+    }
+
+    fn gpu_pool_index(&self, cx: i32, cz: i32) -> usize {
+        let ix = cx.rem_euclid(GPU_POOL_WIDTH);
+        let iz = cz.rem_euclid(GPU_POOL_WIDTH);
+        (ix + iz * GPU_POOL_WIDTH) as usize
+    }
+
+    // Uploads (cx, cz)'s current CPU-side block/light/liquid data into its
+    // GPU voxel pool slot, if it's within the (smaller) GPU meshing radius.
+    // `pcx`/`pcz` are the player's current chunk coords, passed explicitly
+    // rather than read from `self.last_pcx/last_pcz`, which only update once
+    // a whole boundary-crossing scan completes and would wrongly gate out
+    // every chunk during the initial synchronous load.
+    fn sync_gpu_chunk(&self, cx: i32, cz: i32, pcx: i32, pcz: i32) {
+        if (cx - pcx).abs() > GPU_POOL_VIEW_DISTANCE || (cz - pcz).abs() > GPU_POOL_VIEW_DISTANCE {
+            return;
+        }
+        let Some(chunk) = self.get_chunk(cx, cz) else {
+            return;
+        };
+        let slot = self.gpu_pool_index(cx, cz) as u32;
+        let (blocks, light, liquid) = chunk.gpu_bytes();
+        renderer::gpu_pool_upload_chunk(slot, cx, cz, blocks, light, liquid);
     }
 
     pub fn get_chunk(&self, cx: i32, cz: i32) -> Option<&Chunk> {
@@ -607,6 +778,7 @@ impl World {
                                 }
                                 self.try_spawn_village_mobs(x, z);
                                 self.chunks_generated_count += 1;
+                                self.sync_gpu_chunk(x, z, pcx, pcz);
                                 generated_this_frame += 1;
                                 if generated_this_frame >= 64 {
                                     break;
@@ -714,6 +886,7 @@ impl World {
             }
             self.try_spawn_village_mobs(x, z);
             self.chunks_generated_count += 1;
+            self.sync_gpu_chunk(x, z, pcx, pcz);
         }
 
         // --- Prioritized Meshing ---
@@ -724,12 +897,22 @@ impl World {
                 self.meshing_in_flight -= 1;
                 // The job id check drops stale results when the chunk was
                 // replaced and re-dispatched while this job was in flight.
-                if let Some(chunk) = self.get_chunk_mut(result.x, result.z)
+                let relit = if let Some(chunk) = self.get_chunk_mut(result.x, result.z)
                     && chunk.meshing_in_progress
                     && chunk.mesh_job_id == result.job_id
                 {
                     chunk.light = result.light;
                     chunk.upload_mesh(result.opaque, result.transparent, result.water);
+                    true
+                } else {
+                    false
+                };
+                // This is the point the CPU-side light array actually gets
+                // refreshed after an edit (set_block doesn't relight
+                // synchronously), so it's also the right place to push the
+                // now-current blocks/light/liquid to the GPU pool.
+                if relit {
+                    self.sync_gpu_chunk(result.x, result.z, pcx, pcz);
                 }
             }
         }

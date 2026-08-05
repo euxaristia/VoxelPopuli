@@ -370,8 +370,8 @@ pub fn atlas_uv_top(b: BlockType) -> (u8, u8) {
         Chest => (1, 7),              // chest top
         Bookshelf => (1, 2),          // planks on top
         Farmland => (10, 7),
-        TNT => (10, 1),               // stick-end bundle
-        Cactus => (11, 1),            // rimmed fleshy top
+        TNT => (10, 1),    // stick-end bundle
+        Cactus => (11, 1), // rimmed fleshy top
         _ => atlas_uv(b),
     }
 }

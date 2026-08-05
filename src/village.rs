@@ -57,10 +57,30 @@ const VILLAGE_RADIUS: i32 = ROAD_REACH + 12;
 // plaza, in ring order. Mob spawn points anchor to these cells so mobs
 // always start on stamped, cleared ground.
 const APRON_RING: [(i32, i32); 24] = [
-    (-3, -3), (-2, -3), (-1, -3), (0, -3), (1, -3), (2, -3), (3, -3),
-    (3, -2), (3, -1), (3, 0), (3, 1), (3, 2), (3, 3),
-    (2, 3), (1, 3), (0, 3), (-1, 3), (-2, 3), (-3, 3),
-    (-3, 2), (-3, 1), (-3, 0), (-3, -1), (-3, -2),
+    (-3, -3),
+    (-2, -3),
+    (-1, -3),
+    (0, -3),
+    (1, -3),
+    (2, -3),
+    (3, -3),
+    (3, -2),
+    (3, -1),
+    (3, 0),
+    (3, 1),
+    (3, 2),
+    (3, 3),
+    (2, 3),
+    (1, 3),
+    (0, 3),
+    (-1, 3),
+    (-2, 3),
+    (-3, 3),
+    (-3, 2),
+    (-3, 1),
+    (-3, 0),
+    (-3, -1),
+    (-3, -2),
 ];
 // The apron corner reserved for the iron golem.
 const GOLEM_PAD: (i32, i32) = (-3, 3);
@@ -198,7 +218,12 @@ impl Village {
         });
 
         // Lamp posts at the four road ends
-        for (dx, dz) in [(ROAD_REACH, 0), (-ROAD_REACH, 0), (0, ROAD_REACH), (0, -ROAD_REACH)] {
+        for (dx, dz) in [
+            (ROAD_REACH, 0),
+            (-ROAD_REACH, 0),
+            (0, ROAD_REACH),
+            (0, -ROAD_REACH),
+        ] {
             let (h, _) = terrain_height_and_biome((cx + dx) as f32, (cz + dz) as f32, seed);
             let floor_y = h as i32;
             if (floor_y - self.base_y).abs() <= 6 {
@@ -256,8 +281,7 @@ impl Village {
                         // For plots along the Z road the footprint is rotated
                         let (w, d) = if axis == 0 { (w, d) } else { (d, w) };
 
-                        let (h, _) =
-                            terrain_height_and_biome(ax as f32, az as f32, seed);
+                        let (h, _) = terrain_height_and_biome(ax as f32, az as f32, seed);
                         let floor_y = h as i32;
                         if (floor_y - self.base_y).abs() > 5 {
                             continue;
@@ -276,7 +300,10 @@ impl Village {
                         // Skip plots that would collide with the plaza or an
                         // earlier structure.
                         let collides = self.structures.iter().any(|o| {
-                            s.x0 <= o.x1 + 1 && s.x1 >= o.x0 - 1 && s.z0 <= o.z1 + 1 && s.z1 >= o.z0 - 1
+                            s.x0 <= o.x1 + 1
+                                && s.x1 >= o.x0 - 1
+                                && s.z0 <= o.z1 + 1
+                                && s.z1 >= o.z0 - 1
                         });
                         if !collides {
                             // Count houses only once actually placed so
@@ -456,12 +483,11 @@ impl Stamper<'_> {
         if let Some((lx, lz)) = self.local(wx, wz) {
             let y = wy as usize;
             self.chunk.blocks[lx][y][lz] = b;
-            self.chunk.liquid_levels[lx][y][lz] =
-                if b == BlockType::Water || b == BlockType::Lava {
-                    crate::chunk::WATER_SOURCE
-                } else {
-                    0
-                };
+            self.chunk.liquid_levels[lx][y][lz] = if b == BlockType::Water || b == BlockType::Lava {
+                crate::chunk::WATER_SOURCE
+            } else {
+                0
+            };
         }
     }
 
@@ -685,7 +711,11 @@ impl Stamper<'_> {
             BlockType::Cobblestone
         };
         // Desert wells trade cobble for sandstone rims
-        let rim = if v.desert { BlockType::Sandstone } else { stone };
+        let rim = if v.desert {
+            BlockType::Sandstone
+        } else {
+            stone
+        };
         let fy = s.floor_y;
         let cx = (s.x0 + s.x1) / 2;
         let cz = (s.z0 + s.z1) / 2;
@@ -706,7 +736,12 @@ impl Stamper<'_> {
             }
         }
         // Corner posts and a flat canopy over the basin and rim
-        for (wx, wz) in [(cx - 2, cz - 2), (cx - 2, cz + 2), (cx + 2, cz - 2), (cx + 2, cz + 2)] {
+        for (wx, wz) in [
+            (cx - 2, cz - 2),
+            (cx - 2, cz + 2),
+            (cx + 2, cz - 2),
+            (cx + 2, cz + 2),
+        ] {
             self.set(wx, fy + 1, wz, stone);
             self.set(wx, fy + 2, wz, stone);
         }
@@ -778,7 +813,10 @@ mod tests {
         assert_eq!(first.structures.len(), second.structures.len());
         for (a, b) in first.structures.iter().zip(second.structures.iter()) {
             assert_eq!(a.kind, b.kind);
-            assert_eq!((a.x0, a.z0, a.x1, a.z1, a.floor_y), (b.x0, b.z0, b.x1, b.z1, b.floor_y));
+            assert_eq!(
+                (a.x0, a.z0, a.x1, a.z1, a.floor_y),
+                (b.x0, b.z0, b.x1, b.z1, b.floor_y)
+            );
         }
     }
 
@@ -802,8 +840,14 @@ mod tests {
         let cell_x1 = cell_x0 + REGION_CHUNKS * CHUNK_WIDTH as i32;
         let cell_z1 = cell_z0 + REGION_CHUNKS * CHUNK_DEPTH as i32;
         for s in &v.structures {
-            assert!(s.x0 >= cell_x0 && s.x1 < cell_x1, "structure leaks region in x");
-            assert!(s.z0 >= cell_z0 && s.z1 < cell_z1, "structure leaks region in z");
+            assert!(
+                s.x0 >= cell_x0 && s.x1 < cell_x1,
+                "structure leaks region in x"
+            );
+            assert!(
+                s.z0 >= cell_z0 && s.z1 < cell_z1,
+                "structure leaks region in z"
+            );
         }
     }
 
@@ -812,8 +856,7 @@ mod tests {
         let (_, _, v) = find_test_village(4242);
         for (i, a) in v.structures.iter().enumerate() {
             for b in v.structures.iter().skip(i + 1) {
-                let overlap =
-                    a.x0 <= b.x1 && a.x1 >= b.x0 && a.z0 <= b.z1 && a.z1 >= b.z0;
+                let overlap = a.x0 <= b.x1 && a.x1 >= b.x0 && a.z0 <= b.z1 && a.z1 >= b.z0;
                 assert!(!overlap, "{:?} overlaps {:?}", a, b);
             }
         }
@@ -855,7 +898,10 @@ mod tests {
         let b = region_village(seed, rx, rz).expect("cache hit");
         assert_eq!(a.center_x, fresh.center_x);
         assert_eq!(a.structures.len(), fresh.structures.len());
-        assert!(Arc::ptr_eq(&a, &b), "second lookup should share the cached Arc");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "second lookup should share the cached Arc"
+        );
     }
 
     #[test]
@@ -932,13 +978,15 @@ mod tests {
         assert_eq!(a.blocks, b.blocks);
         // The well pumps water into the center chunk, so the village
         // definitely left a mark.
-        let has_bell_or_cobble = a.blocks.iter().flatten().flatten().any(|&blk| {
-            blk == BlockType::Cobblestone || blk == BlockType::MossyCobblestone
-        });
+        let has_bell_or_cobble = a
+            .blocks
+            .iter()
+            .flatten()
+            .flatten()
+            .any(|&blk| blk == BlockType::Cobblestone || blk == BlockType::MossyCobblestone);
         assert!(has_bell_or_cobble, "village center chunk shows no stamping");
     }
 }
-
 
 #[cfg(test)]
 mod layout_probe {
@@ -995,8 +1043,14 @@ mod layout_probe {
             }
             println!("{row}");
         }
-        println!("center X={} Z={} base_y={} desert={} structures={}",
-            v.center_x, v.center_z, v.base_y, v.desert, v.structures.len());
+        println!(
+            "center X={} Z={} base_y={} desert={} structures={}",
+            v.center_x,
+            v.center_z,
+            v.base_y,
+            v.desert,
+            v.structures.len()
+        );
     }
 }
 
@@ -1014,7 +1068,11 @@ mod seed_probe {
         match nearest_village(seed, 32, 32, 12) {
             Some(v) => println!(
                 "nearest village: X={} Z={} desert={} base_y={} structures={}",
-                v.center_x, v.center_z, v.desert, v.base_y, v.structures.len()
+                v.center_x,
+                v.center_z,
+                v.desert,
+                v.base_y,
+                v.structures.len()
             ),
             None => println!("no village within 12 regions"),
         }

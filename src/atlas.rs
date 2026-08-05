@@ -368,7 +368,14 @@ pub fn generate_atlas_data() -> Vec<u8> {
         for (row, line) in glyph.iter().enumerate() {
             for (col, &ch) in line.iter().enumerate() {
                 if ch == b'X' {
-                    draw_pixel(4 * 16 + pen_x + col as i32, 16 + 6 + row as i32, 32, 28, 28, 255);
+                    draw_pixel(
+                        4 * 16 + pen_x + col as i32,
+                        16 + 6 + row as i32,
+                        32,
+                        28,
+                        28,
+                        255,
+                    );
                 }
             }
         }
@@ -1371,8 +1378,8 @@ pub fn generate_atlas_data() -> Vec<u8> {
             for x in 0..16i32 {
                 let ring = x.min(15 - x).min(y).min(15 - y);
                 let (r, g, b) = match ring {
-                    0 => (18, 70, 24),    // rim
-                    1 => (40, 110, 40),   // shoulder
+                    0 => (18, 70, 24),  // rim
+                    1 => (40, 110, 40), // shoulder
                     2..=4 => (70, 144, 56),
                     _ => (132, 188, 104), // core
                 };

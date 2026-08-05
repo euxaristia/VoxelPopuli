@@ -472,6 +472,20 @@ impl Chunk {
         }
     }
 
+    /// Flat byte views of blocks/light/liquid, in `x*4096 + y*16 + z` order,
+    /// for uploading to the GPU voxel pool (see hashed-splashing-haven plan).
+    pub fn gpu_bytes(&self) -> (&[u8], &[u8], &[u8]) {
+        const N: usize = CHUNK_WIDTH * CHUNK_HEIGHT * CHUNK_DEPTH;
+        // SAFETY: BlockType is #[repr(u8)] and Copy; light/liquid_levels are
+        // already u8. All three are fixed-size nested arrays, contiguous in
+        // memory, so a flat byte view over the whole array is valid.
+        let blocks = unsafe { std::slice::from_raw_parts(self.blocks.as_ptr() as *const u8, N) };
+        let light = unsafe { std::slice::from_raw_parts(self.light.as_ptr() as *const u8, N) };
+        let liquid =
+            unsafe { std::slice::from_raw_parts(self.liquid_levels.as_ptr() as *const u8, N) };
+        (blocks, light, liquid)
+    }
+
     pub(crate) fn surface_y(&self, x: usize, z: usize) -> Option<usize> {
         for y in (1..CHUNK_HEIGHT - 2).rev() {
             let b = self.blocks[x][y][z];
@@ -1219,7 +1233,6 @@ impl Chunk {
             BlockType::Air
         }
     }
-
 }
 
 impl ChunkData {
@@ -2087,6 +2100,9 @@ impl ChunkData {
 
 impl Chunk {
     pub fn upload_mesh(&mut self, opaque: MeshData, transparent: MeshData, water: MeshData) {
+        record_vertex_count_sample(
+            (opaque.v.len() / 3 + transparent.v.len() / 3 + water.v.len() / 3) as u32,
+        );
         self.mesh_opaque = if opaque.v.is_empty() {
             None
         } else {
@@ -2118,6 +2134,33 @@ impl Chunk {
             ))
         };
         self.meshing_in_progress = false;
+    }
+}
+
+static VERTEX_COUNT_SAMPLES: std::sync::LazyLock<std::sync::Mutex<Vec<u32>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+// Temporary instrumentation for hashed-splashing-haven M1: gathers the real
+// per-chunk vertex-count distribution across gameplay so the GPU mesher's
+// vertex-arena size (M4) can be sized from data instead of guessed.
+fn record_vertex_count_sample(count: u32) {
+    let mut samples = VERTEX_COUNT_SAMPLES.lock().unwrap();
+    samples.push(count);
+    if samples.len() % 64 == 0 {
+        let mut sorted = samples.clone();
+        sorted.sort_unstable();
+        let p50 = sorted[sorted.len() / 2];
+        let p99 = sorted[(sorted.len() * 99 / 100).min(sorted.len() - 1)];
+        let max = *sorted.last().unwrap();
+        let avg = sorted.iter().map(|&v| v as u64).sum::<u64>() / sorted.len() as u64;
+        println!(
+            "Chunk mesh vertex counts ({} samples): avg={} p50={} p99={} max={} (36 bytes/vertex)",
+            sorted.len(),
+            avg,
+            p50,
+            p99,
+            max
+        );
     }
 }
 
