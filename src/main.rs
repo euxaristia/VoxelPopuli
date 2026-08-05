@@ -24,6 +24,14 @@ pub enum GameState {
     Paused,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PauseSubMenu {
+    Main,
+    Settings,
+    WorldInfo,
+    Profile,
+}
+
 // ── Inventory ──────────────────────────────────────────────────────────────
 // Slot layout (45 total):
 //   0-8   hotbar           9-35  main inventory (3×9)
@@ -1366,288 +1374,230 @@ fn draw_pause_menu(
     font_tex: &Texture2D,
     sw: f32,
     sh: f32,
+    sub_menu: PauseSubMenu,
+    world_seed: u64,
+    mobs_count: usize,
+    export_status: &str,
+    selected_skin: u8,
+    render_dist: i32,
+    fov: f32,
+    fancy_gfx: bool,
 ) {
-    // 1. Full-screen tint
-    draw_rect(ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 160], sw, sh);
+    // 1. Full-screen translucent tint
+    draw_rect(ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 180], sw, sh);
 
-    // 2. Buttons (Left Column)
-    let btn_w = 340.0;
-    let btn_h = 44.0;
-    let btn_x = 100.0;
-    let btn_y_start = sh / 2.0 - 100.0;
+    match sub_menu {
+        PauseSubMenu::Main => {
+            // Main Bedrock Pause Menu Layout
+            let btn_w = 340.0;
+            let btn_h = 44.0;
+            let btn_x = 100.0;
+            let btn_y_start = sh / 2.0 - 130.0;
 
-    let labels = ["Resume Game", "Settings", "Marketplace", "Save & Quit"];
-    for (i, label) in labels.iter().enumerate() {
-        let y = btn_y_start + i as f32 * (btn_h + 12.0);
-        // Shadow/Border
-        draw_rect(
-            ui_shader,
-            btn_x - 2.0,
-            y - 2.0,
-            btn_w + 4.0,
-            btn_h + 4.0,
-            [20, 20, 20, 255],
-            sw,
-            sh,
-        );
-        // Base
-        draw_rect(
-            ui_shader,
-            btn_x,
-            y,
-            btn_w,
-            btn_h,
-            [198, 198, 198, 255],
-            sw,
-            sh,
-        );
-        // Inset
-        draw_rect(
-            ui_shader,
-            btn_x + 2.0,
-            y + 2.0,
-            btn_w - 4.0,
-            btn_h - 4.0,
-            [110, 110, 110, 255],
-            sw,
-            sh,
-        );
-        let text_sz = 18.0;
-        let text_x = btn_x + (btn_w - label.len() as f32 * text_sz * 0.55) / 2.0;
-        draw_text(
-            font_tex,
-            label,
-            text_x,
-            y + 13.0,
-            text_sz,
-            tex_shader,
-            sw,
-            sh,
-        );
-    }
+            let labels = [
+                "Resume Game",
+                "Settings",
+                "World Info & Export",
+                "Profile & Skins",
+                "Save & Quit",
+            ];
+            for (i, label) in labels.iter().enumerate() {
+                let y = btn_y_start + i as f32 * (btn_h + 10.0);
+                draw_bedrock_button(
+                    ui_shader, tex_shader, font_tex, btn_x, y, btn_w, btn_h, label, sw, sh,
+                );
+            }
 
-    // Small buttons bottom left icons
-    let sbtn_s = 44.0;
-    for i in 0..3 {
-        let sx = btn_x + i as f32 * (sbtn_s + 10.0);
-        let sy = sh - 70.0;
-        draw_rect(
-            ui_shader,
-            sx - 2.0,
-            sy - 2.0,
-            sbtn_s + 4.0,
-            sbtn_s + 4.0,
-            [20, 20, 20, 255],
-            sw,
-            sh,
-        );
-        draw_rect(
-            ui_shader,
-            sx,
-            sy,
-            sbtn_s,
-            sbtn_s,
-            [198, 198, 198, 255],
-            sw,
-            sh,
-        );
+            // Bottom-left Icon Buttons (Chat, Settings, Profile)
+            let sbtn_s = 44.0;
+            for i in 0..3 {
+                let sx = btn_x + i as f32 * (sbtn_s + 10.0);
+                let sy = sh - 70.0;
+                draw_rect(
+                    ui_shader,
+                    sx - 2.0,
+                    sy - 2.0,
+                    sbtn_s + 4.0,
+                    sbtn_s + 4.0,
+                    [20, 20, 20, 255],
+                    sw,
+                    sh,
+                );
+                draw_rect(
+                    ui_shader,
+                    sx,
+                    sy,
+                    sbtn_s,
+                    sbtn_s,
+                    [198, 198, 198, 255],
+                    sw,
+                    sh,
+                );
 
-        // Simple Icons
-        if i == 0 {
-            // Chat
-            draw_rect(
-                ui_shader,
-                sx + 10.0,
-                sy + 15.0,
-                24.0,
-                14.0,
-                [60, 60, 60, 255],
-                sw,
-                sh,
-            );
-            draw_rect(
-                ui_shader,
-                sx + 12.0,
-                sy + 17.0,
-                6.0,
-                4.0,
-                [255, 255, 255, 100],
-                sw,
-                sh,
-            );
-        } else if i == 1 {
-            // Camera
-            draw_rect(
-                ui_shader,
-                sx + 10.0,
-                sy + 18.0,
-                24.0,
-                16.0,
-                [60, 60, 60, 255],
-                sw,
-                sh,
-            );
-            draw_rect(
-                ui_shader,
-                sx + 18.0,
-                sy + 12.0,
-                8.0,
-                6.0,
-                [60, 60, 60, 255],
-                sw,
-                sh,
-            );
-            draw_rect(
-                ui_shader,
-                sx + 19.0,
-                sy + 23.0,
-                6.0,
-                6.0,
-                [255, 255, 255, 100],
-                sw,
-                sh,
-            );
-        } else if i == 2 {
-            // Profile
-            draw_rect(
-                ui_shader,
-                sx + 17.0,
-                sy + 10.0,
-                12.0,
-                12.0,
-                [60, 60, 60, 255],
-                sw,
-                sh,
-            );
-            draw_rect(
-                ui_shader,
-                sx + 12.0,
-                sy + 24.0,
-                22.0,
-                14.0,
-                [60, 60, 60, 255],
-                sw,
-                sh,
-            );
+                if i == 0 {
+                    draw_rect(ui_shader, sx + 10.0, sy + 15.0, 24.0, 14.0, [60, 60, 60, 255], sw, sh);
+                } else if i == 1 {
+                    draw_rect(ui_shader, sx + 10.0, sy + 18.0, 24.0, 16.0, [60, 60, 60, 255], sw, sh);
+                    draw_rect(ui_shader, sx + 18.0, sy + 12.0, 8.0, 6.0, [60, 60, 60, 255], sw, sh);
+                } else if i == 2 {
+                    draw_rect(ui_shader, sx + 17.0, sy + 10.0, 12.0, 12.0, [60, 60, 60, 255], sw, sh);
+                    draw_rect(ui_shader, sx + 12.0, sy + 24.0, 22.0, 14.0, [60, 60, 60, 255], sw, sh);
+                }
+            }
+
+            // Right Panel (Session & Player List)
+            let panel_w = 380.0;
+            let panel_h = sh - 100.0;
+            let panel_x = sw - panel_w - 40.0;
+            let panel_y = 50.0;
+
+            draw_rect(ui_shader, panel_x - 2.0, panel_y - 2.0, panel_w + 4.0, panel_h + 4.0, [20, 20, 20, 255], sw, sh);
+            draw_rect(ui_shader, panel_x, panel_y, panel_w, panel_h, [49, 49, 49, 230], sw, sh);
+
+            draw_text(font_tex, "World Session", panel_x + 20.0, panel_y + 15.0, 20.0, tex_shader, sw, sh);
+            draw_rect(ui_shader, panel_x + 10.0, panel_y + 45.0, panel_w - 20.0, 2.0, [80, 80, 80, 255], sw, sh);
+
+            draw_text(font_tex, "Bedrock / Java Multiplayer: Active", panel_x + 20.0, panel_y + 65.0, 15.0, tex_shader, sw, sh);
+            draw_text(font_tex, "Players in My World", panel_x + 20.0, panel_y + 110.0, 16.0, tex_shader, sw, sh);
+
+            let py = panel_y + 140.0;
+            draw_rect(ui_shader, panel_x + 10.0, py, panel_w - 20.0, 50.0, [60, 60, 60, 255], sw, sh);
+            draw_rect(ui_shader, panel_x + 20.0, py + 10.0, 30.0, 30.0, [200, 150, 100, 255], sw, sh);
+            draw_text(font_tex, "Player (Host)", panel_x + 60.0, py + 17.0, 18.0, tex_shader, sw, sh);
+        }
+
+        PauseSubMenu::Settings => {
+            let panel_w = (sw * 0.75).clamp(450.0, 900.0);
+            let panel_h = (sh * 0.8).clamp(350.0, 700.0);
+            let panel_x = (sw - panel_w) / 2.0;
+            let panel_y = (sh - panel_h) / 2.0;
+
+            draw_rect(ui_shader, panel_x - 2.0, panel_y - 2.0, panel_w + 4.0, panel_h + 4.0, [20, 20, 20, 255], sw, sh);
+            draw_rect(ui_shader, panel_x, panel_y, panel_w, panel_h, [40, 42, 46, 245], sw, sh);
+
+            draw_text(font_tex, "SETTINGS - GRAPHICS & VIDEO", panel_x + 30.0, panel_y + 25.0, 22.0, tex_shader, sw, sh);
+            draw_rect(ui_shader, panel_x + 20.0, panel_y + 60.0, panel_w - 40.0, 2.0, [80, 80, 80, 255], sw, sh);
+
+            // Setting 1: Render Distance
+            let rdist_label = format!("Render Distance: {} Chunks", render_dist);
+            draw_text(font_tex, &rdist_label, panel_x + 40.0, panel_y + 90.0, 18.0, tex_shader, sw, sh);
+            let distances = [4, 6, 8, 12];
+            for (i, d) in distances.iter().enumerate() {
+                let bx = panel_x + 340.0 + i as f32 * 75.0;
+                let active = *d == render_dist;
+                let col = if active { [40, 160, 80, 255] } else { [100, 100, 100, 255] };
+                draw_rect(ui_shader, bx, panel_y + 82.0, 65.0, 32.0, col, sw, sh);
+                draw_text(font_tex, &format!("{}c", d), bx + 20.0, panel_y + 90.0, 16.0, tex_shader, sw, sh);
+            }
+
+            // Setting 2: FOV
+            let fov_label = format!("Field of View: {} deg", fov as i32);
+            draw_text(font_tex, &fov_label, panel_x + 40.0, panel_y + 145.0, 18.0, tex_shader, sw, sh);
+            let fovs = [70, 80, 90, 100];
+            for (i, f) in fovs.iter().enumerate() {
+                let bx = panel_x + 340.0 + i as f32 * 75.0;
+                let active = (*f as f32 - fov).abs() < 1.0;
+                let col = if active { [40, 160, 80, 255] } else { [100, 100, 100, 255] };
+                draw_rect(ui_shader, bx, panel_y + 137.0, 65.0, 32.0, col, sw, sh);
+                draw_text(font_tex, &format!("{} deg", f), bx + 12.0, panel_y + 145.0, 15.0, tex_shader, sw, sh);
+            }
+
+            // Setting 3: Fancy Graphics Toggle
+            let gfx_label = format!("Graphics Quality: {}", if fancy_gfx { "Fancy" } else { "Fast" });
+            draw_text(font_tex, &gfx_label, panel_x + 40.0, panel_y + 200.0, 18.0, tex_shader, sw, sh);
+            let gfx_col = if fancy_gfx { [40, 160, 80, 255] } else { [140, 60, 60, 255] };
+            draw_rect(ui_shader, panel_x + 340.0, panel_y + 192.0, 160.0, 32.0, gfx_col, sw, sh);
+            draw_text(font_tex, if fancy_gfx { "TOGGLE: FANCY" } else { "TOGGLE: FAST" }, panel_x + 350.0, panel_y + 200.0, 14.0, tex_shader, sw, sh);
+
+            // Java Exporter Action
+            draw_bedrock_button(ui_shader, tex_shader, font_tex, panel_x + 40.0, panel_y + 260.0, 380.0, 40.0, "Export World to Java MCA Format", sw, sh);
+
+            if !export_status.is_empty() {
+                draw_text(font_tex, export_status, panel_x + 440.0, panel_y + 272.0, 16.0, tex_shader, sw, sh);
+            }
+
+            // Back button
+            draw_bedrock_button(ui_shader, tex_shader, font_tex, panel_x + 40.0, panel_y + panel_h - 60.0, 180.0, 40.0, "< Back", sw, sh);
+        }
+
+        PauseSubMenu::WorldInfo => {
+            let panel_w = (sw * 0.75).clamp(450.0, 900.0);
+            let panel_h = (sh * 0.75).clamp(350.0, 700.0);
+            let panel_x = (sw - panel_w) / 2.0;
+            let panel_y = (sh - panel_h) / 2.0;
+
+            draw_rect(ui_shader, panel_x - 2.0, panel_y - 2.0, panel_w + 4.0, panel_h + 4.0, [20, 20, 20, 255], sw, sh);
+            draw_rect(ui_shader, panel_x, panel_y, panel_w, panel_h, [40, 42, 46, 245], sw, sh);
+
+            draw_text(font_tex, "WORLD INFO & JAVA MCA COMPATIBILITY", panel_x + 30.0, panel_y + 25.0, 22.0, tex_shader, sw, sh);
+            draw_rect(ui_shader, panel_x + 20.0, panel_y + 60.0, panel_w - 40.0, 2.0, [80, 80, 80, 255], sw, sh);
+
+            let seed_str = format!("World Random Seed: {}", world_seed);
+            draw_text(font_tex, &seed_str, panel_x + 40.0, panel_y + 90.0, 18.0, tex_shader, sw, sh);
+
+            draw_text(font_tex, "Format Target: Minecraft Java pre-1.18 Anvil (.mca)", panel_x + 40.0, panel_y + 130.0, 18.0, tex_shader, sw, sh);
+            draw_text(font_tex, "World Height Range: Y 0 to 255 (16 Sections per Chunk)", panel_x + 40.0, panel_y + 165.0, 16.0, tex_shader, sw, sh);
+
+            let mobs_str = format!("Active Entities & Mobs in Memory: {}", mobs_count);
+            draw_text(font_tex, &mobs_str, panel_x + 40.0, panel_y + 200.0, 16.0, tex_shader, sw, sh);
+
+            draw_bedrock_button(ui_shader, tex_shader, font_tex, panel_x + 40.0, panel_y + 250.0, 360.0, 44.0, "Export World to Java 1.17 MCA", sw, sh);
+
+            if !export_status.is_empty() {
+                draw_text(font_tex, export_status, panel_x + 40.0, panel_y + 310.0, 16.0, tex_shader, sw, sh);
+            }
+
+            draw_bedrock_button(ui_shader, tex_shader, font_tex, panel_x + 40.0, panel_y + panel_h - 60.0, 180.0, 40.0, "< Back", sw, sh);
+        }
+
+        PauseSubMenu::Profile => {
+            let panel_w = (sw * 0.75).clamp(450.0, 900.0);
+            let panel_h = (sh * 0.75).clamp(350.0, 700.0);
+            let panel_x = (sw - panel_w) / 2.0;
+            let panel_y = (sh - panel_h) / 2.0;
+
+            draw_rect(ui_shader, panel_x - 2.0, panel_y - 2.0, panel_w + 4.0, panel_h + 4.0, [20, 20, 20, 255], sw, sh);
+            draw_rect(ui_shader, panel_x, panel_y, panel_w, panel_h, [40, 42, 46, 245], sw, sh);
+
+            draw_text(font_tex, "PROFILE & CHARACTER SKINS", panel_x + 30.0, panel_y + 25.0, 22.0, tex_shader, sw, sh);
+            draw_rect(ui_shader, panel_x + 20.0, panel_y + 60.0, panel_w - 40.0, 2.0, [80, 80, 80, 255], sw, sh);
+
+            draw_text(font_tex, "Select Active Character Skin:", panel_x + 40.0, panel_y + 90.0, 18.0, tex_shader, sw, sh);
+
+            let skins = ["Steve", "Alex", "Farmer", "Guard", "Golem"];
+            for (i, skin_name) in skins.iter().enumerate() {
+                let bx = panel_x + 40.0 + i as f32 * 125.0;
+                let is_sel = (i as u8) == selected_skin;
+                let col = if is_sel { [40, 160, 80, 255] } else { [80, 80, 80, 255] };
+
+                draw_rect(ui_shader, bx, panel_y + 130.0, 115.0, 120.0, col, sw, sh);
+                draw_rect(ui_shader, bx + 10.0, panel_y + 140.0, 95.0, 70.0, [120, 120, 140, 255], sw, sh);
+                draw_text(font_tex, skin_name, bx + 20.0, panel_y + 220.0, 16.0, tex_shader, sw, sh);
+            }
+
+            draw_bedrock_button(ui_shader, tex_shader, font_tex, panel_x + 40.0, panel_y + panel_h - 60.0, 180.0, 40.0, "< Back", sw, sh);
         }
     }
+}
 
-    // 3. Right Panel (Friends / Session)
-    let panel_w = 380.0;
-    let panel_h = sh - 100.0;
-    let panel_x = sw - panel_w - 40.0;
-    let panel_y = 50.0;
-
-    // Panel background
-    draw_rect(
-        ui_shader,
-        panel_x - 2.0,
-        panel_y - 2.0,
-        panel_w + 4.0,
-        panel_h + 4.0,
-        [20, 20, 20, 255],
-        sw,
-        sh,
-    );
-    draw_rect(
-        ui_shader,
-        panel_x,
-        panel_y,
-        panel_w,
-        panel_h,
-        [49, 49, 49, 230],
-        sw,
-        sh,
-    );
-
-    // Header
-    draw_text(
-        font_tex,
-        "Friends (12)",
-        panel_x + 20.0,
-        panel_y + 15.0,
-        20.0,
-        tex_shader,
-        sw,
-        sh,
-    );
-    draw_rect(
-        ui_shader,
-        panel_x + 10.0,
-        panel_y + 45.0,
-        panel_w - 20.0,
-        2.0,
-        [80, 80, 80, 255],
-        sw,
-        sh,
-    );
-
-    draw_text(
-        font_tex,
-        "Invite to Game",
-        panel_x + 60.0,
-        panel_y + 70.0,
-        18.0,
-        tex_shader,
-        sw,
-        sh,
-    );
-    draw_text(
-        font_tex,
-        "Players in My World",
-        panel_x + 20.0,
-        panel_y + 120.0,
-        16.0,
-        tex_shader,
-        sw,
-        sh,
-    );
-
-    // Player row
-    let py = panel_y + 150.0;
-    draw_rect(
-        ui_shader,
-        panel_x + 10.0,
-        py,
-        panel_w - 20.0,
-        50.0,
-        [60, 60, 60, 255],
-        sw,
-        sh,
-    );
-    // Head icon
-    draw_rect(
-        ui_shader,
-        panel_x + 20.0,
-        py + 10.0,
-        30.0,
-        30.0,
-        [200, 150, 100, 255],
-        sw,
-        sh,
-    );
-    draw_text(
-        font_tex,
-        "Grog Grog",
-        panel_x + 60.0,
-        py + 17.0,
-        18.0,
-        tex_shader,
-        sw,
-        sh,
-    );
-
-    // Bottom centered text
-    draw_text(
-        font_tex,
-        "Game is paused",
-        sw / 2.0 - 60.0,
-        sh - 40.0,
-        18.0,
-        tex_shader,
-        sw,
-        sh,
-    );
+fn draw_bedrock_button(
+    ui_shader: &Shader,
+    tex_shader: &Shader,
+    font_tex: &Texture2D,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    label: &str,
+    sw: f32,
+    sh: f32,
+) {
+    draw_rect(ui_shader, x - 2.0, y - 2.0, w + 4.0, h + 4.0, [20, 20, 20, 255], sw, sh);
+    draw_rect(ui_shader, x, y, w, h, [198, 198, 198, 255], sw, sh);
+    draw_rect(ui_shader, x + 2.0, y + 2.0, w - 4.0, h - 4.0, [110, 110, 110, 255], sw, sh);
+    let text_sz = 18.0;
+    let text_x = x + (w - label.len() as f32 * text_sz * 0.55) / 2.0;
+    draw_text(font_tex, label, text_x, y + (h - text_sz) / 2.0, text_sz, tex_shader, sw, sh);
 }
 
 fn main() {
@@ -1764,6 +1714,12 @@ fn main() {
     let mut left_mouse_held = false;
     let mut crafting_table_open = false;
     let mut craft_table_slots = [None::<ItemStack>; 10]; // 0-8: 3x3 grid, 9: output
+    let mut pause_sub_menu = PauseSubMenu::Main;
+    let mut render_dist_setting = 8i32;
+    let mut fov_setting = 80.0f32;
+    let mut fancy_gfx_setting = true;
+    let mut export_status_msg = String::new();
+    let mut selected_skin = 0u8;
     let mut prev_gp_lt = -1.0f32;
     let mut prev_gp_dpad_right = false;
     let mut prev_gp_dpad_left = false;
@@ -1915,8 +1871,12 @@ fn main() {
                 glfw::WindowEvent::Size(..) => {}
                 glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                     if game_state == GameState::Paused {
-                        game_state = GameState::Playing;
-                        window.set_cursor_mode(glfw::CursorMode::Disabled);
+                        if pause_sub_menu != PauseSubMenu::Main {
+                            pause_sub_menu = PauseSubMenu::Main;
+                        } else {
+                            game_state = GameState::Playing;
+                            window.set_cursor_mode(glfw::CursorMode::Disabled);
+                        }
                     } else if game_state == GameState::Playing {
                         if crafting_table_open {
                             ct_close(&mut craft_table_slots, &mut inv_slots);
@@ -2102,26 +2062,119 @@ fn main() {
                         }
                     } else if game_state == GameState::Paused && action == Action::Press && left {
                         let inner_win_size = window.get_size();
-                        let _sw = inner_win_size.0 as f32;
+                        let sw = inner_win_size.0 as f32;
                         let sh = inner_win_size.1 as f32;
                         let mx = last_cursor_pos.0 as f32;
                         let my = last_cursor_pos.1 as f32;
 
-                        let btn_w = 340.0;
-                        let btn_h = 44.0;
-                        let btn_x = 100.0;
-                        let btn_y_start = sh / 2.0 - 100.0;
+                        match pause_sub_menu {
+                            PauseSubMenu::Main => {
+                                let btn_w = 340.0;
+                                let btn_h = 44.0;
+                                let btn_x = 100.0;
+                                let btn_y_start = sh / 2.0 - 130.0;
 
-                        for i in 0..4 {
-                            let y = btn_y_start + i as f32 * (btn_h + 12.0);
-                            if mx >= btn_x && mx <= btn_x + btn_w && my >= y && my <= y + btn_h {
-                                if i == 0 {
-                                    // Resume
-                                    game_state = GameState::Playing;
-                                    window.set_cursor_mode(glfw::CursorMode::Disabled);
-                                } else if i == 3 {
-                                    // Save & Quit
-                                    window.set_should_close(true);
+                                for i in 0..5 {
+                                    let y = btn_y_start + i as f32 * (btn_h + 10.0);
+                                    if mx >= btn_x && mx <= btn_x + btn_w && my >= y && my <= y + btn_h {
+                                        match i {
+                                            0 => {
+                                                game_state = GameState::Playing;
+                                                window.set_cursor_mode(glfw::CursorMode::Disabled);
+                                            }
+                                            1 => { pause_sub_menu = PauseSubMenu::Settings; }
+                                            2 => { pause_sub_menu = PauseSubMenu::WorldInfo; }
+                                            3 => { pause_sub_menu = PauseSubMenu::Profile; }
+                                            4 => { window.set_should_close(true); }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+
+                                let sbtn_s = 44.0;
+                                for i in 0..3 {
+                                    let sx = btn_x + i as f32 * (sbtn_s + 10.0);
+                                    let sy = sh - 70.0;
+                                    if mx >= sx && mx <= sx + sbtn_s && my >= sy && my <= sy + sbtn_s {
+                                        if i == 1 { pause_sub_menu = PauseSubMenu::Settings; }
+                                        else if i == 2 { pause_sub_menu = PauseSubMenu::Profile; }
+                                    }
+                                }
+                            }
+                            PauseSubMenu::Settings => {
+                                let panel_w = (sw * 0.75).clamp(450.0, 900.0);
+                                let panel_h = (sh * 0.8).clamp(350.0, 700.0);
+                                let panel_x = (sw - panel_w) / 2.0;
+                                let panel_y = (sh - panel_h) / 2.0;
+
+                                let distances = [4, 6, 8, 12];
+                                for (i, d) in distances.iter().enumerate() {
+                                    let bx = panel_x + 340.0 + i as f32 * 75.0;
+                                    let by = panel_y + 82.0;
+                                    if mx >= bx && mx <= bx + 65.0 && my >= by && my <= by + 32.0 {
+                                        render_dist_setting = *d;
+                                    }
+                                }
+
+                                let fovs = [70.0, 80.0, 90.0, 100.0];
+                                for (i, f) in fovs.iter().enumerate() {
+                                    let bx = panel_x + 340.0 + i as f32 * 75.0;
+                                    let by = panel_y + 137.0;
+                                    if mx >= bx && mx <= bx + 65.0 && my >= by && my <= by + 32.0 {
+                                        fov_setting = *f;
+                                    }
+                                }
+
+                                if mx >= panel_x + 340.0 && mx <= panel_x + 500.0 && my >= panel_y + 192.0 && my <= panel_y + 224.0 {
+                                    fancy_gfx_setting = !fancy_gfx_setting;
+                                }
+
+                                if mx >= panel_x + 40.0 && mx <= panel_x + 420.0 && my >= panel_y + 260.0 && my <= panel_y + 300.0 {
+                                    let config = java_compat::ExportConfig { output_dir: std::path::PathBuf::from("java17_world"), radius: 4 };
+                                    match java_compat::export_classic_java_world(world_seed as u64, &config) {
+                                        Ok(summary) => export_status_msg = format!("Exported {} chunks!", summary.chunks),
+                                        Err(e) => export_status_msg = format!("Export failed: {e}"),
+                                    }
+                                }
+
+                                if mx >= panel_x + 40.0 && mx <= panel_x + 220.0 && my >= panel_y + panel_h - 60.0 && my <= panel_y + panel_h - 20.0 {
+                                    pause_sub_menu = PauseSubMenu::Main;
+                                }
+                            }
+                            PauseSubMenu::WorldInfo => {
+                                let panel_w = (sw * 0.75).clamp(450.0, 900.0);
+                                let panel_h = (sh * 0.75).clamp(350.0, 700.0);
+                                let panel_x = (sw - panel_w) / 2.0;
+                                let panel_y = (sh - panel_h) / 2.0;
+
+                                if mx >= panel_x + 40.0 && mx <= panel_x + 400.0 && my >= panel_y + 250.0 && my <= panel_y + 294.0 {
+                                    let config = java_compat::ExportConfig { output_dir: std::path::PathBuf::from("java17_world"), radius: 4 };
+                                    match java_compat::export_classic_java_world(world_seed as u64, &config) {
+                                        Ok(summary) => export_status_msg = format!("Exported {} MCA chunks!", summary.chunks),
+                                        Err(e) => export_status_msg = format!("Export error: {e}"),
+                                    }
+                                }
+
+                                if mx >= panel_x + 40.0 && mx <= panel_x + 220.0 && my >= panel_y + panel_h - 60.0 && my <= panel_y + panel_h - 20.0 {
+                                    pause_sub_menu = PauseSubMenu::Main;
+                                }
+                            }
+                            PauseSubMenu::Profile => {
+                                let panel_w = (sw * 0.75).clamp(450.0, 900.0);
+                                let panel_h = (sh * 0.75).clamp(350.0, 700.0);
+                                let panel_x = (sw - panel_w) / 2.0;
+                                let panel_y = (sh - panel_h) / 2.0;
+
+                                for i in 0..5 {
+                                    let bx = panel_x + 40.0 + i as f32 * 125.0;
+                                    let by = panel_y + 130.0;
+                                    if mx >= bx && mx <= bx + 115.0 && my >= by && my <= by + 120.0 {
+                                        selected_skin = i as u8;
+                                    }
+                                }
+
+                                if mx >= panel_x + 40.0 && mx <= panel_x + 220.0 && my >= panel_y + panel_h - 60.0 && my <= panel_y + panel_h - 20.0 {
+                                    pause_sub_menu = PauseSubMenu::Main;
                                 }
                             }
                         }
@@ -3432,6 +3485,14 @@ fn main() {
                 &font_texture,
                 win_width as f32,
                 win_height as f32,
+                pause_sub_menu,
+                world_seed as u64,
+                world.mobs.len(),
+                &export_status_msg,
+                selected_skin,
+                render_dist_setting,
+                fov_setting,
+                fancy_gfx_setting,
             );
         }
 

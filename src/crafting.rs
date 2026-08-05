@@ -442,6 +442,101 @@ const RECIPES: &[Recipe] = &[
         output_count: 9,
         mirror: false,
     },
+    // Gold Ore block from 9 Gold Ingots
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                GoldIngot, GoldIngot, GoldIngot, GoldIngot, GoldIngot, GoldIngot, GoldIngot,
+                GoldIngot, GoldIngot,
+            ],
+        },
+        output: GoldOre,
+        output_count: 1,
+        mirror: false,
+    },
+    // Gold Ore -> 9 Gold Ingots
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[GoldOre],
+        },
+        output: GoldIngot,
+        output_count: 9,
+        mirror: false,
+    },
+    // Diamond Ore block from 9 Diamonds
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                Diamond, Diamond, Diamond, Diamond, Diamond, Diamond, Diamond, Diamond, Diamond,
+            ],
+        },
+        output: DiamondOre,
+        output_count: 1,
+        mirror: false,
+    },
+    // Diamond Ore -> 9 Diamonds
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[DiamondOre],
+        },
+        output: Diamond,
+        output_count: 9,
+        mirror: false,
+    },
+    // Coal Ore block from 9 Coal
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[Coal, Coal, Coal, Coal, Coal, Coal, Coal, Coal, Coal],
+        },
+        output: CoalOre,
+        output_count: 1,
+        mirror: false,
+    },
+    // Coal Ore -> 9 Coal
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[CoalOre],
+        },
+        output: Coal,
+        output_count: 9,
+        mirror: false,
+    },
+    // Redstone Ore block from 9 Redstone Dust
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+            ],
+        },
+        output: RedstoneOre,
+        output_count: 1,
+        mirror: false,
+    },
+    // Redstone Ore -> 9 Redstone Dust
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[RedstoneOre],
+        },
+        output: RedstoneDust,
+        output_count: 9,
+        mirror: false,
+    },
     // Sandstone from 4 sand
     Recipe {
         shape: RecipeShape::Shaped {
@@ -466,6 +561,32 @@ const RECIPES: &[Recipe] = &[
     },
     // Brick block from 4 bricks (we don't have clay brick items, so skip for now)
 
+    // === Flint & Steel ===
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[IronIngot, Gravel],
+        },
+        output: FlintAndSteel,
+        output_count: 1,
+        mirror: false,
+    },
+    // === Mossy Cobblestone ===
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Cobblestone, OakLeaves],
+        },
+        output: MossyCobblestone,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Cobblestone, SpruceLeaves],
+        },
+        output: MossyCobblestone,
+        output_count: 1,
+        mirror: false,
+    },
     // === TNT ===
     // TNT: X pattern of gunpowder and sand
     Recipe {
@@ -496,6 +617,38 @@ const RECIPES: &[Recipe] = &[
         mirror: false,
     },
 ];
+
+// ── Furnace Smelting & Fuel Database ─────────────────────────────────────────
+
+/// Returns the smelted output item and count for a given raw block or item.
+pub fn smelt_item(input: BlockType) -> Option<(BlockType, u8)> {
+    match input {
+        RawIron | IronOre => Some((IronIngot, 1)),
+        GoldOre => Some((GoldIngot, 1)),
+        Cobblestone => Some((Stone, 1)),
+        Sand => Some((Glass, 1)),
+        Clay => Some((Brick, 1)),
+        OakLog | SpruceLog => Some((Coal, 1)),
+        Cactus => Some((Sand, 1)),
+        _ => None,
+    }
+}
+
+/// Returns true if the block/item can be burned as fuel in a furnace.
+pub fn is_furnace_fuel(fuel: BlockType) -> bool {
+    fuel_burn_time(fuel) > 0.0
+}
+
+/// Returns the burn duration in seconds for a fuel item.
+pub fn fuel_burn_time(fuel: BlockType) -> f32 {
+    match fuel {
+        Coal => 80.0,
+        OakLog | SpruceLog | OakPlanks | CraftingTable | Chest | Bookshelf => 15.0,
+        Stick => 5.0,
+        WoodPickaxe | WoodAxe | WoodShovel | WoodSword | WoodHoe => 10.0,
+        _ => 0.0,
+    }
+}
 
 // ── Recipe matching engine ──────────────────────────────────────────────────
 
@@ -1612,5 +1765,63 @@ mod tests {
     fn test_all_none_grid() {
         let grid = vec![None; 9];
         assert_eq!(find_recipe(&grid, 3, 3), None);
+    }
+
+    #[test]
+    fn test_smelting_inputs() {
+        assert_eq!(smelt_item(RawIron), Some((IronIngot, 1)));
+        assert_eq!(smelt_item(IronOre), Some((IronIngot, 1)));
+        assert_eq!(smelt_item(GoldOre), Some((GoldIngot, 1)));
+        assert_eq!(smelt_item(Cobblestone), Some((Stone, 1)));
+        assert_eq!(smelt_item(Sand), Some((Glass, 1)));
+        assert_eq!(smelt_item(Clay), Some((Brick, 1)));
+        assert_eq!(smelt_item(OakLog), Some((Coal, 1)));
+        assert_eq!(smelt_item(Dirt), None);
+    }
+
+    #[test]
+    fn test_furnace_fuels() {
+        assert!(is_furnace_fuel(Coal));
+        assert_eq!(fuel_burn_time(Coal), 80.0);
+        assert!(is_furnace_fuel(OakLog));
+        assert_eq!(fuel_burn_time(OakLog), 15.0);
+        assert!(is_furnace_fuel(Stick));
+        assert_eq!(fuel_burn_time(Stick), 5.0);
+        assert!(is_furnace_fuel(WoodPickaxe));
+        assert_eq!(fuel_burn_time(WoodPickaxe), 10.0);
+        assert!(!is_furnace_fuel(Stone));
+        assert_eq!(fuel_burn_time(Stone), 0.0);
+    }
+
+    #[test]
+    fn test_flint_and_steel_recipe() {
+        let grid = vec![s(IronIngot), s(Gravel)];
+        let result = find_recipe(&grid, 2, 1);
+        assert_eq!(result, Some((FlintAndSteel, 1)));
+    }
+
+    #[test]
+    fn test_mossy_cobblestone_recipe() {
+        let grid = vec![s(Cobblestone), s(OakLeaves)];
+        let result = find_recipe(&grid, 2, 1);
+        assert_eq!(result, Some((MossyCobblestone, 1)));
+    }
+
+    #[test]
+    fn test_compacting_and_decrafting() {
+        // 9 Coal -> CoalOre
+        let grid = vec![s(Coal); 9];
+        let result = find_recipe(&grid, 3, 3);
+        assert_eq!(result, Some((CoalOre, 1)));
+
+        // 1 CoalOre -> 9 Coal
+        let grid = vec![s(CoalOre)];
+        let result = find_recipe(&grid, 1, 1);
+        assert_eq!(result, Some((Coal, 9)));
+
+        // 9 Diamond -> DiamondOre
+        let grid = vec![s(Diamond); 9];
+        let result = find_recipe(&grid, 3, 3);
+        assert_eq!(result, Some((DiamondOre, 1)));
     }
 }
