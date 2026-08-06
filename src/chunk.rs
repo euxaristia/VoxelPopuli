@@ -334,42 +334,124 @@ fn compute_lighting(
 pub struct MeshSnapshot {
     pub x: i32,
     pub z: i32,
-    blocks: Box<[[[BlockType; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]>,
-    light: Box<[[[u8; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]>,
-    liquid: Box<[[[u8; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]>,
+    // Flat, x-major/y-mid/z-minor buffers (see `flat_idx`) instead of nested
+    // fixed-size arrays. `Box::new([[[T; SNAP_D]; CHUNK_HEIGHT]; SNAP_W])`
+    // measured at ~1.5ms/chunk on its own (see capture-probe telemetry from
+    // the flying-forward stutter investigation): the compiler doesn't turn a
+    // ~83k-element nested-array literal into a heap-direct memset, so it
+    // gets materialized somewhere first and then copied into the Box. A
+    // flat `vec![default; N].into_boxed_slice()` allocates and fills the
+    // heap buffer directly (LLVM lowers a uniform fill to memset), which is
+    // the actual majority of `capture`'s per-chunk cost, dwarfing the
+    // neighbor-copy loop below it.
+    blocks: Box<[BlockType]>,
+    light: Box<[u8]>,
+    liquid: Box<[u8]>,
+}
+
+const SNAP_LEN: usize = SNAP_W * CHUNK_HEIGHT * SNAP_D;
+
+#[inline]
+fn flat_idx(sx: usize, y: usize, sz: usize) -> usize {
+    (sx * CHUNK_HEIGHT + y) * SNAP_D + sz
 }
 
 impl MeshSnapshot {
     pub fn capture(world: &crate::world::World, cx: i32, cz: i32) -> Self {
-        let mut snap = Self {
-            x: cx,
-            z: cz,
-            blocks: Box::new([[[BlockType::Air; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]),
-            light: Box::new([[[15u8; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]),
-            liquid: Box::new([[[0u8; SNAP_D]; CHUNK_HEIGHT]; SNAP_W]),
-        };
-
         let mut neighbors: [[Option<&Chunk>; 3]; 3] = [[None; 3]; 3];
         for (dx, row) in neighbors.iter_mut().enumerate() {
             for (dz, slot) in row.iter_mut().enumerate() {
                 *slot = world.get_chunk(cx + dx as i32 - 1, cz + dz as i32 - 1);
             }
         }
+        Self::build(cx, cz, neighbors, |wx, wy, wz| world.get_block(wx, wy, wz))
+    }
 
-        for sx in 0..SNAP_W {
-            let lx = sx as i32 - 1;
-            let dx = lx.div_euclid(CHUNK_WIDTH as i32);
-            let bx = lx.rem_euclid(CHUNK_WIDTH as i32) as usize;
-            for sz in 0..SNAP_D {
-                let lz = sz as i32 - 1;
-                let dz = lz.div_euclid(CHUNK_DEPTH as i32);
-                let bz = lz.rem_euclid(CHUNK_DEPTH as i32) as usize;
+    /// Assembles a snapshot from an already-resolved 3x3 neighbor grid (indices
+    /// 0..3 map to world-chunk offsets -1..1 on each axis) plus a fallback for
+    /// blocks outside any loaded neighbor. Split out from `capture` so the
+    /// indexing logic can be unit tested without a live `World`.
+    fn build(
+        cx: i32,
+        cz: i32,
+        neighbors: [[Option<&Chunk>; 3]; 3],
+        fallback_block: impl Fn(i32, i32, i32) -> BlockType,
+    ) -> Self {
+        let mut snap = Self {
+            x: cx,
+            z: cz,
+            blocks: vec![BlockType::Air; SNAP_LEN].into_boxed_slice(),
+            light: vec![15u8; SNAP_LEN].into_boxed_slice(),
+            liquid: vec![0u8; SNAP_LEN].into_boxed_slice(),
+        };
+
+        // Fast path: the dz=0 neighbor row (west/center/east) contributes a
+        // full 16-wide run of contiguous z values at every (bx, y), matching
+        // storage's z-innermost layout, so it can be bulk-copied with slice
+        // copies instead of per-element assignment. This is the dominant
+        // share of the snapshot (the center chunk alone is ~79% of it).
+        for (dxn, row) in neighbors.iter().enumerate() {
+            let (sx_start, bx_range) = match dxn {
+                0 => (0usize, (CHUNK_WIDTH - 1)..CHUNK_WIDTH),
+                1 => (1usize, 0..CHUNK_WIDTH),
+                _ => (SNAP_W - 1, 0..1),
+            };
+            match row[1] {
+                Some(c) => {
+                    for (i, bx) in bx_range.clone().enumerate() {
+                        let sx = sx_start + i;
+                        for y in 0..CHUNK_HEIGHT {
+                            let base = flat_idx(sx, y, 1);
+                            snap.blocks[base..base + CHUNK_DEPTH].copy_from_slice(&c.blocks[bx][y]);
+                            snap.light[base..base + CHUNK_DEPTH].copy_from_slice(&c.light[bx][y]);
+                            snap.liquid[base..base + CHUNK_DEPTH]
+                                .copy_from_slice(&c.liquid_levels[bx][y]);
+                        }
+                    }
+                }
+                None => {
+                    for (i, _bx) in bx_range.clone().enumerate() {
+                        let sx = sx_start + i;
+                        let lx = sx as i32 - 1;
+                        let wx = cx * CHUNK_WIDTH as i32 + lx;
+                        for sz in 1..(1 + CHUNK_DEPTH) {
+                            let lz = sz as i32 - 1;
+                            let wz = cz * CHUNK_DEPTH as i32 + lz;
+                            for y in 0..CHUNK_HEIGHT {
+                                let block = fallback_block(wx, y as i32, wz);
+                                let idx = flat_idx(sx, y, sz);
+                                snap.blocks[idx] = block;
+                                snap.liquid[idx] =
+                                    if block == BlockType::Water || block == BlockType::Lava {
+                                        WATER_SOURCE
+                                    } else {
+                                        0
+                                    };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remaining cells: the two z-border rows (sz=0 and sz=SNAP_D-1,
+        // including corners). A fixed bz makes the source non-contiguous
+        // across bx here, so these stay per-element like the original loop.
+        for sz in [0usize, SNAP_D - 1] {
+            let lz = sz as i32 - 1;
+            let dz = lz.div_euclid(CHUNK_DEPTH as i32);
+            let bz = lz.rem_euclid(CHUNK_DEPTH as i32) as usize;
+            for sx in 0..SNAP_W {
+                let lx = sx as i32 - 1;
+                let dx = lx.div_euclid(CHUNK_WIDTH as i32);
+                let bx = lx.rem_euclid(CHUNK_WIDTH as i32) as usize;
                 match neighbors[(dx + 1) as usize][(dz + 1) as usize] {
                     Some(c) => {
                         for y in 0..CHUNK_HEIGHT {
-                            snap.blocks[sx][y][sz] = c.blocks[bx][y][bz];
-                            snap.light[sx][y][sz] = c.light[bx][y][bz];
-                            snap.liquid[sx][y][sz] = c.liquid_levels[bx][y][bz];
+                            let idx = flat_idx(sx, y, sz);
+                            snap.blocks[idx] = c.blocks[bx][y][bz];
+                            snap.light[idx] = c.light[bx][y][bz];
+                            snap.liquid[idx] = c.liquid_levels[bx][y][bz];
                         }
                     }
                     None => {
@@ -379,9 +461,10 @@ impl MeshSnapshot {
                         let wx = cx * CHUNK_WIDTH as i32 + lx;
                         let wz = cz * CHUNK_DEPTH as i32 + lz;
                         for y in 0..CHUNK_HEIGHT {
-                            let block = world.get_block(wx, y as i32, wz);
-                            snap.blocks[sx][y][sz] = block;
-                            snap.liquid[sx][y][sz] =
+                            let block = fallback_block(wx, y as i32, wz);
+                            let idx = flat_idx(sx, y, sz);
+                            snap.blocks[idx] = block;
+                            snap.liquid[idx] =
                                 if block == BlockType::Water || block == BlockType::Lava {
                                     WATER_SOURCE
                                 } else {
@@ -411,7 +494,7 @@ impl MeshSnapshot {
             return BlockType::Air;
         }
         match self.local(wx, wz) {
-            Some((lx, lz)) => self.blocks[lx][wy as usize][lz],
+            Some((lx, lz)) => self.blocks[flat_idx(lx, wy as usize, lz)],
             None => BlockType::Air,
         }
     }
@@ -421,7 +504,7 @@ impl MeshSnapshot {
             return 15;
         }
         match self.local(wx, wz) {
-            Some((lx, lz)) => self.light[lx][wy as usize][lz],
+            Some((lx, lz)) => self.light[flat_idx(lx, wy as usize, lz)],
             None => 15,
         }
     }
@@ -431,7 +514,7 @@ impl MeshSnapshot {
             return 0;
         }
         match self.local(wx, wz) {
-            Some((lx, lz)) => self.liquid[lx][wy as usize][lz],
+            Some((lx, lz)) => self.liquid[flat_idx(lx, wy as usize, lz)],
             None => 0,
         }
     }
@@ -2167,6 +2250,146 @@ fn record_vertex_count_sample(count: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ground truth for a single snapshot cell, computed directly from the
+    /// source `Chunk` neighbor grid and the fallback function -- entirely
+    /// independent of `MeshSnapshot`'s internal storage/indexing, so it
+    /// can't share a bug with whatever representation `build` uses.
+    fn naive_lookup(
+        cx: i32,
+        cz: i32,
+        neighbors: [[Option<&Chunk>; 3]; 3],
+        fallback_block: impl Fn(i32, i32, i32) -> BlockType,
+        wx: i32,
+        wy: i32,
+        wz: i32,
+    ) -> (BlockType, u8, u8) {
+        let lx = wx - cx * CHUNK_WIDTH as i32;
+        let lz = wz - cz * CHUNK_DEPTH as i32;
+        let dx = lx.div_euclid(CHUNK_WIDTH as i32);
+        let dz = lz.div_euclid(CHUNK_DEPTH as i32);
+        let bx = lx.rem_euclid(CHUNK_WIDTH as i32) as usize;
+        let bz = lz.rem_euclid(CHUNK_DEPTH as i32) as usize;
+        match neighbors[(dx + 1) as usize][(dz + 1) as usize] {
+            Some(c) => (
+                c.blocks[bx][wy as usize][bz],
+                c.light[bx][wy as usize][bz],
+                c.liquid_levels[bx][wy as usize][bz],
+            ),
+            None => {
+                let block = fallback_block(wx, wy, wz);
+                let liquid = if block == BlockType::Water || block == BlockType::Lava {
+                    WATER_SOURCE
+                } else {
+                    0
+                };
+                (block, 15, liquid)
+            }
+        }
+    }
+
+    /// Checks `snap`'s public accessors against `naive_lookup` across the
+    /// entire 18x18xCHUNK_HEIGHT region the snapshot covers.
+    fn assert_snapshot_matches_ground_truth(
+        snap: &MeshSnapshot,
+        cx: i32,
+        cz: i32,
+        neighbors: [[Option<&Chunk>; 3]; 3],
+        fallback_block: impl Fn(i32, i32, i32) -> BlockType,
+    ) {
+        for sx in 0..SNAP_W {
+            let wx = cx * CHUNK_WIDTH as i32 + (sx as i32 - 1);
+            for sz in 0..SNAP_D {
+                let wz = cz * CHUNK_DEPTH as i32 + (sz as i32 - 1);
+                for y in 0..CHUNK_HEIGHT {
+                    let (eb, el, eliq) =
+                        naive_lookup(cx, cz, neighbors, &fallback_block, wx, y as i32, wz);
+                    assert_eq!(
+                        snap.get_block(wx, y as i32, wz),
+                        eb,
+                        "block mismatch at ({wx},{y},{wz})"
+                    );
+                    assert_eq!(
+                        snap.get_light(wx, y as i32, wz),
+                        el,
+                        "light mismatch at ({wx},{y},{wz})"
+                    );
+                    assert_eq!(
+                        snap.get_liquid_level(wx, y as i32, wz),
+                        eliq,
+                        "liquid mismatch at ({wx},{y},{wz})"
+                    );
+                }
+            }
+        }
+    }
+
+    fn distinct_chunk(cx: i32, cz: i32, seed: u64) -> Chunk {
+        let mut c = Chunk::new(cx, cz, seed);
+        for x in 0..CHUNK_WIDTH {
+            for y in 0..CHUNK_HEIGHT {
+                for z in 0..CHUNK_DEPTH {
+                    let mix = cx
+                        .wrapping_mul(131)
+                        .wrapping_add(cz.wrapping_mul(577))
+                        .wrapping_add((x * 13 + y * 3 + z * 41) as i32);
+                    c.blocks[x][y][z] =
+                        BlockType::from_u8(mix.rem_euclid(BlockType::COUNT as i32) as u8);
+                    c.light[x][y][z] = mix.rem_euclid(16) as u8;
+                    c.liquid_levels[x][y][z] = mix.rem_euclid(17) as u8;
+                }
+            }
+        }
+        c
+    }
+
+    fn fallback_air(_wx: i32, _wy: i32, _wz: i32) -> BlockType {
+        BlockType::Air
+    }
+
+    fn fallback_pattern(wx: i32, wy: i32, wz: i32) -> BlockType {
+        let mix = wx.wrapping_mul(3) ^ wy.wrapping_mul(5) ^ wz.wrapping_mul(7);
+        BlockType::from_u8(mix.rem_euclid(BlockType::COUNT as i32) as u8)
+    }
+
+    #[test]
+    fn mesh_snapshot_build_matches_naive_with_full_neighbor_grid() {
+        let seed = 42;
+        let grid: Vec<Vec<Chunk>> = (0..3)
+            .map(|dx| {
+                (0..3)
+                    .map(|dz| distinct_chunk(dx - 1, dz - 1, seed))
+                    .collect()
+            })
+            .collect();
+        let mut neighbors: [[Option<&Chunk>; 3]; 3] = [[None; 3]; 3];
+        for dx in 0..3usize {
+            for dz in 0..3usize {
+                neighbors[dx][dz] = Some(&grid[dx][dz]);
+            }
+        }
+
+        let actual = MeshSnapshot::build(0, 0, neighbors, fallback_air);
+        assert_snapshot_matches_ground_truth(&actual, 0, 0, neighbors, fallback_air);
+    }
+
+    #[test]
+    fn mesh_snapshot_build_matches_naive_with_missing_neighbors() {
+        let seed = 7;
+        let center = distinct_chunk(0, 0, seed);
+        let west = distinct_chunk(-1, 0, seed);
+        let north = distinct_chunk(0, -1, seed);
+        // East, south, and both diagonals stay unloaded so the test
+        // exercises the fallback path on both the fast-path neighbor row
+        // (west/center/east) and the z-border pass (north/south/corners).
+        let mut neighbors: [[Option<&Chunk>; 3]; 3] = [[None; 3]; 3];
+        neighbors[0][1] = Some(&west);
+        neighbors[1][1] = Some(&center);
+        neighbors[1][0] = Some(&north);
+
+        let actual = MeshSnapshot::build(0, 0, neighbors, fallback_pattern);
+        assert_snapshot_matches_ground_truth(&actual, 0, 0, neighbors, fallback_pattern);
+    }
 
     #[test]
     fn chunk_generation_is_repeatable_for_same_seed() {

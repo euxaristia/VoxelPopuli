@@ -18,6 +18,14 @@ use crate::world::{CLOUD_HEIGHT, VIEW_DISTANCE, World};
 use block::BlockType;
 use glam::{Mat4, Vec2, Vec3};
 
+// The system allocator's per-call overhead on Windows dominates
+// MeshSnapshot::capture (~1.2ms/chunk just to allocate its ~249KB of
+// scratch buffers, up to 64x/frame during chunk streaming -- see the
+// flying-forward stutter investigation). mimalloc's thread-local free
+// lists make that churn far cheaper.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(PartialEq)]
 pub enum GameState {
     Loading,
