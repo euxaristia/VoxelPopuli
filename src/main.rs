@@ -2356,6 +2356,8 @@ fn main() {
     inv_slots[2] = Some(ItemStack::new(BlockType::Bread, 16));
     inv_slots[3] = Some(ItemStack::new(BlockType::CookedPorkchop, 16));
     inv_slots[4] = Some(ItemStack::new(BlockType::IronChestplate, 1));
+    inv_slots[5] = Some(ItemStack::new(BlockType::Bow, 1));
+    inv_slots[6] = Some(ItemStack::new(BlockType::Arrow, 64));
     let mut inv_cursor: Option<ItemStack> = None;
     let mut player = Player {
         position: Vec3::new(32.5, spawn_y, 32.5),
@@ -2378,6 +2380,8 @@ fn main() {
     let mut last_cursor_pos = window.get_cursor_pos();
     let mut mining_state = mining::MiningState::new();
     let mut left_mouse_held = false;
+    let mut right_mouse_held = false;
+    let mut bow_charge = 0.0f32;
     let mut crafting_table_open = false;
     let mut craft_table_slots = [None::<ItemStack>; 10]; // 0-8: 3x3 grid, 9: output
     let mut pause_sub_menu = PauseSubMenu::Main;
@@ -2913,6 +2917,45 @@ fn main() {
                                 mining_state.reset();
                             }
                         }
+                        if right {
+                            if action == Action::Press {
+                                right_mouse_held = true;
+                            } else if action == Action::Release {
+                                right_mouse_held = false;
+                                if bow_charge > 0.1
+                                    && inv_slots[player.selected_slot]
+                                        .map_or(false, |s| s.block == BlockType::Bow)
+                                {
+                                    if let Some(arrow_idx) = inv_slots.iter().position(|slot| {
+                                        slot.map_or(false, |s| s.block == BlockType::Arrow)
+                                    }) {
+                                        let s = inv_slots[arrow_idx].as_mut().unwrap();
+                                        s.count -= 1;
+                                        if s.count == 0 {
+                                            inv_slots[arrow_idx] = None;
+                                        }
+                                        let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
+                                        let look_dir = Vec3::new(
+                                            camera_angle.y.cos() * camera_angle.x.sin(),
+                                            camera_angle.y.sin(),
+                                            camera_angle.y.cos() * camera_angle.x.cos(),
+                                        )
+                                        .normalize();
+                                        let speed = bow_charge * 30.0;
+                                        world.arrows.push(crate::block::ArrowEntity {
+                                            position: eye_pos + look_dir * 0.5,
+                                            velocity: look_dir * speed,
+                                            life: 60.0,
+                                            in_ground: false,
+                                            damage: (bow_charge * 9.0 + 1.0).round(),
+                                            is_critical: bow_charge >= 1.0,
+                                        });
+                                    }
+                                }
+                                bow_charge = 0.0;
+                            }
+                        }
+
                         if right && action == Action::Press {
                             if let Some(s) = &mut inv_slots[player.selected_slot] {
                                 if let Some(food_props) = item::food_properties(s.block)
@@ -3181,6 +3224,17 @@ fn main() {
         );
 
         if game_state == GameState::Playing {
+            if right_mouse_held
+                && inv_slots[player.selected_slot].map_or(false, |s| s.block == BlockType::Bow)
+                && inv_slots
+                    .iter()
+                    .any(|slot| slot.map_or(false, |s| s.block == BlockType::Arrow))
+            {
+                bow_charge = (bow_charge + delta_time * 1.5).min(1.0);
+            } else if !right_mouse_held {
+                bow_charge = 0.0;
+            }
+
             player.update(
                 &world,
                 move_dir,
@@ -3353,9 +3407,10 @@ fn main() {
             renderer::set_blend(false);
         }
 
-        // Render Explosives, Particles, and Village Mobs
+        // Render Explosives, Arrows, Particles, and Village Mobs
         world.render_explosives(&shader, &mvp, current_time as f32);
         world.render_particles(&shader, &mvp);
+        world.render_arrows(&shader);
         world.render_mobs(&shader, player.position);
 
         // Transparency render order depends on whether the camera is above or below
@@ -4246,6 +4301,33 @@ fn main() {
                     let empty = i >= bubbles_left;
                     draw_bubble(&ui_shader, rx, oy, bubble_size, sw, sh, empty);
                 }
+            }
+
+            if bow_charge > 0.0 {
+                let bar_w = 60.0;
+                let bar_h = 6.0;
+                let bx = sw / 2.0 - bar_w / 2.0;
+                let by = sh / 2.0 + 30.0;
+                draw_rect(
+                    &ui_shader,
+                    bx - 1.0,
+                    by - 1.0,
+                    bar_w + 2.0,
+                    bar_h + 2.0,
+                    [20, 20, 20, 255],
+                    sw,
+                    sh,
+                );
+                draw_rect(
+                    &ui_shader,
+                    bx,
+                    by,
+                    bar_w * bow_charge,
+                    bar_h,
+                    [60, 220, 80, 255],
+                    sw,
+                    sh,
+                );
             }
         }
 
