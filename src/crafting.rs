@@ -616,6 +616,239 @@ const RECIPES: &[Recipe] = &[
         output_count: 1,
         mirror: false,
     },
+    // === MC 1.0 Food & Ranged Recipes ===
+    // Bread: 3 Wheat in a row
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 1,
+            pattern: &[Wheat, Wheat, Wheat],
+        },
+        output: Bread,
+        output_count: 1,
+        mirror: false,
+    },
+    // Golden Apple: Apple surrounded by 8 Gold Ingots
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                GoldIngot, GoldIngot, GoldIngot, GoldIngot, Apple, GoldIngot, GoldIngot, GoldIngot,
+                GoldIngot,
+            ],
+        },
+        output: GoldenApple,
+        output_count: 1,
+        mirror: false,
+    },
+    // Bow: 3 Sticks & 3 Strings
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[Stick, String, Air, Stick, Air, String, Stick, String, Air],
+        },
+        output: Bow,
+        output_count: 1,
+        mirror: true,
+    },
+    // Arrow: Stick & Stick
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 1,
+            height: 2,
+            pattern: &[Stick, Stick],
+        },
+        output: Arrow,
+        output_count: 4,
+        mirror: false,
+    },
+    // === MC 1.0 Armor Recipes ===
+    // Helmets (5 materials: top 2 rows)
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[Leather, Leather, Leather, Leather, Air, Leather],
+        },
+        output: LeatherHelmet,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[IronIngot, IronIngot, IronIngot, IronIngot, Air, IronIngot],
+        },
+        output: IronHelmet,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[GoldIngot, GoldIngot, GoldIngot, GoldIngot, Air, GoldIngot],
+        },
+        output: GoldHelmet,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[Diamond, Diamond, Diamond, Diamond, Air, Diamond],
+        },
+        output: DiamondHelmet,
+        output_count: 1,
+        mirror: false,
+    },
+    // Chestplates (8 materials)
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                Leather, Air, Leather, Leather, Leather, Leather, Leather, Leather, Leather,
+            ],
+        },
+        output: LeatherChestplate,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                IronIngot, Air, IronIngot, IronIngot, IronIngot, IronIngot, IronIngot, IronIngot,
+                IronIngot,
+            ],
+        },
+        output: IronChestplate,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                GoldIngot, Air, GoldIngot, GoldIngot, GoldIngot, GoldIngot, GoldIngot, GoldIngot,
+                GoldIngot,
+            ],
+        },
+        output: GoldChestplate,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                Diamond, Air, Diamond, Diamond, Diamond, Diamond, Diamond, Diamond, Diamond,
+            ],
+        },
+        output: DiamondChestplate,
+        output_count: 1,
+        mirror: false,
+    },
+    // Leggings (7 materials)
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                Leather, Leather, Leather, Leather, Air, Leather, Leather, Air, Leather,
+            ],
+        },
+        output: LeatherLeggings,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                IronIngot, IronIngot, IronIngot, IronIngot, Air, IronIngot, IronIngot, Air,
+                IronIngot,
+            ],
+        },
+        output: IronLeggings,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                GoldIngot, GoldIngot, GoldIngot, GoldIngot, Air, GoldIngot, GoldIngot, Air,
+                GoldIngot,
+            ],
+        },
+        output: GoldLeggings,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                Diamond, Diamond, Diamond, Diamond, Air, Diamond, Diamond, Air, Diamond,
+            ],
+        },
+        output: DiamondLeggings,
+        output_count: 1,
+        mirror: false,
+    },
+    // Boots (4 materials)
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[Leather, Air, Leather, Leather, Air, Leather],
+        },
+        output: LeatherBoots,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[IronIngot, Air, IronIngot, IronIngot, Air, IronIngot],
+        },
+        output: IronBoots,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[GoldIngot, Air, GoldIngot, GoldIngot, Air, GoldIngot],
+        },
+        output: GoldBoots,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[Diamond, Air, Diamond, Diamond, Air, Diamond],
+        },
+        output: DiamondBoots,
+        output_count: 1,
+        mirror: false,
+    },
 ];
 
 // ── Furnace Smelting & Fuel Database ─────────────────────────────────────────
@@ -1822,5 +2055,28 @@ mod tests {
         let grid = vec![s(Diamond); 9];
         let result = find_recipe(&grid, 3, 3);
         assert_eq!(result, Some((DiamondOre, 1)));
+    }
+
+    #[test]
+    fn test_bread_bow_and_armor_recipes() {
+        // 3 Wheat -> Bread
+        let grid = vec![s(Wheat), s(Wheat), s(Wheat)];
+        let result = find_recipe(&grid, 3, 1);
+        assert_eq!(result, Some((Bread, 1)));
+
+        // Iron Chestplate (8 IronIngot)
+        let grid = vec![
+            s(IronIngot),
+            None,
+            s(IronIngot),
+            s(IronIngot),
+            s(IronIngot),
+            s(IronIngot),
+            s(IronIngot),
+            s(IronIngot),
+            s(IronIngot),
+        ];
+        let result = find_recipe(&grid, 3, 3);
+        assert_eq!(result, Some((IronChestplate, 1)));
     }
 }

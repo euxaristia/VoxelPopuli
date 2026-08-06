@@ -113,7 +113,7 @@ pub enum BlockType {
     DiamondHoe,
     GoldHoe,
 
-    // === World-depth blocks/items (74-81) ===
+    // === World-depth blocks/items (74-82) ===
     Lava,
     Cactus,
     Clay,
@@ -123,11 +123,42 @@ pub enum BlockType {
     RedstoneDust,
     MobSpawner,
     Bell,
+
+    // === MC 1.0 Food Items (83-89) ===
+    Apple,
+    GoldenApple,
+    RawPorkchop,
+    CookedPorkchop,
+    RawBeef,
+    Steak,
+    Bread,
+
+    // === MC 1.0 Armor Items (90-105) ===
+    LeatherHelmet,
+    LeatherChestplate,
+    LeatherLeggings,
+    LeatherBoots,
+    IronHelmet,
+    IronChestplate,
+    IronLeggings,
+    IronBoots,
+    GoldHelmet,
+    GoldChestplate,
+    GoldLeggings,
+    GoldBoots,
+    DiamondHelmet,
+    DiamondChestplate,
+    DiamondLeggings,
+    DiamondBoots,
+
+    // === MC 1.0 Combat & Ranged (106-107) ===
+    Bow,
+    Arrow,
 }
 
 #[allow(dead_code)]
 impl BlockType {
-    pub const COUNT: usize = 83;
+    pub const COUNT: usize = 108;
 
     pub fn from_u8(value: u8) -> Self {
         if (value as usize) < Self::COUNT {
@@ -179,6 +210,31 @@ impl BlockType {
                 | BlockType::IronHoe
                 | BlockType::DiamondHoe
                 | BlockType::GoldHoe
+                | BlockType::Apple
+                | BlockType::GoldenApple
+                | BlockType::RawPorkchop
+                | BlockType::CookedPorkchop
+                | BlockType::RawBeef
+                | BlockType::Steak
+                | BlockType::Bread
+                | BlockType::LeatherHelmet
+                | BlockType::LeatherChestplate
+                | BlockType::LeatherLeggings
+                | BlockType::LeatherBoots
+                | BlockType::IronHelmet
+                | BlockType::IronChestplate
+                | BlockType::IronLeggings
+                | BlockType::IronBoots
+                | BlockType::GoldHelmet
+                | BlockType::GoldChestplate
+                | BlockType::GoldLeggings
+                | BlockType::GoldBoots
+                | BlockType::DiamondHelmet
+                | BlockType::DiamondChestplate
+                | BlockType::DiamondLeggings
+                | BlockType::DiamondBoots
+                | BlockType::Bow
+                | BlockType::Arrow
         )
     }
 
@@ -248,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_count() {
-        assert_eq!(BlockType::COUNT, 83);
+        assert_eq!(BlockType::COUNT, 108);
     }
 
     #[test]

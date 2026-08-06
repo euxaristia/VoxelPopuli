@@ -134,7 +134,11 @@ pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
         | IronPickaxe | DiamondPickaxe | GoldPickaxe | WoodAxe | StoneAxe | IronAxe
         | DiamondAxe | GoldAxe | WoodShovel | StoneShovel | IronShovel | DiamondShovel
         | GoldShovel | WoodSword | StoneSword | IronSword | DiamondSword | GoldSword | WoodHoe
-        | StoneHoe | IronHoe | DiamondHoe | GoldHoe => return None,
+        | StoneHoe | IronHoe | DiamondHoe | GoldHoe | Apple | GoldenApple | RawPorkchop
+        | CookedPorkchop | RawBeef | Steak | Bread | LeatherHelmet | LeatherChestplate
+        | LeatherLeggings | LeatherBoots | IronHelmet | IronChestplate | IronLeggings
+        | IronBoots | GoldHelmet | GoldChestplate | GoldLeggings | GoldBoots | DiamondHelmet
+        | DiamondChestplate | DiamondLeggings | DiamondBoots | Bow | Arrow => return None,
     })
 }
 
@@ -465,7 +469,13 @@ pub fn build_tile_entities(chunk: &Chunk) -> Vec<NbtTag> {
                             nbt_field("x", NbtTag::Int(world_x)),
                             nbt_field("y", NbtTag::Int(world_y)),
                             nbt_field("z", NbtTag::Int(world_z)),
-                            nbt_field("Items", NbtTag::List { element_type: 10, tags: Vec::new() }),
+                            nbt_field(
+                                "Items",
+                                NbtTag::List {
+                                    element_type: 10,
+                                    tags: Vec::new(),
+                                },
+                            ),
                             nbt_field("keepPacked", NbtTag::Byte(0)),
                         ]));
                     }
@@ -478,7 +488,13 @@ pub fn build_tile_entities(chunk: &Chunk) -> Vec<NbtTag> {
                             nbt_field("BurnTime", NbtTag::Int(0)),
                             nbt_field("CookTime", NbtTag::Int(0)),
                             nbt_field("CookTimeTotal", NbtTag::Int(200)),
-                            nbt_field("Items", NbtTag::List { element_type: 10, tags: Vec::new() }),
+                            nbt_field(
+                                "Items",
+                                NbtTag::List {
+                                    element_type: 10,
+                                    tags: Vec::new(),
+                                },
+                            ),
                         ]));
                     }
                     BlockType::MobSpawner => {
@@ -487,9 +503,13 @@ pub fn build_tile_entities(chunk: &Chunk) -> Vec<NbtTag> {
                             nbt_field("x", NbtTag::Int(world_x)),
                             nbt_field("y", NbtTag::Int(world_y)),
                             nbt_field("z", NbtTag::Int(world_z)),
-                            nbt_field("SpawnData", NbtTag::Compound(vec![
-                                nbt_field("id", NbtTag::String("minecraft:zombie".to_owned())),
-                            ])),
+                            nbt_field(
+                                "SpawnData",
+                                NbtTag::Compound(vec![nbt_field(
+                                    "id",
+                                    NbtTag::String("minecraft:zombie".to_owned()),
+                                )]),
+                            ),
                             nbt_field("Delay", NbtTag::Int(20)),
                             nbt_field("MinSpawnDelay", NbtTag::Int(200)),
                             nbt_field("MaxSpawnDelay", NbtTag::Int(800)),
@@ -525,7 +545,11 @@ pub fn build_villager_entity_nbt(x: f64, y: f64, z: f64, yaw: f32) -> NbtTag {
             "Pos",
             NbtTag::List {
                 element_type: 6, // Double
-                tags: vec![NbtTag::Long(x as i64), NbtTag::Long(y as i64), NbtTag::Long(z as i64)],
+                tags: vec![
+                    NbtTag::Long(x as i64),
+                    NbtTag::Long(y as i64),
+                    NbtTag::Long(z as i64),
+                ],
             },
         ),
         nbt_field(
@@ -555,7 +579,11 @@ pub fn build_iron_golem_entity_nbt(x: f64, y: f64, z: f64) -> NbtTag {
             "Pos",
             NbtTag::List {
                 element_type: 6,
-                tags: vec![NbtTag::Long(x as i64), NbtTag::Long(y as i64), NbtTag::Long(z as i64)],
+                tags: vec![
+                    NbtTag::Long(x as i64),
+                    NbtTag::Long(y as i64),
+                    NbtTag::Long(z as i64),
+                ],
             },
         ),
         nbt_field("PlayerCreated", NbtTag::Byte(0)),
@@ -627,7 +655,11 @@ pub fn build_tnt_entity_nbt(x: f64, y: f64, z: f64, fuse_ticks: i16) -> NbtTag {
             "Pos",
             NbtTag::List {
                 element_type: 6,
-                tags: vec![NbtTag::Long(x as i64), NbtTag::Long(y as i64), NbtTag::Long(z as i64)],
+                tags: vec![
+                    NbtTag::Long(x as i64),
+                    NbtTag::Long(y as i64),
+                    NbtTag::Long(z as i64),
+                ],
             },
         ),
         nbt_field("Fuse", NbtTag::Int(fuse_ticks as i32)),
@@ -959,7 +991,12 @@ mod tests {
         let tnt = build_tnt_entity_nbt(5.0, 64.0, 5.0, 80);
         assert_eq!(tnt.id(), 10);
 
-        let mob = crate::mob::Mob::new(crate::mob::MobKind::Zombie, glam::Vec3::ZERO, glam::Vec3::ZERO, 0);
+        let mob = crate::mob::Mob::new(
+            crate::mob::MobKind::Zombie,
+            glam::Vec3::ZERO,
+            glam::Vec3::ZERO,
+            0,
+        );
         let mob_nbt = build_mob_entity_nbt(&mob);
         assert_eq!(mob_nbt.id(), 10);
 
