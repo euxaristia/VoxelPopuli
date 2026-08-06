@@ -1,7 +1,7 @@
 use crate::block::BlockType;
 use crate::item;
 use crate::renderer::{Mesh, Shader, Texture2D};
-use glam::{Vec2, Vec4};
+use glam::Vec2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PauseSubMenu {
@@ -41,20 +41,16 @@ pub fn draw_rect(
         y + h,
         0.0,
     ];
-    let mesh = Mesh::new(&verts, None, None, None);
+    // ui.wgsl reads the tint from the per-vertex color attribute, not a uniform.
+    let mut c = Vec::new();
+    for _ in 0..6 {
+        c.extend_from_slice(&color);
+    }
+    let mesh = Mesh::new(&verts, None, None, Some(&c));
     shader.bind();
     shader.set_vec2(
         shader.get_uniform_location("uScreenSize"),
         Vec2::new(screen_width, screen_height),
-    );
-    shader.set_vec4(
-        shader.get_uniform_location("uColor"),
-        Vec4::new(
-            color[0] as f32 / 255.0,
-            color[1] as f32 / 255.0,
-            color[2] as f32 / 255.0,
-            color[3] as f32 / 255.0,
-        ),
     );
     mesh.draw();
 }

@@ -808,6 +808,7 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
 
     shader.set_int(shader.get_uniform_location("uBodyType"), 0); // Reset
     renderer::set_cull(true);
+    renderer::set_depth_test(true);
 }
 
 fn main() {
