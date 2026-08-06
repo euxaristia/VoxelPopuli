@@ -282,9 +282,6 @@ impl World {
     }
 
     fn create_textured_cube_mesh(block: BlockType) -> renderer::Mesh {
-        // Every face wound counter-clockwise seen from outside; the previous
-        // winding had bottom/back/left inverted, so back-face culling opened
-        // see-through holes in mobs and particles at certain view angles.
         #[rustfmt::skip]
         let v: Vec<f32> = vec![
             0.0, 0.0, 0.0,  1.0, 0.0, 0.0,  1.0, 0.0, 1.0,
@@ -300,18 +297,39 @@ impl World {
             1.0, 0.0, 0.0,  1.0, 1.0, 0.0,  1.0, 1.0, 1.0,
             1.0, 0.0, 0.0,  1.0, 1.0, 1.0,  1.0, 0.0, 1.0, // right (+X)
         ];
-        let (tx, ty) = crate::item::atlas_uv(block);
+
         let ts = 1.0 / 16.0;
         let pad = 0.001;
-        let u0 = tx as f32 * ts + pad;
-        let v0 = ty as f32 * ts + pad;
-        let u1 = (tx as f32 + 1.0) * ts - pad;
-        let v1 = (ty as f32 + 1.0) * ts - pad;
-        let face_uv = [u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0];
-        let mut t = Vec::with_capacity(72);
-        for _ in 0..6 {
-            t.extend_from_slice(&face_uv);
-        }
+
+        let get_uvs = |(tx, ty): (u8, u8)| -> (f32, f32, f32, f32) {
+            (
+                tx as f32 * ts + pad,
+                ty as f32 * ts + pad,
+                (tx as f32 + 1.0) * ts - pad,
+                (ty as f32 + 1.0) * ts - pad,
+            )
+        };
+
+        let (b_u0, b_v0, b_u1, b_v1) = get_uvs(crate::item::atlas_uv_bottom(block));
+        let (t_u0, t_v0, t_u1, t_v1) = get_uvs(crate::item::atlas_uv_top(block));
+        let (s_u0, s_v0, s_u1, s_v1) = get_uvs(crate::item::atlas_uv(block));
+
+        #[rustfmt::skip]
+        let t = vec![
+            // bottom (-Y)
+            b_u0, b_v0, b_u1, b_v0, b_u1, b_v1,  b_u0, b_v0, b_u1, b_v1, b_u0, b_v1,
+            // top (+Y)
+            t_u0, t_v0, t_u0, t_v1, t_u1, t_v1,  t_u0, t_v0, t_u1, t_v1, t_u1, t_v0,
+            // front (-Z)
+            s_u0, s_v1, s_u0, s_v0, s_u1, s_v0,  s_u0, s_v1, s_u1, s_v0, s_u1, s_v1,
+            // back (+Z)
+            s_u1, s_v1, s_u0, s_v1, s_u0, s_v0,  s_u1, s_v1, s_u0, s_v0, s_u1, s_v0,
+            // left (-X)
+            s_u1, s_v1, s_u0, s_v1, s_u0, s_v0,  s_u1, s_v1, s_u0, s_v0, s_u1, s_v0,
+            // right (+X)
+            s_u0, s_v1, s_u0, s_v0, s_u1, s_v0,  s_u0, s_v1, s_u1, s_v0, s_u1, s_v1,
+        ];
+
         let n: Vec<f32> = vec![0.0; v.len()];
         let c: Vec<u8> = vec![255; v.len() / 3 * 4];
         renderer::Mesh::new(&v, Some(&t), Some(&n), Some(&c))
@@ -775,7 +793,7 @@ impl World {
                     }
                 }
             }
-            if all_loaded {
+            if all_loaded && self.dirty_count == 0 && self.meshing_in_flight == 0 {
                 self.is_loading = false;
                 self.last_pcx = pcx;
                 self.last_pcz = pcz;
@@ -956,7 +974,8 @@ impl World {
                 });
 
                 dispatches_this_frame += 1;
-                if dispatches_this_frame >= 16 {
+                let max_dispatches = if self.is_loading { 64 } else { 16 };
+                if dispatches_this_frame >= max_dispatches {
                     break;
                 }
             }
@@ -965,50 +984,93 @@ impl World {
         // --- Explosive Ticking ---
         let mut i = 0;
         let mut fuse_particles = Vec::new();
-        while i < self.explosives.len() {
-            let velocity = self.explosives[i].velocity;
-            let mut next_pos = self.explosives[i].position + velocity * _time;
-            let center_x = (next_pos.x + 0.5).floor() as i32;
-            let center_z = (next_pos.z + 0.5).floor() as i32;
-            let below_y = next_pos.y.floor() as i32;
+        let frame_dt = _time.min(0.05);
+        let drag = (0.98_f32).powf(frame_dt * 60.0);
+        let gravity = 18.0 * frame_dt;
 
-            self.explosives[i].velocity.y -= 9.8 * _time;
-            if velocity.y < 0.0 && self.get_block(center_x, below_y, center_z).is_solid() {
-                next_pos.y = (below_y + 1) as f32;
-                self.explosives[i].velocity.y = -velocity.y * 0.35;
-                self.explosives[i].velocity.x *= 0.75;
-                self.explosives[i].velocity.z *= 0.75;
-                if self.explosives[i].velocity.y < 0.2 {
-                    self.explosives[i].velocity.y = 0.0;
+        while i < self.explosives.len() {
+            let mut vel = self.explosives[i].velocity;
+            let mut pos = self.explosives[i].position;
+
+            // Apply gravity & drag
+            vel.y -= gravity;
+            vel.x *= drag;
+            vel.y *= drag;
+            vel.z *= drag;
+
+            let hw = 0.45;
+            let h = 0.90;
+
+            // Axis-by-axis collision & movement
+            // Move X
+            let step_x = vel.x * frame_dt;
+            if step_x != 0.0 {
+                let cand = pos + Vec3::new(step_x, 0.0, 0.0);
+                if !self.mob_box_blocked(cand + Vec3::new(0.5, 0.0, 0.5), hw, h) {
+                    pos.x = cand.x;
+                } else {
+                    vel.x = -vel.x * 0.4;
                 }
             }
 
-            self.explosives[i].position = next_pos;
-            self.explosives[i].fuse -= _time;
+            // Move Z
+            let step_z = vel.z * frame_dt;
+            if step_z != 0.0 {
+                let cand = pos + Vec3::new(0.0, 0.0, step_z);
+                if !self.mob_box_blocked(cand + Vec3::new(0.5, 0.0, 0.5), hw, h) {
+                    pos.z = cand.z;
+                } else {
+                    vel.z = -vel.z * 0.4;
+                }
+            }
+
+            // Move Y
+            let step_y = vel.y * frame_dt;
+            let cand = pos + Vec3::new(0.0, step_y, 0.0);
+            if !self.mob_box_blocked(cand + Vec3::new(0.5, 0.0, 0.5), hw, h) {
+                pos.y = cand.y;
+            } else {
+                if vel.y < 0.0 {
+                    if vel.y.abs() > 1.5 {
+                        vel.y = -vel.y * 0.35;
+                    } else {
+                        vel.y = 0.0;
+                    }
+                    vel.x *= 0.7;
+                    vel.z *= 0.7;
+                } else {
+                    vel.y = 0.0;
+                }
+            }
+
+            self.explosives[i].position = pos;
+            self.explosives[i].velocity = vel;
+            self.explosives[i].fuse -= frame_dt;
+
             let progress = 1.0
                 - (self.explosives[i].fuse / self.explosives[i].initial_fuse.max(0.001))
                     .clamp(0.0, 1.0);
-            if rand::random::<f32>() < _time * (5.0 + progress * 14.0) {
+            if rand::random::<f32>() < frame_dt * (5.0 + progress * 14.0) {
                 let jitter = Vec3::new(
                     (rand::random::<f32>() - 0.5) * 0.36,
                     rand::random::<f32>() * 0.08,
                     (rand::random::<f32>() - 0.5) * 0.36,
                 );
-                let velocity = Vec3::new(
+                let p_vel = Vec3::new(
                     (rand::random::<f32>() - 0.5) * 0.35,
                     0.55 + rand::random::<f32>() * 0.45,
                     (rand::random::<f32>() - 0.5) * 0.35,
                 );
                 fuse_particles.push(crate::block::Particle {
                     position: self.explosives[i].position + Vec3::new(0.5, 1.05, 0.5) + jitter,
-                    velocity,
+                    velocity: p_vel,
                     color: glam::Vec4::new(0.58, 0.56, 0.52, 0.72),
                     life: 0.45 + rand::random::<f32>() * 0.35,
                     max_life: 0.8,
                     scale: 0.10 + rand::random::<f32>() * 0.08,
                 });
             }
-            if progress > 0.55 && rand::random::<f32>() < _time * 8.0 {
+            if progress > 0.55 && rand::random::<f32>() < frame_dt * 8.0 {
                 fuse_particles.push(crate::block::Particle {
                     position: self.explosives[i].position + Vec3::new(0.5, 1.12, 0.5),
                     velocity: Vec3::new(
