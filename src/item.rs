@@ -353,8 +353,115 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         GoldSword => (13, 6),
         GoldHoe => (14, 6),
 
+        // Row 8: food & ranged
+        Apple => (0, 8),
+        GoldenApple => (1, 8),
+        RawPorkchop => (2, 8),
+        CookedPorkchop => (3, 8),
+        RawBeef => (4, 8),
+        Steak => (5, 8),
+        Bread => (6, 8),
+        Bow => (7, 8),
+        Arrow => (8, 8),
+
+        // Row 9: armor items
+        LeatherHelmet => (0, 9),
+        LeatherChestplate => (1, 9),
+        LeatherLeggings => (2, 9),
+        LeatherBoots => (3, 9),
+        IronHelmet => (4, 9),
+        IronChestplate => (5, 9),
+        IronLeggings => (6, 9),
+        IronBoots => (7, 9),
+        GoldHelmet => (8, 9),
+        GoldChestplate => (9, 9),
+        GoldLeggings => (10, 9),
+        GoldBoots => (11, 9),
+        DiamondHelmet => (12, 9),
+        DiamondChestplate => (13, 9),
+        DiamondLeggings => (14, 9),
+        DiamondBoots => (15, 9),
+
         // Default
         Air => (0, 0),
+    }
+}
+
+// ── Food & Armor properties ──────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FoodProperties {
+    pub hunger_restored: i32,
+    pub saturation_restored: f32,
+}
+
+pub fn food_properties(b: BlockType) -> Option<FoodProperties> {
+    use BlockType::*;
+    let f = |hunger_restored, saturation_restored| {
+        Some(FoodProperties {
+            hunger_restored,
+            saturation_restored,
+        })
+    };
+    match b {
+        Apple => f(4, 2.4),
+        GoldenApple => f(4, 9.6),
+        RawPorkchop => f(3, 1.8),
+        CookedPorkchop => f(8, 12.8),
+        RawBeef => f(3, 1.8),
+        Steak => f(8, 12.8),
+        Bread => f(5, 6.0),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ArmorSlot {
+    Helmet = 0,
+    Chestplate = 1,
+    Leggings = 2,
+    Boots = 3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArmorProperties {
+    pub slot: ArmorSlot,
+    pub defense: i32,
+    pub durability: u16,
+}
+
+pub fn armor_properties(b: BlockType) -> Option<ArmorProperties> {
+    use ArmorSlot::*;
+    use BlockType::*;
+    let a = |slot, defense, durability| {
+        Some(ArmorProperties {
+            slot,
+            defense,
+            durability,
+        })
+    };
+    match b {
+        LeatherHelmet => a(Helmet, 1, 55),
+        LeatherChestplate => a(Chestplate, 3, 80),
+        LeatherLeggings => a(Leggings, 2, 75),
+        LeatherBoots => a(Boots, 1, 65),
+
+        GoldHelmet => a(Helmet, 2, 77),
+        GoldChestplate => a(Chestplate, 5, 112),
+        GoldLeggings => a(Leggings, 3, 105),
+        GoldBoots => a(Boots, 1, 91),
+
+        IronHelmet => a(Helmet, 2, 165),
+        IronChestplate => a(Chestplate, 6, 240),
+        IronLeggings => a(Leggings, 5, 225),
+        IronBoots => a(Boots, 2, 195),
+
+        DiamondHelmet => a(Helmet, 3, 363),
+        DiamondChestplate => a(Chestplate, 8, 528),
+        DiamondLeggings => a(Leggings, 6, 495),
+        DiamondBoots => a(Boots, 3, 429),
+
+        _ => None,
     }
 }
 
@@ -1356,5 +1463,32 @@ mod tests {
             atlas_uv_side(BlockType::Farmland),
             atlas_uv(BlockType::Dirt)
         );
+    }
+
+    #[test]
+    fn test_food_properties() {
+        let p = food_properties(BlockType::CookedPorkchop).unwrap();
+        assert_eq!(p.hunger_restored, 8);
+        assert_eq!(p.saturation_restored, 12.8);
+
+        let b = food_properties(BlockType::Bread).unwrap();
+        assert_eq!(b.hunger_restored, 5);
+
+        assert!(food_properties(BlockType::Stone).is_none());
+    }
+
+    #[test]
+    fn test_armor_properties() {
+        let helm = armor_properties(BlockType::DiamondHelmet).unwrap();
+        assert_eq!(helm.slot, ArmorSlot::Helmet);
+        assert_eq!(helm.defense, 3);
+        assert_eq!(helm.durability, 363);
+
+        let chest = armor_properties(BlockType::IronChestplate).unwrap();
+        assert_eq!(chest.slot, ArmorSlot::Chestplate);
+        assert_eq!(chest.defense, 6);
+        assert_eq!(chest.durability, 240);
+
+        assert!(armor_properties(BlockType::Dirt).is_none());
     }
 }
