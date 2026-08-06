@@ -2606,7 +2606,7 @@ fn main() {
         // Render Explosives, Particles, and Village Mobs
         world.render_explosives(&shader, &mvp, current_time as f32);
         world.render_particles(&shader, &mvp);
-        world.render_mobs(&shader);
+        world.render_mobs(&shader, player.position);
 
         // Transparency render order depends on whether the camera is above or below
         // the cloud layer, so each transparent layer is drawn back-to-front.

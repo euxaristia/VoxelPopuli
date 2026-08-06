@@ -742,67 +742,45 @@ impl World {
         let pcx = (player_pos.x / CHUNK_WIDTH as f32).floor() as i32;
         let pcz = (player_pos.z / CHUNK_DEPTH as f32).floor() as i32;
 
-        // --- Spiral Chunk Generation ---
-        if pcx != self.last_pcx || pcz != self.last_pcz {
-            if self.is_loading {
-                // In loading state, we process the spiral radius-by-radius, a few chunks per frame
-                let mut generated_this_frame = 0;
-                while self.loading_radius <= VIEW_DISTANCE && generated_this_frame < 64 {
-                    let r = self.loading_radius;
-                    // We need to iterate over the ring r
-                    // This is slightly complex to do incrementally inside the loop without more state,
-                    // but we can just do the whole ring if it's small, or just a few.
-                    // Let's simplify and just do the whole ring r then increment loading_radius.
-                    for x in (pcx - r)..=(pcx + r) {
-                        for z in (pcz - r)..=(pcz + r) {
-                            if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
-                                continue;
-                            }
-
-                            let index = self.get_pool_index(x, z);
-                            let should_replace = match &self.chunks[index] {
-                                None => true,
-                                Some(c) => c.x != x || c.z != z,
-                            };
-                            if should_replace {
-                                // The displaced chunk's dirty flag was counted; drop its count
-                                if let Some(old) = &self.chunks[index]
-                                    && old.dirty
-                                {
-                                    self.dirty_count -= 1;
+        // --- Multithreaded Initial World Loading & Spiral Generation ---
+        if self.is_loading {
+            let mut all_loaded = true;
+            'loading: for r in 0..=VIEW_DISTANCE {
+                for x in (pcx - r)..=(pcx + r) {
+                    for z in (pcz - r)..=(pcz + r) {
+                        if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
+                            continue;
+                        }
+                        let index = self.get_pool_index(x, z);
+                        let loaded = match &self.chunks[index] {
+                            Some(c) => c.x == x && c.z == z,
+                            None => false,
+                        };
+                        if !loaded {
+                            all_loaded = false;
+                            if !self.gen_in_flight.contains(&(x, z)) {
+                                if self.gen_in_flight.len() >= 256 {
+                                    break 'loading;
                                 }
-                                let mut chunk = Box::new(Chunk::new(x, z, self.seed));
-                                chunk.generate();
-                                self.chunks[index] = Some(chunk);
-                                self.apply_edits_to_chunk(x, z);
-                                if let Some(c) = &mut self.chunks[index] {
-                                    c.dirty = true;
-                                    self.dirty_count += 1;
-                                }
-                                self.try_spawn_village_mobs(x, z);
-                                self.try_spawn_natural_mobs(x, z);
-                                self.chunks_generated_count += 1;
-                                self.sync_gpu_chunk(x, z, pcx, pcz);
-                                generated_this_frame += 1;
-                                if generated_this_frame >= 64 {
-                                    break;
-                                }
+                                self.gen_in_flight.insert((x, z));
+                                let seed = self.seed;
+                                let tx = self.gen_result_tx.clone();
+                                rayon::spawn(move || {
+                                    let mut chunk = Box::new(Chunk::new(x, z, seed));
+                                    chunk.generate();
+                                    let _ = tx.send(chunk);
+                                });
                             }
                         }
-                        if generated_this_frame >= 64 {
-                            break;
-                        }
-                    }
-                    if generated_this_frame < 64 {
-                        self.loading_radius += 1;
                     }
                 }
-                if self.loading_radius > VIEW_DISTANCE {
-                    self.is_loading = false;
-                    self.last_pcx = pcx;
-                    self.last_pcz = pcz;
-                }
-            } else {
+            }
+            if all_loaded {
+                self.is_loading = false;
+                self.last_pcx = pcx;
+                self.last_pcz = pcz;
+            }
+        } else if pcx != self.last_pcx || pcz != self.last_pcz {
                 // NORMAL MODE: dispatch missing chunks to background workers,
                 // nearest ring first. Generation is a pure function of
                 // (seed, x, z), so workers need no access to World; finished
@@ -845,7 +823,6 @@ impl World {
                     self.last_pcz = pcz;
                 }
             }
-        }
 
         // --- Integrate chunks generated in the background ---
         while let Ok(chunk) = self.gen_result_rx.try_recv() {
@@ -1082,7 +1059,7 @@ impl World {
         // --- Physics Simulation ---
         self.update_water(_time);
         self.update_falling_blocks();
-        self.update_mobs(_time);
+        self.update_mobs(player_pos, _time);
     }
 
     /// Spawn a village's inhabitants the first time its center chunk
@@ -1115,6 +1092,10 @@ impl World {
             return;
         }
         self.spawned_natural_chunks.insert((cx, cz));
+
+        if self.mobs.len() >= 48 {
+            return;
+        }
 
         let mut new_mobs = Vec::new();
         let mut rng = (self.seed ^ ((cx as u64) << 32) ^ (cz as u64)).wrapping_mul(0x9E3779B97F4A7C15);
@@ -1245,9 +1226,15 @@ impl World {
         false
     }
 
-    pub fn update_mobs(&mut self, dt: f32) {
+    pub fn update_mobs(&mut self, player_pos: Vec3, dt: f32) {
         let dt = dt.min(0.1);
         let mut mobs = std::mem::take(&mut self.mobs);
+        mobs.retain(|mob| {
+            if mob.kind == MobKind::Villager || mob.kind == MobKind::Golem {
+                return mob.position.distance_squared(player_pos) <= 160.0 * 160.0;
+            }
+            mob.position.distance_squared(player_pos) <= 96.0 * 96.0
+        });
         for mob in &mut mobs {
             // Freeze mobs whose chunk is unloaded so they don't fall
             // through ungenerated terrain.
@@ -1336,7 +1323,7 @@ impl World {
         self.mobs = mobs;
     }
 
-    pub fn render_mobs(&self, shader: &Shader) {
+    pub fn render_mobs(&self, shader: &Shader, player_pos: Vec3) {
         if self.mobs.is_empty() {
             return;
         }
@@ -1347,6 +1334,9 @@ impl World {
         }
 
         for mob in &self.mobs {
+            if mob.position.distance_squared(player_pos) > 64.0 * 64.0 {
+                continue;
+            }
             // Mobs in unloaded chunks are frozen by update_mobs; skip
             // drawing them too instead of paying draw calls off-screen.
             let mcx = (mob.position.x / CHUNK_WIDTH as f32).floor() as i32;
