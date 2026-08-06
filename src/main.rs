@@ -10,6 +10,7 @@ mod java_compat;
 mod mining;
 mod mob;
 mod noise;
+mod profiler;
 mod renderer;
 mod village;
 mod world;
@@ -17,6 +18,7 @@ mod world;
 use crate::world::{CLOUD_HEIGHT, VIEW_DISTANCE, World};
 use block::BlockType;
 use glam::{Mat4, Vec2, Vec3};
+use profiler::FrameProfiler;
 
 // The system allocator's per-call overhead on Windows dominates
 // MeshSnapshot::capture (~1.2ms/chunk just to allocate its ~249KB of
@@ -163,9 +165,11 @@ fn try_till_farmland(
 
 fn prime_tnt(world: &mut World, x: i32, y: i32, z: i32) {
     world.set_block(x, y, z, BlockType::Air);
+    let vx = (rand::random::<f32>() - 0.5) * 0.5;
+    let vz = (rand::random::<f32>() - 0.5) * 0.5;
     world.explosives.push(crate::block::ActiveExplosive {
         position: Vec3::new(x as f32, y as f32, z as f32),
-        velocity: Vec3::new(0.0, 2.6, 0.0),
+        velocity: Vec3::new(vx, 3.8, vz),
         fuse: 4.0,
         initial_fuse: 4.0,
     });
@@ -896,6 +900,7 @@ fn draw_debug_overlay(
     tex_shader: &Shader,
     font_tex: &Texture2D,
     lines: &[String],
+    profiler: &profiler::FrameProfiler,
     sw: f32,
     sh: f32,
 ) {
@@ -926,6 +931,51 @@ fn draw_debug_overlay(
             pad * 2.0 + i as f32 * line_height,
             text_size,
             tex_shader,
+            sw,
+            sh,
+        );
+    }
+
+    // --- Draw 120-Frame Latency Histogram Graph ---
+    let graph_x = pad;
+    let graph_y = pad + panel_h + 12.0;
+    let graph_w = (360.0_f32).min(sw - 32.0);
+    let graph_h = 70.0;
+
+    // Graph Background
+    draw_rect(
+        ui_shader,
+        graph_x,
+        graph_y,
+        graph_w,
+        graph_h,
+        [0, 0, 0, 160],
+        sw,
+        sh,
+    );
+
+    let bar_w = graph_w / 120.0;
+    for i in 0..profiler.history_count {
+        let idx = (profiler.history_idx + 120 - profiler.history_count + i) % 120;
+        let ms = profiler.frame_history[idx];
+        let height = (ms / 33.3 * graph_h).clamp(2.0, graph_h);
+
+        // Color coding: Green (<8.3ms / >120fps), Yellow (8.3-16.6ms / 60-120fps), Red (>16.6ms / <60fps)
+        let color = if ms <= 8.33 {
+            [68, 255, 68, 220] // Green
+        } else if ms <= 16.67 {
+            [255, 235, 59, 220] // Yellow
+        } else {
+            [244, 67, 54, 230] // Red (stutter spike)
+        };
+
+        draw_rect(
+            ui_shader,
+            graph_x + i as f32 * bar_w,
+            graph_y + (graph_h - height),
+            bar_w.max(1.0),
+            height,
+            color,
             sw,
             sh,
         );
@@ -1739,7 +1789,9 @@ fn main() {
     let mut fps_last_time = last_time;
     let mut fps_frames: u32 = 0;
     let mut current_fps: f32 = 0.0;
+    let mut profiler = FrameProfiler::new();
     while !window.should_close() {
+        let frame_start = std::time::Instant::now();
         let current_time = glfw.get_time();
         let delta_time = (current_time - last_time) as f32;
         last_time = current_time;
@@ -1842,9 +1894,15 @@ fn main() {
                 sh,
             );
 
-            // Progress Fill
+            // Progress Fill (tracks fully meshed & GPU ready chunks)
             let total_chunks = (VIEW_DISTANCE * 2 + 1) as f32 * (VIEW_DISTANCE * 2 + 1) as f32;
-            let progress = (world.chunks_generated_count as f32 / total_chunks).clamp(0.0, 1.0);
+            let ready_chunks = world
+                .chunks
+                .iter()
+                .flatten()
+                .filter(|c| !c.dirty && !c.meshing_in_progress)
+                .count();
+            let progress = (ready_chunks as f32 / total_chunks).clamp(0.0, 1.0);
             draw_rect(
                 &ui_shader,
                 bar_x,
@@ -2448,7 +2506,9 @@ fn main() {
                 is_sneaking,
                 current_time,
             );
+            let t_wu = std::time::Instant::now();
             world.update(player.position, delta_time as f32);
+            profiler.world_update_ms = t_wu.elapsed().as_secs_f32() * 1000.0;
 
             // Per-frame mining update
             let gp_rt_held = gp_gs
@@ -2779,8 +2839,21 @@ fn main() {
             ][(((yaw_deg + 22.5) / 45.0) as usize) % 8];
             let cx = (player.position.x / chunk::CHUNK_WIDTH as f32).floor() as i32;
             let cz = (player.position.z / chunk::CHUNK_DEPTH as f32).floor() as i32;
+            let stats = profiler.stats();
+            let loaded_chunks = world.chunks.iter().flatten().count();
             let lines = [
-                format!("VoxelPopuli ({:.0} fps)", current_fps),
+                format!(
+                    "VoxelPopuli: {:.0} FPS (avg: {:.0} | min: {:.0} | 1% low: {:.0})",
+                    current_fps, stats.avg_fps, stats.min_fps, stats.low_1_fps
+                ),
+                format!(
+                    "Frame Time: {:.2}ms (P95: {:.2}ms | P99: {:.2}ms)",
+                    stats.avg_ms, stats.p95_ms, stats.p99_ms
+                ),
+                format!(
+                    "Subsystems: Render {:.1}ms | World {:.1}ms | Mesh {:.1}ms",
+                    profiler.render_ms, profiler.world_update_ms, profiler.mesh_dispatch_ms
+                ),
                 format!(
                     "XYZ: {:.3} / {:.3} / {:.3}",
                     player.position.x, player.position.y, player.position.z
@@ -2791,7 +2864,11 @@ fn main() {
                     player.position.y.floor() as i32,
                     player.position.z.floor() as i32
                 ),
-                format!("Chunk: {cx} {cz}"),
+                format!(
+                    "Chunk Pool: {cx} {cz} ({} loaded, {} dirty, {} in-flight)",
+                    loaded_chunks, world.dirty_count, world.meshing_in_flight
+                ),
+                format!("Mobs: {} active (48 cap)", world.mobs.len()),
                 format!("Facing: {compass} (yaw {yaw_deg:.1}, pitch {pitch_deg:.1})"),
                 format!("Biome: {biome:?}"),
                 format!("Seed: {}", world.seed),
@@ -2801,6 +2878,7 @@ fn main() {
                 &texture_ui_shader,
                 &font_texture,
                 &lines,
+                &profiler,
                 sw,
                 sh,
             );
@@ -3509,6 +3587,14 @@ fn main() {
         renderer::set_depth_test(true);
         renderer::set_cull(true);
         renderer::end_frame(framebuffer_width, framebuffer_height);
+
+        profiler.record_frame(frame_start.elapsed());
+        profiler.log_telemetry_if_needed(
+            world.chunks.iter().flatten().count(),
+            world.dirty_count,
+            world.meshing_in_flight,
+            world.mobs.len(),
+        );
     }
     let (xw, yw) = window.get_pos();
     let (ww, hw) = window.get_size();
