@@ -1,7 +1,7 @@
 use crate::block::BlockType;
 use crate::item;
 use crate::renderer::{Mesh, Shader, Texture2D};
-use glam::Vec2;
+use glam::{Vec2, Vec4};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PauseSubMenu {
@@ -80,7 +80,15 @@ pub fn draw_texture_ui_uv(
     shader: &Shader,
     screen_width: f32,
     screen_height: f32,
+    tint: [u8; 4],
 ) {
+    // The atlases are pixel art sampled with Nearest. Landing a quad on a
+    // fractional pixel makes the sampler pick a different phase per glyph, so
+    // strokes come out uneven. Snap the rect to whole pixels.
+    let x = x.round();
+    let y = y.round();
+    let w = w.round().max(1.0);
+    let h = h.round().max(1.0);
     let verts = [
         x,
         y,
@@ -121,8 +129,31 @@ pub fn draw_texture_ui_uv(
         shader.get_uniform_location("uScreenSize"),
         Vec2::new(screen_width, screen_height),
     );
+    shader.set_vec4(
+        shader.get_uniform_location("uColor"),
+        Vec4::new(
+            tint[0] as f32 / 255.0,
+            tint[1] as f32 / 255.0,
+            tint[2] as f32 / 255.0,
+            tint[3] as f32 / 255.0,
+        ),
+    );
     texture.bind(0);
     mesh.draw();
+}
+
+pub const TEXT_WHITE: [u8; 4] = [255, 255, 255, 255];
+pub const TEXT_SHADOW: [u8; 4] = [45, 45, 45, 255];
+
+/// Horizontal advance per character, in pixels, for a run drawn at `size`.
+/// The font cells are 16x16 with the glyph ink sitting in the left 12.
+pub fn text_advance(size: f32) -> f32 {
+    (size * 0.55).round().max(1.0)
+}
+
+/// Width of `text` when drawn at `size`, in pixels.
+pub fn text_width(text: &str, size: f32) -> f32 {
+    text.chars().filter(|c| (' '..'\u{80}').contains(c)).count() as f32 * text_advance(size)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -136,7 +167,26 @@ pub fn draw_text(
     sw: f32,
     sh: f32,
 ) {
-    let mut cur_x = x;
+    draw_text_tinted(texture, text, x, y, size, shader, sw, sh, TEXT_WHITE);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_tinted(
+    texture: &Texture2D,
+    text: &str,
+    x: f32,
+    y: f32,
+    size: f32,
+    shader: &Shader,
+    sw: f32,
+    sh: f32,
+    tint: [u8; 4],
+) {
+    // Whole-pixel advance, so every glyph in the run lands on the same
+    // sampling phase instead of drifting by a fraction of a pixel each step.
+    let advance = text_advance(size);
+    let mut cur_x = x.round();
+    let y = y.round();
     for c in text.chars() {
         let i = c as u32;
         if !(32..128).contains(&i) {
@@ -160,8 +210,9 @@ pub fn draw_text(
             shader,
             sw,
             sh,
+            tint,
         );
-        cur_x += size * 0.55;
+        cur_x += advance;
     }
 }
 
@@ -273,7 +324,9 @@ pub fn draw_item_icon(
     let ts = 1.0 / 16.0;
     let u = tx as f32 * ts;
     let v = ty as f32 * ts;
-    draw_texture_ui_uv(atlas, x, y, w, h, u, v, ts, ts, tex_shader, sw, sh);
+    draw_texture_ui_uv(
+        atlas, x, y, w, h, u, v, ts, ts, tex_shader, sw, sh, TEXT_WHITE,
+    );
 }
 
 pub fn draw_heart(
@@ -535,12 +588,24 @@ pub fn draw_bedrock_button(
         sh,
     );
 
-    let char_w = 11.0;
-    let txt_w = text.len() as f32 * char_w;
+    let font_size = 18.0;
+    let txt_w = text_width(text, font_size);
     let tx = x + (w - txt_w) / 2.0;
-    let ty = y + (h - 18.0) / 2.0;
-    draw_text(font_tex, text, tx + 2.0, ty + 2.0, 18.0, tex_shader, sw, sh);
-    draw_text(font_tex, text, tx, ty, 18.0, tex_shader, sw, sh);
+    let ty = y + (h - font_size) / 2.0;
+    // Offset copy underneath is a drop shadow, so it has to be dark. Drawing it
+    // in the same white as the label just smears the glyphs.
+    draw_text_tinted(
+        font_tex,
+        text,
+        tx + 2.0,
+        ty + 2.0,
+        font_size,
+        tex_shader,
+        sw,
+        sh,
+        TEXT_SHADOW,
+    );
+    draw_text(font_tex, text, tx, ty, font_size, tex_shader, sw, sh);
 }
 
 #[allow(clippy::too_many_arguments)]

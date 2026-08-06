@@ -38,5 +38,5 @@ fn vs_main(in: VsIn) -> VsOut {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return textureSample(texture0, sampler0, in.uv);
+    return textureSample(texture0, sampler0, in.uv) * u.u_color;
 }
