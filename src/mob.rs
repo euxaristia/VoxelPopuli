@@ -97,8 +97,8 @@ impl Mob {
             MobKind::Zombie => Some((BlockType::RawIron, 1)),
             MobKind::Skeleton => Some((BlockType::Stick, 1)),
             MobKind::Creeper => Some((BlockType::Gunpowder, 1)),
-            MobKind::Pig => Some((BlockType::RawIron, 1)),
-            MobKind::Cow => Some((BlockType::Leather, 1)),
+            MobKind::Pig => Some((BlockType::RawPorkchop, 1)),
+            MobKind::Cow => Some((BlockType::RawBeef, 1)),
             MobKind::Sheep => Some((BlockType::Wool, 1)),
         }
     }
@@ -126,11 +126,11 @@ mod tests {
 
         let p = Mob::new(MobKind::Pig, pos, home, 0);
         assert_eq!(p.height(), 0.9);
-        assert_eq!(p.drop_item(), Some((BlockType::RawIron, 1)));
+        assert_eq!(p.drop_item(), Some((BlockType::RawPorkchop, 1)));
 
         let cow = Mob::new(MobKind::Cow, pos, home, 0);
         assert_eq!(cow.height(), 1.4);
-        assert_eq!(cow.drop_item(), Some((BlockType::Leather, 1)));
+        assert_eq!(cow.drop_item(), Some((BlockType::RawBeef, 1)));
 
         let sh = Mob::new(MobKind::Sheep, pos, home, 0);
         assert_eq!(sh.height(), 1.3);
