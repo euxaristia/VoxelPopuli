@@ -18,6 +18,16 @@ pub struct Particle {
     pub scale: f32,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ArrowEntity {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub life: f32,
+    pub in_ground: bool,
+    pub damage: f32,
+    pub is_critical: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 #[repr(u8)]
 #[allow(dead_code, clippy::upper_case_acronyms)]
@@ -421,6 +431,21 @@ mod tests {
         assert!(BlockType::Glass.is_transparent());
         assert!(BlockType::Torch.is_transparent());
         assert!(BlockType::Wheat.is_transparent());
+    }
+
+    #[test]
+    fn test_arrow_entity() {
+        let arr = ArrowEntity {
+            position: Vec3::new(10.0, 64.0, 10.0),
+            velocity: Vec3::new(0.0, 10.0, 0.0),
+            life: 60.0,
+            in_ground: false,
+            damage: 10.0,
+            is_critical: true,
+        };
+        assert_eq!(arr.damage, 10.0);
+        assert!(arr.is_critical);
+        assert!(!arr.in_ground);
     }
 
     #[test]
