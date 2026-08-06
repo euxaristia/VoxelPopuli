@@ -203,11 +203,13 @@ pub struct World {
     pub last_pcz: i32,
     pub dirty_count: i32,
     pub explosives: Vec<crate::block::ActiveExplosive>,
+    pub arrows: Vec<crate::block::ArrowEntity>,
     pub particles: Vec<crate::block::Particle>,
     pub detonations: Vec<glam::Vec3>,
     pub tnt_mesh: renderer::Mesh,
     pub spark_mesh: renderer::Mesh,
     pub particle_mesh: renderer::Mesh,
+    pub arrow_mesh: renderer::Mesh,
     pub is_loading: bool,
     pub loading_radius: i32,
     pub chunks_generated_count: i32,
@@ -254,11 +256,13 @@ impl World {
             last_pcz: -999999,
             dirty_count: 0,
             explosives: Vec::new(),
+            arrows: Vec::new(),
             particles: Vec::new(),
             detonations: Vec::new(),
             tnt_mesh: Self::create_textured_cube_mesh(BlockType::TNT),
             spark_mesh: Self::create_textured_cube_mesh(BlockType::Torch),
             particle_mesh: Self::create_textured_cube_mesh(BlockType::SnowLayer),
+            arrow_mesh: Self::create_textured_cube_mesh(BlockType::Arrow),
             is_loading: true,
             loading_radius: 0,
             chunks_generated_count: 0,
@@ -407,6 +411,32 @@ impl World {
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
         crate::renderer::set_blend(false);
+    }
+
+    pub fn render_arrows(&self, shader: &crate::renderer::Shader) {
+        let loc_model = shader.get_uniform_location("uModel");
+        let loc_diff = shader.get_uniform_location("colDiffuse");
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
+        shader.set_vec4(loc_diff, glam::Vec4::ONE);
+
+        for arrow in &self.arrows {
+            let rot = if arrow.velocity.length_squared() > 0.01 {
+                let dir = arrow.velocity.normalize();
+                let yaw = dir.x.atan2(dir.z);
+                let pitch = (-dir.y).atan2((dir.x * dir.x + dir.z * dir.z).sqrt());
+                glam::Mat4::from_rotation_y(yaw) * glam::Mat4::from_rotation_x(pitch)
+            } else {
+                glam::Mat4::IDENTITY
+            };
+            let scale = Vec3::new(0.08, 0.08, 0.45);
+            let model =
+                glam::Mat4::from_translation(arrow.position) * rot * glam::Mat4::from_scale(scale);
+            shader.set_mat4(loc_model, &model);
+            self.arrow_mesh.draw();
+        }
+        shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
     }
 
     fn get_pool_index(&self, cx: i32, cz: i32) -> usize {
@@ -1115,6 +1145,76 @@ impl World {
                 self.particles.remove(i);
             } else {
                 i += 1;
+            }
+        }
+
+        // --- Arrow Physics & Collision ---
+        let mut a_idx = 0;
+        while a_idx < self.arrows.len() {
+            let mut remove_arrow = false;
+            self.arrows[a_idx].life -= _time;
+
+            if self.arrows[a_idx].life <= 0.0 {
+                remove_arrow = true;
+            } else if !self.arrows[a_idx].in_ground {
+                self.arrows[a_idx].velocity.y -= 25.0 * _time;
+                let vel = self.arrows[a_idx].velocity * 0.99f32.powf(_time * 20.0);
+                self.arrows[a_idx].velocity = vel;
+
+                let next_pos = self.arrows[a_idx].position + vel * _time;
+                let bx = next_pos.x.floor() as i32;
+                let by = next_pos.y.floor() as i32;
+                let bz = next_pos.z.floor() as i32;
+
+                if self.get_block(bx, by, bz).is_solid() {
+                    self.arrows[a_idx].in_ground = true;
+                    self.arrows[a_idx].velocity = Vec3::ZERO;
+                } else {
+                    let mut hit_mob = false;
+                    let mut m_idx = 0;
+                    while m_idx < self.mobs.len() {
+                        let mob = &self.mobs[m_idx];
+                        let feet = mob.position;
+                        let hw = mob.half_width();
+                        let h = mob.height();
+
+                        let in_x = next_pos.x >= feet.x - hw && next_pos.x <= feet.x + hw;
+                        let in_z = next_pos.z >= feet.z - hw && next_pos.z <= feet.z + hw;
+                        let in_y = next_pos.y >= feet.y && next_pos.y <= feet.y + h;
+
+                        if in_x && in_y && in_z {
+                            hit_mob = true;
+                            for _ in 0..4 {
+                                self.particles.push(crate::block::Particle {
+                                    position: next_pos,
+                                    velocity: Vec3::new(
+                                        (rand::random::<f32>() - 0.5) * 2.0,
+                                        rand::random::<f32>() * 2.0,
+                                        (rand::random::<f32>() - 0.5) * 2.0,
+                                    ),
+                                    color: glam::Vec4::new(0.8, 0.1, 0.1, 0.9),
+                                    life: 0.3,
+                                    max_life: 0.3,
+                                    scale: 0.08,
+                                });
+                            }
+                            self.mobs.swap_remove(m_idx);
+                            break;
+                        }
+                        m_idx += 1;
+                    }
+                    if hit_mob {
+                        remove_arrow = true;
+                    } else {
+                        self.arrows[a_idx].position = next_pos;
+                    }
+                }
+            }
+
+            if remove_arrow {
+                self.arrows.swap_remove(a_idx);
+            } else {
+                a_idx += 1;
             }
         }
 
