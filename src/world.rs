@@ -204,12 +204,14 @@ pub struct World {
     pub dirty_count: i32,
     pub explosives: Vec<crate::block::ActiveExplosive>,
     pub arrows: Vec<crate::block::ArrowEntity>,
+    pub xp_orbs: Vec<crate::block::XpOrbEntity>,
     pub particles: Vec<crate::block::Particle>,
     pub detonations: Vec<glam::Vec3>,
     pub tnt_mesh: renderer::Mesh,
     pub spark_mesh: renderer::Mesh,
     pub particle_mesh: renderer::Mesh,
     pub arrow_mesh: renderer::Mesh,
+    pub xp_orb_mesh: renderer::Mesh,
     pub is_loading: bool,
     pub loading_radius: i32,
     pub chunks_generated_count: i32,
@@ -257,12 +259,14 @@ impl World {
             dirty_count: 0,
             explosives: Vec::new(),
             arrows: Vec::new(),
+            xp_orbs: Vec::new(),
             particles: Vec::new(),
             detonations: Vec::new(),
             tnt_mesh: Self::create_textured_cube_mesh(BlockType::TNT),
             spark_mesh: Self::create_textured_cube_mesh(BlockType::Torch),
             particle_mesh: Self::create_textured_cube_mesh(BlockType::SnowLayer),
             arrow_mesh: Self::create_textured_cube_mesh(BlockType::Arrow),
+            xp_orb_mesh: Self::create_textured_cube_mesh(BlockType::GoldOre),
             is_loading: true,
             loading_radius: 0,
             chunks_generated_count: 0,
@@ -436,6 +440,27 @@ impl World {
             shader.set_mat4(loc_model, &model);
             self.arrow_mesh.draw();
         }
+        shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
+    }
+
+    pub fn render_xp_orbs(&self, shader: &crate::renderer::Shader, current_time: f32) {
+        let loc_model = shader.get_uniform_location("uModel");
+        let loc_diff = shader.get_uniform_location("colDiffuse");
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
+
+        for orb in &self.xp_orbs {
+            let bob = (current_time * 5.0 + orb.position.x * 3.0).sin() * 0.08;
+            let rot = current_time * 3.0;
+            let model = glam::Mat4::from_translation(orb.position + Vec3::new(0.0, bob, 0.0))
+                * glam::Mat4::from_rotation_y(rot)
+                * glam::Mat4::from_scale(Vec3::splat(0.18));
+            shader.set_vec4(loc_diff, glam::Vec4::new(0.4, 1.4, 0.2, 1.0));
+            shader.set_mat4(loc_model, &model);
+            self.xp_orb_mesh.draw();
+        }
+        shader.set_vec4(loc_diff, glam::Vec4::ONE);
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
     }
 
@@ -786,7 +811,7 @@ impl World {
         }
     }
 
-    pub fn update(&mut self, player_pos: Vec3, _time: f32) {
+    pub fn update(&mut self, player_pos: Vec3, _time: f32) -> u32 {
         let pcx = (player_pos.x / CHUNK_WIDTH as f32).floor() as i32;
         let pcz = (player_pos.z / CHUNK_DEPTH as f32).floor() as i32;
 
@@ -1198,7 +1223,22 @@ impl World {
                                     scale: 0.08,
                                 });
                             }
-                            self.mobs.swap_remove(m_idx);
+                            let dead_mob = self.mobs.swap_remove(m_idx);
+                            let xp_val = match dead_mob.kind {
+                                MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper => 5,
+                                MobKind::Golem => 10,
+                                _ => 2,
+                            };
+                            self.xp_orbs.push(crate::block::XpOrbEntity {
+                                position: dead_mob.position + Vec3::new(0.0, 0.5, 0.0),
+                                velocity: Vec3::new(
+                                    (rand::random::<f32>() - 0.5) * 1.5,
+                                    2.5,
+                                    (rand::random::<f32>() - 0.5) * 1.5,
+                                ),
+                                xp_value: xp_val,
+                                life: 300.0,
+                            });
                             break;
                         }
                         m_idx += 1;
@@ -1218,10 +1258,54 @@ impl World {
             }
         }
 
+        // --- XP Orb Physics & Attraction ---
+        let mut collected_xp = 0;
+        let mut x_idx = 0;
+        while x_idx < self.xp_orbs.len() {
+            let mut remove_orb = false;
+            self.xp_orbs[x_idx].life -= _time;
+
+            if self.xp_orbs[x_idx].life <= 0.0 {
+                remove_orb = true;
+            } else {
+                let orb_pos = self.xp_orbs[x_idx].position;
+                let dist = orb_pos.distance(player_pos);
+                if dist < 1.2 {
+                    collected_xp += self.xp_orbs[x_idx].xp_value;
+                    remove_orb = true;
+                } else if dist < 7.0 && dist > 0.1 {
+                    let dir = (player_pos - orb_pos).normalize();
+                    let vel = dir * (7.0 - dist) * 2.5;
+                    self.xp_orbs[x_idx].velocity = vel;
+                    self.xp_orbs[x_idx].position += vel * _time;
+                } else {
+                    self.xp_orbs[x_idx].velocity.y -= 12.0 * _time;
+                    let vel = self.xp_orbs[x_idx].velocity * 0.95;
+                    self.xp_orbs[x_idx].velocity = vel;
+                    let next_pos = orb_pos + vel * _time;
+                    let bx = next_pos.x.floor() as i32;
+                    let by = next_pos.y.floor() as i32;
+                    let bz = next_pos.z.floor() as i32;
+                    if self.get_block(bx, by, bz).is_solid() {
+                        self.xp_orbs[x_idx].velocity = Vec3::ZERO;
+                    } else {
+                        self.xp_orbs[x_idx].position = next_pos;
+                    }
+                }
+            }
+
+            if remove_orb {
+                self.xp_orbs.swap_remove(x_idx);
+            } else {
+                x_idx += 1;
+            }
+        }
+
         // --- Physics Simulation ---
         self.update_water(_time);
         self.update_falling_blocks();
         self.update_mobs(player_pos, _time);
+        collected_xp
     }
 
     /// Spawn a village's inhabitants the first time its center chunk

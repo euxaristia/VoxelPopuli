@@ -28,6 +28,14 @@ pub struct ArrowEntity {
     pub is_critical: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct XpOrbEntity {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub xp_value: u32,
+    pub life: f32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 #[repr(u8)]
 #[allow(dead_code, clippy::upper_case_acronyms)]
@@ -446,6 +454,18 @@ mod tests {
         assert_eq!(arr.damage, 10.0);
         assert!(arr.is_critical);
         assert!(!arr.in_ground);
+    }
+
+    #[test]
+    fn test_xp_orb_entity() {
+        let orb = XpOrbEntity {
+            position: Vec3::new(5.0, 64.0, 5.0),
+            velocity: Vec3::new(0.0, 2.0, 0.0),
+            xp_value: 5,
+            life: 300.0,
+        };
+        assert_eq!(orb.xp_value, 5);
+        assert_eq!(orb.life, 300.0);
     }
 
     #[test]

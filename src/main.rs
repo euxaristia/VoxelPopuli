@@ -1090,12 +1090,32 @@ struct Player {
     saturation: f32,
     hunger_timer: f32,
     equipped_armor: [Option<(BlockType, u16)>; 4],
+    xp_level: u32,
+    xp_progress: f32,
+    total_xp: u32,
     flying: bool,
     last_space_release: f64,
     space_was_pressed: bool,
     damage_cooldown: f32,
 }
 impl Player {
+    pub fn add_xp(&mut self, amount: u32) {
+        self.total_xp += amount;
+        let mut rem = amount as f32;
+        while rem > 0.0 {
+            let xp_needed = (7 + self.xp_level * 7) as f32;
+            let current_xp = self.xp_progress * xp_needed;
+            if current_xp + rem >= xp_needed {
+                rem -= xp_needed - current_xp;
+                self.xp_level += 1;
+                self.xp_progress = 0.0;
+            } else {
+                self.xp_progress = (current_xp + rem) / xp_needed;
+                rem = 0.0;
+            }
+        }
+    }
+
     pub fn total_armor_defense(&self) -> i32 {
         let mut total = 0;
         for (item, _) in self.equipped_armor.iter().flatten() {
@@ -2421,6 +2441,9 @@ fn main() {
         saturation: 5.0,
         hunger_timer: 0.0,
         equipped_armor: [None, None, None, None],
+        xp_level: 0,
+        xp_progress: 0.0,
+        total_xp: 0,
         flying: false,
         last_space_release: 0.0,
         space_was_pressed: false,
@@ -3303,8 +3326,11 @@ fn main() {
                 current_time,
             );
             let t_wu = std::time::Instant::now();
-            world.update(player.position, delta_time as f32);
+            let earned_xp = world.update(player.position, delta_time as f32);
             profiler.world_update_ms = t_wu.elapsed().as_secs_f32() * 1000.0;
+            if earned_xp > 0 {
+                player.add_xp(earned_xp);
+            }
 
             // Per-frame mining update
             let gp_rt_held = gp_gs
@@ -3321,6 +3347,29 @@ fn main() {
                     // Block broken — apply drop
                     if mined.drop != BlockType::Air && mined.drop_count > 0 {
                         inv_add(&mut inv_slots, mined.drop, mined.drop_count as u32);
+                    }
+                    let target_b = world.get_block(mined.x, mined.y, mined.z);
+                    let xp_val = match target_b {
+                        BlockType::CoalOre => 1,
+                        BlockType::DiamondOre => 5,
+                        BlockType::LapisOre => 3,
+                        _ => 0,
+                    };
+                    if xp_val > 0 {
+                        world.xp_orbs.push(crate::block::XpOrbEntity {
+                            position: Vec3::new(
+                                mined.x as f32 + 0.5,
+                                mined.y as f32 + 0.5,
+                                mined.z as f32 + 0.5,
+                            ),
+                            velocity: Vec3::new(
+                                (rand::random::<f32>() - 0.5) * 1.5,
+                                2.5,
+                                (rand::random::<f32>() - 0.5) * 1.5,
+                            ),
+                            xp_value: xp_val,
+                            life: 300.0,
+                        });
                     }
                     world.set_block(mined.x, mined.y, mined.z, BlockType::Air);
 
@@ -3467,10 +3516,11 @@ fn main() {
             renderer::set_blend(false);
         }
 
-        // Render Explosives, Arrows, Particles, and Village Mobs
+        // Render Explosives, Arrows, XP Orbs, Particles, and Village Mobs
         world.render_explosives(&shader, &mvp, current_time as f32);
         world.render_particles(&shader, &mvp);
         world.render_arrows(&shader);
+        world.render_xp_orbs(&shader, current_time as f32);
         world.render_mobs(&shader, player.position);
 
         // Transparency render order depends on whether the camera is above or below
@@ -4361,6 +4411,59 @@ fn main() {
                 let rx = fx_start + i as f32 * (icon_size + spacing);
                 let food_val = (player.hunger - i * 2).clamp(0, 2);
                 draw_drumstick(&ui_shader, rx, fy, icon_size, sw, sh, food_val);
+            }
+
+            // Experience Bar (above hotbar)
+            let xp_bar_w = 440.0;
+            let xp_bar_h = 8.0;
+            let xpx = sw / 2.0 - xp_bar_w / 2.0;
+            let xpy = sh - 52.0;
+            draw_rect(
+                &ui_shader,
+                xpx - 1.0,
+                xpy - 1.0,
+                xp_bar_w + 2.0,
+                xp_bar_h + 2.0,
+                [20, 20, 20, 255],
+                sw,
+                sh,
+            );
+            draw_rect(
+                &ui_shader,
+                xpx,
+                xpy,
+                xp_bar_w,
+                xp_bar_h,
+                [35, 45, 30, 230],
+                sw,
+                sh,
+            );
+            let fill_w = (xp_bar_w * player.xp_progress.clamp(0.0, 1.0)).round();
+            if fill_w > 0.0 {
+                draw_rect(
+                    &ui_shader,
+                    xpx,
+                    xpy,
+                    fill_w,
+                    xp_bar_h,
+                    [110, 230, 50, 255],
+                    sw,
+                    sh,
+                );
+            }
+            if player.xp_level > 0 {
+                let lvl_str = format!("{}", player.xp_level);
+                let txt_w = lvl_str.len() as f32 * 10.0;
+                draw_text(
+                    &font_texture,
+                    &lvl_str,
+                    sw / 2.0 - txt_w / 2.0,
+                    xpy - 12.0,
+                    14.0,
+                    &texture_ui_shader,
+                    sw,
+                    sh,
+                );
             }
 
             // Oxygen bubbles (above food bar)
