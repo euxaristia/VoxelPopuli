@@ -158,6 +158,38 @@ const RECIPES: &[Recipe] = &[
         output_count: 1,
         mirror: false,
     },
+    // 3 Planks + 4 Cobblestone + 1 IronIngot + 1 RedstoneDust -> Piston
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                OakPlanks,
+                OakPlanks,
+                OakPlanks,
+                Cobblestone,
+                IronIngot,
+                Cobblestone,
+                Cobblestone,
+                RedstoneDust,
+                Cobblestone,
+            ],
+        },
+        output: Piston,
+        output_count: 1,
+        mirror: false,
+    },
+    // 1 Piston + 1 OakLeaves -> StickyPiston
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 1,
+            height: 2,
+            pattern: &[OakLeaves, Piston],
+        },
+        output: StickyPiston,
+        output_count: 1,
+        mirror: false,
+    },
     // 4 Planks 2x2 -> Crafting Table
     Recipe {
         shape: RecipeShape::Shaped {

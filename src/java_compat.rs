@@ -137,6 +137,9 @@ pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
         RedstoneTorch => JavaBlockState::new("minecraft:redstone_torch"),
         RedstoneLamp => JavaBlockState::new("minecraft:redstone_lamp"),
         RedstoneBlock => JavaBlockState::new("minecraft:redstone_block"),
+        Piston => JavaBlockState::new("minecraft:piston"),
+        StickyPiston => JavaBlockState::new("minecraft:sticky_piston"),
+        PistonHead => JavaBlockState::new("minecraft:piston_head"),
 
         RawIron | IronIngot | FlintAndSteel | Stick | Coal | GoldIngot | Diamond | LapisLazuli
         | String | Gunpowder | Leather | RedstoneDust | WoodPickaxe | StonePickaxe

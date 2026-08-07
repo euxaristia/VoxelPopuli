@@ -188,11 +188,16 @@ pub enum BlockType {
     RedstoneTorch,
     RedstoneLamp,
     RedstoneBlock,
+
+    // === MC 1.0 Pistons (120-122) ===
+    Piston,
+    StickyPiston,
+    PistonHead,
 }
 
 #[allow(dead_code)]
 impl BlockType {
-    pub const COUNT: usize = 120;
+    pub const COUNT: usize = 123;
 
     pub fn from_u8(value: u8) -> Self {
         if (value as usize) < Self::COUNT {
@@ -289,6 +294,7 @@ impl BlockType {
             | BlockType::StoneButton
             | BlockType::RedstoneWire
             | BlockType::RedstoneTorch
+            | BlockType::PistonHead
             | BlockType::Bell => false,
             _ => !self.is_item(),
         }
@@ -344,6 +350,7 @@ impl BlockType {
                 | BlockType::StoneButton
                 | BlockType::RedstoneWire
                 | BlockType::RedstoneTorch
+                | BlockType::PistonHead
                 | BlockType::Bell
         )
     }
@@ -355,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_count() {
-        assert_eq!(BlockType::COUNT, 120);
+        assert_eq!(BlockType::COUNT, 123);
     }
 
     #[test]

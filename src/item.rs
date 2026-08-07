@@ -130,6 +130,11 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
         RedstoneLamp => s(0.3, TT::None, TM::None, false, RedstoneLamp, 1),
         RedstoneBlock => s(5.0, TT::Pickaxe, TM::Wood, true, RedstoneBlock, 1),
 
+        // Pistons
+        Piston => s(0.5, TT::Pickaxe, TM::Wood, true, Piston, 1),
+        StickyPiston => s(0.5, TT::Pickaxe, TM::Wood, true, StickyPiston, 1),
+        PistonHead => s(0.5, TT::Pickaxe, TM::Wood, true, Piston, 1),
+
         // Items don't have block hardness (shouldn't be mined)
         _ => s(0.0, TT::None, TM::None, false, b, 1),
     }
@@ -408,6 +413,9 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         RedstoneTorch => (3, 10),
         RedstoneLamp => (2, 10),
         RedstoneBlock => (1, 10),
+        Piston => (11, 6),
+        StickyPiston => (10, 6),
+        PistonHead => (12, 6),
 
         // Default
         Air => (0, 0),
