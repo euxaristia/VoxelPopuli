@@ -259,8 +259,11 @@ pub fn export_classic_java_world(seed: u64, config: &ExportConfig) -> io::Result
 #[derive(Clone, Debug, PartialEq)]
 pub enum NbtTag {
     Byte(i8),
+    Short(i16),
     Int(i32),
     Long(i64),
+    Float(f32),
+    Double(f64),
     ByteArray(Vec<u8>),
     String(String),
     List { element_type: u8, tags: Vec<NbtTag> },
@@ -270,11 +273,14 @@ pub enum NbtTag {
 }
 
 impl NbtTag {
-    fn id(&self) -> u8 {
+    pub fn id(&self) -> u8 {
         match self {
             NbtTag::Byte(_) => 1,
+            NbtTag::Short(_) => 2,
             NbtTag::Int(_) => 3,
             NbtTag::Long(_) => 4,
+            NbtTag::Float(_) => 5,
+            NbtTag::Double(_) => 6,
             NbtTag::ByteArray(_) => 7,
             NbtTag::String(_) => 8,
             NbtTag::List { .. } => 9,
@@ -282,6 +288,17 @@ impl NbtTag {
             NbtTag::IntArray(_) => 11,
             NbtTag::LongArray(_) => 12,
         }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&NbtTag> {
+        if let NbtTag::Compound(fields) = self {
+            for (k, v) in fields {
+                if k == key {
+                    return Some(v);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -304,8 +321,11 @@ fn write_named_tag(out: &mut Vec<u8>, name: &str, tag: &NbtTag) {
 fn write_payload(out: &mut Vec<u8>, tag: &NbtTag) {
     match tag {
         NbtTag::Byte(value) => out.push(*value as u8),
+        NbtTag::Short(value) => out.extend_from_slice(&value.to_be_bytes()),
         NbtTag::Int(value) => out.extend_from_slice(&value.to_be_bytes()),
         NbtTag::Long(value) => out.extend_from_slice(&value.to_be_bytes()),
+        NbtTag::Float(value) => out.extend_from_slice(&value.to_be_bytes()),
+        NbtTag::Double(value) => out.extend_from_slice(&value.to_be_bytes()),
         NbtTag::ByteArray(values) => {
             out.extend_from_slice(&(values.len() as i32).to_be_bytes());
             out.extend_from_slice(values);
@@ -864,6 +884,401 @@ fn write_region_file(path: &Path, chunks: &[(i32, i32, Vec<u8>)]) -> io::Result<
     Ok(())
 }
 
+pub struct NbtDecoder<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> NbtDecoder<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    fn read_u8(&mut self) -> io::Result<u8> {
+        if self.pos >= self.data.len() {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "NBT EOF"));
+        }
+        let b = self.data[self.pos];
+        self.pos += 1;
+        Ok(b)
+    }
+
+    fn read_i8(&mut self) -> io::Result<i8> {
+        Ok(self.read_u8()? as i8)
+    }
+
+    fn read_i16(&mut self) -> io::Result<i16> {
+        if self.pos + 2 > self.data.len() {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "NBT EOF"));
+        }
+        let v = i16::from_be_bytes(self.data[self.pos..self.pos + 2].try_into().unwrap());
+        self.pos += 2;
+        Ok(v)
+    }
+
+    fn read_i32(&mut self) -> io::Result<i32> {
+        if self.pos + 4 > self.data.len() {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "NBT EOF"));
+        }
+        let v = i32::from_be_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
+        self.pos += 4;
+        Ok(v)
+    }
+
+    fn read_i64(&mut self) -> io::Result<i64> {
+        if self.pos + 8 > self.data.len() {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "NBT EOF"));
+        }
+        let v = i64::from_be_bytes(self.data[self.pos..self.pos + 8].try_into().unwrap());
+        self.pos += 8;
+        Ok(v)
+    }
+
+    fn read_f32(&mut self) -> io::Result<f32> {
+        Ok(f32::from_bits(self.read_i32()? as u32))
+    }
+
+    fn read_f64(&mut self) -> io::Result<f64> {
+        Ok(f64::from_bits(self.read_i64()? as u64))
+    }
+
+    fn read_string(&mut self) -> io::Result<String> {
+        let len = self.read_i16()? as usize;
+        if self.pos + len > self.data.len() {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "NBT EOF"));
+        }
+        let s = String::from_utf8_lossy(&self.data[self.pos..self.pos + len]).into_owned();
+        self.pos += len;
+        Ok(s)
+    }
+
+    fn read_tag_payload(&mut self, tag_type: u8) -> io::Result<NbtTag> {
+        match tag_type {
+            1 => Ok(NbtTag::Byte(self.read_i8()?)),
+            2 => Ok(NbtTag::Short(self.read_i16()?)),
+            3 => Ok(NbtTag::Int(self.read_i32()?)),
+            4 => Ok(NbtTag::Long(self.read_i64()?)),
+            5 => Ok(NbtTag::Float(self.read_f32()?)),
+            6 => Ok(NbtTag::Double(self.read_f64()?)),
+            7 => {
+                let len = self.read_i32()? as usize;
+                if self.pos + len > self.data.len() {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "NBT EOF"));
+                }
+                let bytes = self.data[self.pos..self.pos + len].to_vec();
+                self.pos += len;
+                Ok(NbtTag::ByteArray(bytes))
+            }
+            8 => Ok(NbtTag::String(self.read_string()?)),
+            9 => {
+                let elem_type = self.read_u8()?;
+                let len = self.read_i32()? as usize;
+                let mut tags = Vec::with_capacity(len.min(1024));
+                for _ in 0..len {
+                    tags.push(self.read_tag_payload(elem_type)?);
+                }
+                Ok(NbtTag::List {
+                    element_type: elem_type,
+                    tags,
+                })
+            }
+            10 => {
+                let mut fields = Vec::new();
+                loop {
+                    let field_type = self.read_u8()?;
+                    if field_type == 0 {
+                        break;
+                    }
+                    let name = self.read_string()?;
+                    let val = self.read_tag_payload(field_type)?;
+                    fields.push((name, val));
+                }
+                Ok(NbtTag::Compound(fields))
+            }
+            11 => {
+                let len = self.read_i32()? as usize;
+                let mut ints = Vec::with_capacity(len.min(1024));
+                for _ in 0..len {
+                    ints.push(self.read_i32()?);
+                }
+                Ok(NbtTag::IntArray(ints))
+            }
+            12 => {
+                let len = self.read_i32()? as usize;
+                let mut longs = Vec::with_capacity(len.min(1024));
+                for _ in 0..len {
+                    longs.push(self.read_i64()?);
+                }
+                Ok(NbtTag::LongArray(longs))
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unknown NBT tag type {tag_type}"),
+            )),
+        }
+    }
+
+    pub fn parse_root(&mut self) -> io::Result<(String, NbtTag)> {
+        let type_id = self.read_u8()?;
+        if type_id == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty NBT root"));
+        }
+        let root_name = self.read_string()?;
+        let root_tag = self.read_tag_payload(type_id)?;
+        Ok((root_name, root_tag))
+    }
+}
+
+pub fn read_region_file(path: &Path) -> io::Result<Vec<(i32, i32, Vec<u8>)>> {
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+
+    let bytes = std::fs::read(path)?;
+    if bytes.len() < 8192 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Region file too small"));
+    }
+
+    let mut chunks = Vec::new();
+    for i in 0..1024 {
+        let loc_offset = i * 4;
+        let offset = ((bytes[loc_offset] as usize) << 16)
+            | ((bytes[loc_offset + 1] as usize) << 8)
+            | (bytes[loc_offset + 2] as usize);
+        let sector_count = bytes[loc_offset + 3] as usize;
+
+        if offset == 0 || sector_count == 0 {
+            continue;
+        }
+
+        let chunk_offset = offset * 4096;
+        if chunk_offset + 5 > bytes.len() {
+            continue;
+        }
+
+        let length = u32::from_be_bytes(bytes[chunk_offset..chunk_offset + 4].try_into().unwrap()) as usize;
+        let compression_type = bytes[chunk_offset + 4];
+
+        if length <= 1 || chunk_offset + 4 + length > bytes.len() {
+            continue;
+        }
+
+        let compressed_payload = &bytes[chunk_offset + 5..chunk_offset + 4 + length];
+        let mut decompressed = Vec::new();
+
+        if compression_type == 2 {
+            let mut decoder = ZlibDecoder::new(compressed_payload);
+            decoder.read_to_end(&mut decompressed)?;
+        } else if compression_type == 1 {
+            let mut decoder = flate2::read::GzDecoder::new(compressed_payload);
+            decoder.read_to_end(&mut decompressed)?;
+        } else {
+            continue;
+        }
+
+        let rel_x = (i % 32) as i32;
+        let rel_z = (i / 32) as i32;
+        chunks.push((rel_x, rel_z, decompressed));
+    }
+
+    Ok(chunks)
+}
+
+pub fn java_block_name_to_block_type(name: &str) -> BlockType {
+    use BlockType::*;
+    match name {
+        "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air" => Air,
+        "minecraft:stone" => Stone,
+        "minecraft:grass_block" => Grass,
+        "minecraft:dirt" | "minecraft:coarse_dirt" => Dirt,
+        "minecraft:oak_log" => OakLog,
+        "minecraft:oak_leaves" => OakLeaves,
+        "minecraft:bedrock" => Bedrock,
+        "minecraft:water" => Water,
+        "minecraft:sand" => Sand,
+        "minecraft:gravel" => Gravel,
+        "minecraft:coal_ore" => CoalOre,
+        "minecraft:powder_snow" => PowderedSnow,
+        "minecraft:spruce_log" => SpruceLog,
+        "minecraft:spruce_leaves" => SpruceLeaves,
+        "minecraft:snow" => SnowLayer,
+        "minecraft:iron_ore" => IronOre,
+        "minecraft:iron_block" => IronBlock,
+        "minecraft:tnt" => TNT,
+        "minecraft:cobblestone" => Cobblestone,
+        "minecraft:oak_planks" => OakPlanks,
+        "minecraft:crafting_table" => CraftingTable,
+        "minecraft:furnace" => Furnace,
+        "minecraft:chest" => Chest,
+        "minecraft:torch" | "minecraft:wall_torch" => Torch,
+        "minecraft:gold_ore" => GoldOre,
+        "minecraft:diamond_ore" => DiamondOre,
+        "minecraft:glass" => Glass,
+        "minecraft:bookshelf" => Bookshelf,
+        "minecraft:mossy_cobblestone" => MossyCobblestone,
+        "minecraft:obsidian" => Obsidian,
+        "minecraft:sponge" => Sponge,
+        "minecraft:white_wool" => Wool,
+        "minecraft:lapis_ore" => LapisOre,
+        "minecraft:lapis_block" => LapisBlock,
+        "minecraft:sandstone" => Sandstone,
+        "minecraft:bricks" => Brick,
+        "minecraft:stone_bricks" => StoneBrick,
+        "minecraft:lava" => Lava,
+        "minecraft:cactus" => Cactus,
+        "minecraft:clay" => Clay,
+        "minecraft:farmland" => Farmland,
+        "minecraft:wheat" => Wheat,
+        "minecraft:redstone_ore" => RedstoneOre,
+        "minecraft:spawner" => MobSpawner,
+        "minecraft:bell" => Bell,
+        "minecraft:red_bed" => Bed,
+        "minecraft:oak_door" => OakDoor,
+        "minecraft:iron_door" => IronDoor,
+        "minecraft:lever" => Lever,
+        "minecraft:stone_button" => StoneButton,
+        "minecraft:redstone_wire" => RedstoneWire,
+        "minecraft:redstone_torch" | "minecraft:redstone_wall_torch" => RedstoneTorch,
+        "minecraft:redstone_lamp" => RedstoneLamp,
+        "minecraft:redstone_block" => RedstoneBlock,
+        "minecraft:piston" => Piston,
+        "minecraft:sticky_piston" => StickyPiston,
+        "minecraft:piston_head" => PistonHead,
+        _ => Air,
+    }
+}
+
+fn unpack_values(longs: &[i64], bits_per_value: usize, count: usize) -> Vec<u16> {
+    if bits_per_value == 0 || longs.is_empty() {
+        return vec![0; count];
+    }
+    let values_per_long = 64 / bits_per_value;
+    let mask = (1u64 << bits_per_value) - 1;
+    let mut values = Vec::with_capacity(count);
+
+    for index in 0..count {
+        let long_index = index / values_per_long;
+        if long_index >= longs.len() {
+            values.push(0);
+            continue;
+        }
+        let bit_offset = (index % values_per_long) * bits_per_value;
+        let val = ((longs[long_index] as u64) >> bit_offset) & mask;
+        values.push(val as u16);
+    }
+    values
+}
+
+pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
+    let mut decoder = NbtDecoder::new(decompressed_nbt);
+    let (_root_name, root) = decoder.parse_root()?;
+
+    let level = root.get("Level").unwrap_or(&root);
+    let x_pos = match level.get("xPos") {
+        Some(NbtTag::Int(val)) => *val,
+        _ => 0,
+    };
+    let z_pos = match level.get("zPos") {
+        Some(NbtTag::Int(val)) => *val,
+        _ => 0,
+    };
+
+    let mut chunk = Chunk::new(x_pos, z_pos, 0);
+
+    if let Some(NbtTag::List { tags: sections, .. }) = level.get("Sections") {
+        for sec in sections {
+            let sec_y = match sec.get("Y") {
+                Some(NbtTag::Byte(y)) => *y as i32,
+                _ => continue,
+            };
+
+            if sec_y < 0 || sec_y >= SECTIONS_PER_CHUNK as i32 {
+                continue;
+            }
+
+            let palette: Vec<BlockType> = match sec.get("Palette") {
+                Some(NbtTag::List { tags, .. }) => tags
+                    .iter()
+                    .map(|t| {
+                        if let Some(NbtTag::String(name)) = t.get("Name") {
+                            let mut btype = java_block_name_to_block_type(name);
+                            if btype == BlockType::Grass {
+                                if let Some(NbtTag::Compound(props)) = t.get("Properties") {
+                                    for (k, v) in props {
+                                        if k == "snowy" && v == &NbtTag::String("true".to_owned()) {
+                                            btype = BlockType::SnowyGrass;
+                                        }
+                                    }
+                                }
+                            }
+                            btype
+                        } else {
+                            BlockType::Air
+                        }
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+
+            if palette.is_empty() {
+                continue;
+            }
+
+            let block_states: &[i64] = match sec.get("BlockStates") {
+                Some(NbtTag::LongArray(arr)) => arr.as_slice(),
+                _ => &[],
+            };
+
+            let bits_per_block = bits_needed(palette.len()).max(4);
+            let indices = unpack_values(
+                block_states,
+                bits_per_block,
+                CHUNK_WIDTH * CHUNK_DEPTH * SECTION_HEIGHT,
+            );
+
+            for (idx, &pal_idx) in indices.iter().enumerate() {
+                let x = idx % CHUNK_WIDTH;
+                let z = (idx / CHUNK_WIDTH) % CHUNK_DEPTH;
+                let y = idx / (CHUNK_WIDTH * CHUNK_DEPTH);
+                let world_y = (sec_y as usize * SECTION_HEIGHT) + y;
+
+                if world_y < CHUNK_HEIGHT {
+                    let block = palette.get(pal_idx as usize).copied().unwrap_or(BlockType::Air);
+                    chunk.blocks[x][world_y][z] = block;
+                }
+            }
+        }
+    }
+
+    Ok(chunk)
+}
+
+pub fn import_classic_java_world(world_dir: &Path) -> io::Result<Vec<Chunk>> {
+    let region_dir = world_dir.join("region");
+    if !region_dir.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("No region directory found at {}", region_dir.display()),
+        ));
+    }
+
+    let mut chunks = Vec::new();
+    for entry in std::fs::read_dir(region_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("mca") {
+            if let Ok(raw_chunks) = read_region_file(&path) {
+                for (_rx, _rz, payload) in raw_chunks {
+                    if let Ok(chunk) = import_chunk_from_nbt(&payload) {
+                        chunks.push(chunk);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(chunks)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,5 +1430,52 @@ mod tests {
 
         let player_nbt = build_player_data_nbt(0.0, 64.0, 0.0, 0.0, 0.0, 20.0);
         assert_eq!(player_nbt.id(), 10);
+    }
+
+    #[test]
+    fn test_java_world_export_import_roundtrip() {
+        let out = std::env::temp_dir().join(format!(
+            "voxelpopuli-java-roundtrip-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+
+        let config = ExportConfig {
+            output_dir: out.clone(),
+            radius: 0,
+        };
+        let summary = export_classic_java_world(9999, &config).unwrap();
+        assert_eq!(summary.chunks, 1);
+
+        let imported = import_classic_java_world(&out).unwrap();
+        assert_eq!(imported.len(), 1);
+
+        let mut original = Chunk::new(0, 0, 9999);
+        original.generate();
+
+        assert_eq!(imported[0].x, original.x);
+        assert_eq!(imported[0].z, original.z);
+
+        let mut matching_blocks = 0;
+        let mut total_blocks = 0;
+        let mut mismatch_map = std::collections::HashMap::new();
+        for x in 0..CHUNK_WIDTH {
+            for y in 0..CHUNK_HEIGHT {
+                for z in 0..CHUNK_DEPTH {
+                    total_blocks += 1;
+                    let orig = original.blocks[x][y][z];
+                    let imp = imported[0].blocks[x][y][z];
+                    if imp == orig {
+                        matching_blocks += 1;
+                    } else {
+                        *mismatch_map.entry((orig, imp)).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        println!("Block mismatches: {:?}", mismatch_map);
+        assert_eq!(matching_blocks, total_blocks, "imported chunk blocks must match 100%");
+
+        let _ = std::fs::remove_dir_all(out);
     }
 }

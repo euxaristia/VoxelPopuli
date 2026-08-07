@@ -311,6 +311,28 @@ fn main() {
         return;
     }
 
+    let args: Vec<String> = std::env::args().collect();
+    let mut imported_chunks = Vec::new();
+    if let Some(import_idx) = args.iter().position(|a| a == "--import-world") {
+        if let Some(dir_str) = args.get(import_idx + 1) {
+            let path = std::path::Path::new(dir_str);
+            match java_compat::import_classic_java_world(path) {
+                Ok(chunks) => {
+                    println!(
+                        "Successfully imported {} Minecraft Java chunk(s) from {}",
+                        chunks.len(),
+                        path.display()
+                    );
+                    imported_chunks = chunks;
+                }
+                Err(err) => {
+                    eprintln!("Failed to import Minecraft Java world from {}: {err}", path.display());
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
     let state = WindowState::load();
     let window_title = format!("VoxelPopuli Rust - Seed {world_seed}");
     let mut glfw = glfw::init(glfw::log_errors).unwrap();
@@ -341,6 +363,9 @@ fn main() {
     let (init_fb_w, init_fb_h) = window.get_framebuffer_size();
     renderer::init(&*window, init_fb_w, init_fb_h);
     let mut world = World::new(world_seed as u64);
+    for chunk in imported_chunks {
+        world.insert_chunk(chunk);
+    }
     world.generate_atlas();
     world.init_celestial();
     match village::nearest_village(world_seed as u64, 32, 32, 8) {

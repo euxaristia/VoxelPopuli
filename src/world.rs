@@ -581,6 +581,12 @@ impl World {
         None
     }
 
+    pub fn insert_chunk(&mut self, mut chunk: Chunk) {
+        chunk.calculate_lighting();
+        let index = self.get_pool_index(chunk.x, chunk.z);
+        self.chunks[index] = Some(Box::new(chunk));
+    }
+
     pub fn get_block(&self, x: i32, y: i32, z: i32) -> BlockType {
         if y < 0 || y >= CHUNK_HEIGHT as i32 {
             return BlockType::Air;
