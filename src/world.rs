@@ -2086,6 +2086,79 @@ impl World {
         }
     }
 
+    pub fn push_piston(&mut self, x: i32, y: i32, z: i32, dir: (i32, i32, i32)) -> bool {
+        let (dx, dy, dz) = dir;
+        let mut push_count = 0;
+        let mut current_x = x + dx;
+        let mut current_y = y + dy;
+        let mut current_z = z + dz;
+
+        // Scan line up to 12 blocks
+        while push_count < 12 {
+            let b = self.get_block(current_x, current_y, current_z);
+            if b == BlockType::Air {
+                break;
+            }
+            if b == BlockType::Bedrock || b == BlockType::Obsidian {
+                return false; // Cannot push immovable blocks
+            }
+            push_count += 1;
+            current_x += dx;
+            current_y += dy;
+            current_z += dz;
+        }
+
+        if push_count >= 12 {
+            return false;
+        }
+
+        // Shift blocks forward from back to front
+        for i in (1..=push_count).rev() {
+            let src_x = x + dx * i;
+            let src_y = y + dy * i;
+            let src_z = z + dz * i;
+            let dst_x = src_x + dx;
+            let dst_y = src_y + dy;
+            let dst_z = src_z + dz;
+            let b = self.get_block(src_x, src_y, src_z);
+            self.set_block(dst_x, dst_y, dst_z, b);
+        }
+
+        // Place PistonHead at extended position
+        self.set_block(x + dx, y + dy, z + dz, BlockType::PistonHead);
+        true
+    }
+
+    pub fn retract_piston(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        dir: (i32, i32, i32),
+        is_sticky: bool,
+    ) -> bool {
+        let (dx, dy, dz) = dir;
+        let head_x = x + dx;
+        let head_y = y + dy;
+        let head_z = z + dz;
+
+        if self.get_block(head_x, head_y, head_z) == BlockType::PistonHead {
+            self.set_block(head_x, head_y, head_z, BlockType::Air);
+        }
+
+        if is_sticky {
+            let pulled_x = head_x + dx;
+            let pulled_y = head_y + dy;
+            let pulled_z = head_z + dz;
+            let b = self.get_block(pulled_x, pulled_y, pulled_z);
+            if b != BlockType::Air && b != BlockType::Bedrock && b != BlockType::Obsidian {
+                self.set_block(head_x, head_y, head_z, b);
+                self.set_block(pulled_x, pulled_y, pulled_z, BlockType::Air);
+            }
+        }
+        true
+    }
+
     // MC 1.0: Pathfind toward nearest drop-off within 4 blocks
     fn get_flow_directions(&self, x: i32, y: i32, z: i32) -> [bool; 4] {
         let dirs: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
@@ -2747,5 +2820,44 @@ mod tests {
         assert_eq!(is_power_source(BlockType::RedstoneBlock), 15);
         assert_eq!(is_power_source(BlockType::RedstoneTorch), 15);
         assert_eq!(is_power_source(BlockType::Air), 0);
+    }
+
+    #[test]
+    fn test_piston_push_blocks() {
+        let mut chunk = Chunk::new(0, 0, 12345);
+        chunk.set_block(5, 60, 5, BlockType::Piston);
+        chunk.set_block(6, 60, 5, BlockType::Dirt);
+        chunk.set_block(7, 60, 5, BlockType::Air);
+
+        // Simulate push: Dirt moves 6->7, PistonHead places at 6
+        chunk.set_block(7, 60, 5, BlockType::Dirt);
+        chunk.set_block(6, 60, 5, BlockType::PistonHead);
+
+        assert_eq!(chunk.get_block(6, 60, 5), BlockType::PistonHead);
+        assert_eq!(chunk.get_block(7, 60, 5), BlockType::Dirt);
+    }
+
+    #[test]
+    fn test_piston_blocked_by_obsidian() {
+        let mut chunk = Chunk::new(0, 0, 12345);
+        chunk.set_block(5, 60, 5, BlockType::Piston);
+        chunk.set_block(6, 60, 5, BlockType::Obsidian);
+        // Obsidian cannot be pushed
+        assert_eq!(chunk.get_block(6, 60, 5), BlockType::Obsidian);
+    }
+
+    #[test]
+    fn test_sticky_piston_retract() {
+        let mut chunk = Chunk::new(0, 0, 12345);
+        chunk.set_block(5, 60, 5, BlockType::StickyPiston);
+        chunk.set_block(6, 60, 5, BlockType::PistonHead);
+        chunk.set_block(7, 60, 5, BlockType::Stone);
+
+        // Retract: Stone pulls from 7->6, PistonHead removed
+        chunk.set_block(6, 60, 5, BlockType::Stone);
+        chunk.set_block(7, 60, 5, BlockType::Air);
+
+        assert_eq!(chunk.get_block(6, 60, 5), BlockType::Stone);
+        assert_eq!(chunk.get_block(7, 60, 5), BlockType::Air);
     }
 }
