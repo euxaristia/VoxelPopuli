@@ -146,6 +146,8 @@ pub fn try_till_farmland(
     false
 }
 
+use crate::player::Player;
+
 pub fn prime_tnt(world: &mut World, x: i32, y: i32, z: i32) {
     world.set_block(x, y, z, BlockType::Air);
     let mut rng = rand::rng();
@@ -157,6 +159,206 @@ pub fn prime_tnt(world: &mut World, x: i32, y: i32, z: i32) {
         fuse: 4.0,
         initial_fuse: 4.0,
     });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    X,
+    Y,
+    Z,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockStage {
+    /// 1 block placed: constrained to placement face plane
+    Plane { plane_axis: Axis, plane_coord: i32 },
+    /// 2+ blocks placed: locked to strict 1D line
+    Line {
+        axis: Axis,
+        fixed_a: i32,
+        fixed_b: i32,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LinearPlacementLock {
+    pub stage: LockStage,
+    pub last_placed: (i32, i32, i32),
+}
+
+impl LinearPlacementLock {
+    pub fn new(pos: (i32, i32, i32), normal: (i32, i32, i32)) -> Self {
+        let (nx, ny, nz) = normal;
+        let (x, y, z) = pos;
+
+        let stage = if ny != 0 {
+            LockStage::Plane {
+                plane_axis: Axis::Y,
+                plane_coord: y,
+            }
+        } else if nx != 0 {
+            LockStage::Plane {
+                plane_axis: Axis::X,
+                plane_coord: x,
+            }
+        } else {
+            LockStage::Plane {
+                plane_axis: Axis::Z,
+                plane_coord: z,
+            }
+        };
+
+        Self {
+            stage,
+            last_placed: pos,
+        }
+    }
+
+    pub fn matches(&self, pos: (i32, i32, i32)) -> bool {
+        let (x, y, z) = pos;
+        match self.stage {
+            LockStage::Plane {
+                plane_axis,
+                plane_coord,
+            } => match plane_axis {
+                Axis::X => x == plane_coord,
+                Axis::Y => y == plane_coord,
+                Axis::Z => z == plane_coord,
+            },
+            LockStage::Line {
+                axis,
+                fixed_a,
+                fixed_b,
+            } => match axis {
+                Axis::X => y == fixed_a && z == fixed_b,
+                Axis::Y => x == fixed_a && z == fixed_b,
+                Axis::Z => x == fixed_a && y == fixed_b,
+            },
+        }
+    }
+
+    pub fn register_placement(&mut self, pos: (i32, i32, i32)) {
+        let (x1, y1, z1) = self.last_placed;
+        let (x2, y2, z2) = pos;
+
+        if let LockStage::Plane { .. } = self.stage {
+            let dx = (x2 - x1).abs();
+            let dy = (y2 - y1).abs();
+            let dz = (z2 - z1).abs();
+
+            if dx > 0 {
+                self.stage = LockStage::Line {
+                    axis: Axis::X,
+                    fixed_a: y2,
+                    fixed_b: z2,
+                };
+            } else if dy > 0 {
+                self.stage = LockStage::Line {
+                    axis: Axis::Y,
+                    fixed_a: x2,
+                    fixed_b: z2,
+                };
+            } else if dz > 0 {
+                self.stage = LockStage::Line {
+                    axis: Axis::Z,
+                    fixed_a: x2,
+                    fixed_b: y2,
+                };
+            }
+        }
+        self.last_placed = pos;
+    }
+}
+
+pub fn try_place_block_with_lock(
+    world: &mut World,
+    inv_slots: &mut [Option<ItemStack>; INVENTORY_SLOT_COUNT],
+    selected_slot: usize,
+    eye_pos: Vec3,
+    look_dir: Vec3,
+    player: &Player,
+    lock: &mut Option<LinearPlacementLock>,
+) -> bool {
+    let res = world.raycast(eye_pos, look_dir, 8.0);
+    if !res.hit {
+        return false;
+    }
+
+    if try_till_farmland(world, inv_slots, selected_slot, &res) {
+        return true;
+    }
+
+    let Some(s) = &mut inv_slots[selected_slot] else {
+        return false;
+    };
+
+    if s.block == BlockType::FlintAndSteel {
+        let target = world.get_block(res.x, res.y, res.z);
+        if target == BlockType::TNT {
+            prime_tnt(world, res.x, res.y, res.z);
+            return true;
+        }
+    }
+
+    if s.block == BlockType::Bucket {
+        let target = world.get_block(res.x, res.y, res.z);
+        if target == BlockType::Water || world.get_liquid_level(res.x, res.y, res.z) > 0 {
+            world.set_block(res.x, res.y, res.z, BlockType::Air);
+            world.set_liquid_level(res.x, res.y, res.z, 0);
+            world.schedule_water_neighbors(res.x, res.y, res.z);
+            s.block = BlockType::WaterBucket;
+            return true;
+        } else if target == BlockType::Lava {
+            world.set_block(res.x, res.y, res.z, BlockType::Air);
+            world.set_liquid_level(res.x, res.y, res.z, 0);
+            s.block = BlockType::LavaBucket;
+            return true;
+        }
+    } else if s.block == BlockType::WaterBucket {
+        let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+        world.set_block(nx, ny, nz, BlockType::Water);
+        world.set_liquid_level(nx, ny, nz, 1);
+        world.schedule_water_neighbors(nx, ny, nz);
+        s.block = BlockType::Bucket;
+        return true;
+    } else if s.block == BlockType::LavaBucket {
+        let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+        world.set_block(nx, ny, nz, BlockType::Lava);
+        world.set_liquid_level(nx, ny, nz, 1);
+        s.block = BlockType::Bucket;
+        return true;
+    }
+
+    if !s.block.is_item() {
+        let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+
+        if let Some(l) = lock {
+            if !l.matches((nx, ny, nz)) {
+                return false;
+            }
+        }
+
+        if world.get_block(nx, ny, nz) == BlockType::Air && !player.intersects_block(nx, ny, nz) {
+            world.set_block(nx, ny, nz, s.block);
+
+            if lock.is_none() {
+                *lock = Some(LinearPlacementLock::new(
+                    (nx, ny, nz),
+                    (res.nx, res.ny, res.nz),
+                ));
+            } else if let Some(l) = lock {
+                l.register_placement((nx, ny, nz));
+            }
+
+            s.count -= 1;
+            if s.count == 0 {
+                inv_slots[selected_slot] = None;
+            }
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Full MC 1.0 slot-click mechanics.
@@ -571,5 +773,37 @@ mod tests {
         assert!(is_hoe_item(BlockType::WoodHoe));
         assert!(is_hoe_item(BlockType::DiamondHoe));
         assert!(!is_hoe_item(BlockType::IronPickaxe));
+    }
+
+    #[test]
+    fn test_linear_placement_lock_plane_to_line_transition() {
+        let mut lock = LinearPlacementLock::new((10, 64, 5), (0, 1, 0));
+        assert_eq!(
+            lock.stage,
+            LockStage::Plane {
+                plane_axis: Axis::Y,
+                plane_coord: 64
+            }
+        );
+        // Single block on plane matches anywhere on y=64
+        assert!(lock.matches((10, 64, 5)));
+        assert!(lock.matches((10, 64, 6))); // Z extension
+        assert!(lock.matches((11, 64, 5))); // X extension
+        assert!(!lock.matches((10, 65, 5))); // Different Y altitude rejected
+
+        // Register 2nd block along Z axis
+        lock.register_placement((10, 64, 6));
+        assert_eq!(
+            lock.stage,
+            LockStage::Line {
+                axis: Axis::Z,
+                fixed_a: 10,
+                fixed_b: 64
+            }
+        );
+
+        // 3rd block: must stay on Z axis (x=10, y=64)
+        assert!(lock.matches((10, 64, 7)));
+        assert!(!lock.matches((11, 64, 7))); // Drift along X rejected
     }
 }

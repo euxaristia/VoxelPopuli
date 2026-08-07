@@ -41,21 +41,6 @@ pub enum GameState {
     Paused,
 }
 
-use rand::RngExt;
-
-fn prime_tnt(world: &mut World, x: i32, y: i32, z: i32) {
-    world.set_block(x, y, z, BlockType::Air);
-    let mut rng = rand::rng();
-    let vx = (rng.random_range(0.0..1.0) * 0.04 - 0.02) * 20.0;
-    let vz = (rng.random_range(0.0..1.0) * 0.04 - 0.02) * 20.0;
-    world.explosives.push(crate::block::ActiveExplosive {
-        position: Vec3::new(x as f32, y as f32, z as f32),
-        velocity: Vec3::new(vx, 1.2, vz),
-        fuse: 4.0,
-        initial_fuse: 4.0,
-    });
-}
-
 // shader imports
 use renderer::{RenderTexture2D, Shader, Texture2D};
 
@@ -413,6 +398,8 @@ fn main() {
     let mut fancy_gfx_setting = true;
     let mut export_status_msg = String::new();
     let mut selected_skin = 0u8;
+    let mut placement_lock: Option<LinearPlacementLock> = None;
+    let mut place_repeat_timer = 0.0f32;
     let mut prev_gp_lt = -1.0f32;
     let mut prev_gp_dpad_right = false;
     let mut prev_gp_dpad_left = false;
@@ -951,8 +938,11 @@ fn main() {
                         if right {
                             if action == Action::Press {
                                 right_mouse_held = true;
+                                place_repeat_timer = 0.0;
                             } else if action == Action::Release {
                                 right_mouse_held = false;
+                                placement_lock = None;
+                                place_repeat_timer = 0.0;
                                 if bow_charge > 0.1
                                     && inv_slots[player.selected_slot]
                                         .map_or(false, |s| s.block == BlockType::Bow)
@@ -1037,72 +1027,17 @@ fn main() {
                                     continue;
                                 }
                             }
-                            if res.hit
-                                && try_till_farmland(
+                            if res.hit {
+                                if try_place_block_with_lock(
                                     &mut world,
                                     &mut inv_slots,
                                     player.selected_slot,
-                                    &res,
-                                )
-                            {
-                                continue;
-                            }
-                            if res.hit
-                                && let Some(s) = &mut inv_slots[player.selected_slot]
-                            {
-                                if s.block == BlockType::FlintAndSteel {
-                                    let target = world.get_block(res.x, res.y, res.z);
-                                    if target == BlockType::TNT {
-                                        prime_tnt(&mut world, res.x, res.y, res.z);
-                                        continue;
-                                    }
-                                }
-
-                                if s.block == BlockType::Bucket {
-                                    let target = world.get_block(res.x, res.y, res.z);
-                                    if target == BlockType::Water
-                                        || world.get_liquid_level(res.x, res.y, res.z) > 0
-                                    {
-                                        world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                        world.set_liquid_level(res.x, res.y, res.z, 0);
-                                        world.schedule_water_neighbors(res.x, res.y, res.z);
-                                        s.block = BlockType::WaterBucket;
-                                        continue;
-                                    } else if target == BlockType::Lava {
-                                        world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                        world.set_liquid_level(res.x, res.y, res.z, 0);
-                                        s.block = BlockType::LavaBucket;
-                                        continue;
-                                    }
-                                } else if s.block == BlockType::WaterBucket {
-                                    let (nx, ny, nz) =
-                                        (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                                    world.set_block(nx, ny, nz, BlockType::Water);
-                                    world.set_liquid_level(nx, ny, nz, 1);
-                                    world.schedule_water_neighbors(nx, ny, nz);
-                                    s.block = BlockType::Bucket;
-                                    continue;
-                                } else if s.block == BlockType::LavaBucket {
-                                    let (nx, ny, nz) =
-                                        (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                                    world.set_block(nx, ny, nz, BlockType::Lava);
-                                    world.set_liquid_level(nx, ny, nz, 1);
-                                    s.block = BlockType::Bucket;
-                                    continue;
-                                }
-
-                                if !s.block.is_item() {
-                                    let (nx, ny, nz) =
-                                        (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                                    if world.get_block(nx, ny, nz) == BlockType::Air
-                                        && !player.intersects_block(nx, ny, nz)
-                                    {
-                                        world.set_block(nx, ny, nz, s.block);
-                                        s.count -= 1;
-                                        if s.count == 0 {
-                                            inv_slots[player.selected_slot] = None;
-                                        }
-                                    }
+                                    eye_pos,
+                                    look_dir,
+                                    &player,
+                                    &mut placement_lock,
+                                ) {
+                                    place_repeat_timer = 0.20;
                                 }
                             }
                         }
@@ -1190,7 +1125,6 @@ fn main() {
                 }
 
                 let gp_place = lt > 0.5 && prev_gp_lt <= 0.5;
-
                 if gp_place {
                     let gp_eye = player.position + Vec3::new(0.0, 1.6, 0.0);
                     let gp_look = Vec3::new(
@@ -1198,49 +1132,16 @@ fn main() {
                         camera_angle.y.sin(),
                         camera_angle.y.cos() * camera_angle.x.cos(),
                     );
-                    if gp_place {
-                        let res = world.raycast(gp_eye, gp_look, 8.0);
-                        let tilled = res.hit
-                            && try_till_farmland(
-                                &mut world,
-                                &mut inv_slots,
-                                player.selected_slot,
-                                &res,
-                            );
-                        if !tilled
-                            && res.hit
-                            && let Some(s) = &mut inv_slots[player.selected_slot]
-                        {
-                            if s.block == BlockType::FlintAndSteel {
-                                let target = world.get_block(res.x, res.y, res.z);
-                                if target == BlockType::TNT {
-                                    prime_tnt(&mut world, res.x, res.y, res.z);
-                                } else if !s.block.is_item() {
-                                    let (nx, ny, nz) =
-                                        (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                                    if world.get_block(nx, ny, nz) == BlockType::Air
-                                        && !player.intersects_block(nx, ny, nz)
-                                    {
-                                        world.set_block(nx, ny, nz, s.block);
-                                        s.count -= 1;
-                                        if s.count == 0 {
-                                            inv_slots[player.selected_slot] = None;
-                                        }
-                                    }
-                                }
-                            } else if !s.block.is_item() {
-                                let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
-                                if world.get_block(nx, ny, nz) == BlockType::Air
-                                    && !player.intersects_block(nx, ny, nz)
-                                {
-                                    world.set_block(nx, ny, nz, s.block);
-                                    s.count -= 1;
-                                    if s.count == 0 {
-                                        inv_slots[player.selected_slot] = None;
-                                    }
-                                }
-                            }
-                        }
+                    if try_place_block_with_lock(
+                        &mut world,
+                        &mut inv_slots,
+                        player.selected_slot,
+                        gp_eye,
+                        gp_look,
+                        &player,
+                        &mut placement_lock,
+                    ) {
+                        place_repeat_timer = 0.20;
                     }
                 }
             }
@@ -1377,6 +1278,31 @@ fn main() {
                 }
             } else {
                 mining_state.reset();
+            }
+
+            // Per-frame block placement repeat update (Bedrock-style linear placement lock)
+            let gp_lt_held = gp_gs
+                .as_ref()
+                .is_some_and(|gs| gs.get_axis(GamepadAxis::AxisLeftTrigger) > 0.5);
+            let is_placing = (right_mouse_held || gp_lt_held) && !player.inventory_open;
+            if is_placing {
+                place_repeat_timer -= delta_time;
+                if place_repeat_timer <= 0.0 {
+                    if try_place_block_with_lock(
+                        &mut world,
+                        &mut inv_slots,
+                        player.selected_slot,
+                        eye_pos,
+                        look_dir,
+                        &player,
+                        &mut placement_lock,
+                    ) {
+                        place_repeat_timer = 0.20;
+                    }
+                }
+            } else {
+                placement_lock = None;
+                place_repeat_timer = 0.0;
             }
         }
 
