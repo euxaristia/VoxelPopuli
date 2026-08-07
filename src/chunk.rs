@@ -119,6 +119,14 @@ impl ChunkRng {
         debug_assert!(start <= end);
         start + (self.next_u32() % (end - start + 1) as u32) as i32
     }
+
+    pub(crate) fn next_f64(&mut self) -> f64 {
+        self.next_u32() as f64 / 4294967296.0
+    }
+
+    pub(crate) fn range_f32(&mut self, start: f32, end: f32) -> f32 {
+        start + (end - start) * (self.next_u32() as f32 / 4294967296.0)
+    }
 }
 
 pub const CHUNK_WIDTH: usize = 16;
@@ -837,121 +845,25 @@ impl Chunk {
             }
         }
 
-        // PASS 3: Coal Ores
-        for _ in 0..150 {
-            let x = rng.range_usize(0, CHUNK_WIDTH) as i32;
-            let y = rng.range_usize(0, CHUNK_HEIGHT) as i32;
-            let z = rng.range_usize(0, CHUNK_DEPTH) as i32;
-            let vein_size = rng.range_i32_inclusive(1, 17);
-            let mut current_x = x;
-            let mut current_y = y;
-            let mut current_z = z;
-            for _ in 0..vein_size {
-                if current_x >= 0
-                    && current_x < CHUNK_WIDTH as i32
-                    && current_z >= 0
-                    && current_z < CHUNK_DEPTH as i32
-                    && current_y >= 0
-                    && current_y < CHUNK_HEIGHT as i32
-                {
-                    let cx = current_x as usize;
-                    let cy = current_y as usize;
-                    let cz = current_z as usize;
-                    if self.blocks[cx][cy][cz] == BlockType::Stone {
-                        self.blocks[cx][cy][cz] = BlockType::CoalOre;
-                    }
-                }
-                let dir = rng.range_i32(0, 6);
-                match dir {
-                    0 => current_x += 1,
-                    1 => current_x -= 1,
-                    2 => current_y += 1,
-                    3 => current_y -= 1,
-                    4 => current_z += 1,
-                    5 => current_z -= 1,
-                    _ => {}
-                }
-            }
-        }
+        // PASS 3: Minecraft 1.0 Authentic WorldGenMinable Ore Generation
+        let ore_specs: [(BlockType, usize, usize, i32, i32); 8] = [
+            // (BlockType, count_per_chunk, vein_size, min_y, max_y)
+            (BlockType::Dirt, 20, 32, 0, 128),
+            (BlockType::Gravel, 10, 32, 0, 128),
+            (BlockType::CoalOre, 20, 16, 0, 128),
+            (BlockType::IronOre, 20, 8, 0, 64),
+            (BlockType::GoldOre, 2, 8, 0, 32),
+            (BlockType::RedstoneOre, 8, 7, 0, 16),
+            (BlockType::DiamondOre, 1, 7, 1, 15),
+            (BlockType::LapisOre, 1, 7, 1, 32),
+        ];
 
-        // PASS 3b: Iron Ores (Slightly rarer, deeper)
-        for _ in 0..80 {
-            let x = rng.range_usize(0, CHUNK_WIDTH) as i32;
-            let y = rng.range_i32(0, 64);
-            let z = rng.range_usize(0, CHUNK_DEPTH) as i32;
-            let vein_size = rng.range_i32_inclusive(1, 9);
-            let mut current_x = x;
-            let mut current_y = y;
-            let mut current_z = z;
-            for _ in 0..vein_size {
-                if current_x >= 0
-                    && current_x < CHUNK_WIDTH as i32
-                    && current_z >= 0
-                    && current_z < CHUNK_DEPTH as i32
-                    && current_y >= 0
-                    && current_y < CHUNK_HEIGHT as i32
-                {
-                    let cx = current_x as usize;
-                    let cy = current_y as usize;
-                    let cz = current_z as usize;
-                    if self.blocks[cx][cy][cz] == BlockType::Stone {
-                        self.blocks[cx][cy][cz] = BlockType::IronOre;
-                    }
-                }
-                let dir = rng.range_i32(0, 6);
-                match dir {
-                    0 => current_x += 1,
-                    1 => current_x -= 1,
-                    2 => current_y += 1,
-                    3 => current_y -= 1,
-                    4 => current_z += 1,
-                    5 => current_z -= 1,
-                    _ => {}
-                }
-            }
-        }
-
-        // PASS 3c: Rare progression ores
-        for (block, attempts, max_y, max_vein) in [
-            (BlockType::GoldOre, 18, 32, 9),
-            (BlockType::DiamondOre, 7, 16, 7),
-            (BlockType::LapisOre, 8, 32, 7),
-            (BlockType::RedstoneOre, 12, 16, 8),
-        ] {
-            for _ in 0..attempts {
-                let x = rng.range_usize(0, CHUNK_WIDTH) as i32;
-                let y = rng.range_i32(1, max_y);
-                let z = rng.range_usize(0, CHUNK_DEPTH) as i32;
-                let vein_size = rng.range_i32_inclusive(1, max_vein);
-                let mut current_x = x;
-                let mut current_y = y;
-                let mut current_z = z;
-                for _ in 0..vein_size {
-                    if current_x >= 0
-                        && current_x < CHUNK_WIDTH as i32
-                        && current_z >= 0
-                        && current_z < CHUNK_DEPTH as i32
-                        && current_y >= 0
-                        && current_y < CHUNK_HEIGHT as i32
-                    {
-                        let cx = current_x as usize;
-                        let cy = current_y as usize;
-                        let cz = current_z as usize;
-                        if self.blocks[cx][cy][cz] == BlockType::Stone {
-                            self.blocks[cx][cy][cz] = block;
-                        }
-                    }
-                    let dir = rng.range_i32(0, 6);
-                    match dir {
-                        0 => current_x += 1,
-                        1 => current_x -= 1,
-                        2 => current_y += 1,
-                        3 => current_y -= 1,
-                        4 => current_z += 1,
-                        5 => current_z -= 1,
-                        _ => {}
-                    }
-                }
+        for (block, count, vein_size, min_y, max_y) in ore_specs {
+            for _ in 0..count {
+                let x = rng.range_i32(0, CHUNK_WIDTH as i32);
+                let y = rng.range_i32(min_y, max_y);
+                let z = rng.range_i32(0, CHUNK_DEPTH as i32);
+                generate_minable_vein(self, block, vein_size, x, y, z, &mut rng);
             }
         }
 
@@ -2442,6 +2354,78 @@ fn record_vertex_count_sample(count: u32) {
             p99,
             max
         );
+    }
+}
+
+pub fn generate_minable_vein(
+    chunk: &mut Chunk,
+    block_type: BlockType,
+    number_of_blocks: usize,
+    chunk_x: i32,
+    chunk_y: i32,
+    chunk_z: i32,
+    rng: &mut ChunkRng,
+) {
+    let angle = rng.range_f32(0.0, std::f32::consts::PI);
+    let sin_a = angle.sin();
+    let cos_a = angle.cos();
+
+    let d_blocks = number_of_blocks as f32;
+    let x0 = (chunk_x + 8) as f32;
+    let z0 = (chunk_z + 8) as f32;
+
+    let d0 = (x0 + sin_a * d_blocks / 8.0) as f64;
+    let d1 = (x0 - sin_a * d_blocks / 8.0) as f64;
+    let d2 = (z0 + cos_a * d_blocks / 8.0) as f64;
+    let d3 = (z0 - cos_a * d_blocks / 8.0) as f64;
+
+    let d4 = (chunk_y + rng.range_i32(-2, 1)) as f64;
+    let d5 = (chunk_y + rng.range_i32(-2, 1)) as f64;
+
+    for i in 0..=number_of_blocks {
+        let t = i as f64 / d_blocks as f64;
+        let d6 = d0 + (d1 - d0) * t;
+        let d7 = d4 + (d5 - d4) * t;
+        let d8 = d2 + (d3 - d2) * t;
+
+        let d9 = (rng.next_f64() * d_blocks as f64) / 16.0;
+        let radius = (((t as f32 * std::f32::consts::PI).sin() + 1.0) as f64 * d9 + 1.0) / 2.0;
+
+        let min_x = (d6 - radius).floor() as i32;
+        let max_x = (d6 + radius).floor() as i32;
+        let min_y = (d7 - radius).floor() as i32;
+        let max_y = (d7 + radius).floor() as i32;
+        let min_z = (d8 - radius).floor() as i32;
+        let max_z = (d8 + radius).floor() as i32;
+
+        for bx in min_x..=max_x {
+            let x_dist = ((bx as f64 + 0.5) - d6) / radius;
+            if x_dist * x_dist >= 1.0 {
+                continue;
+            }
+            for by in min_y..=max_y {
+                let y_dist = ((by as f64 + 0.5) - d7) / radius;
+                if x_dist * x_dist + y_dist * y_dist >= 1.0 {
+                    continue;
+                }
+                for bz in min_z..=max_z {
+                    let z_dist = ((bz as f64 + 0.5) - d8) / radius;
+                    if x_dist * x_dist + y_dist * y_dist + z_dist * z_dist < 1.0 {
+                        if (0..CHUNK_WIDTH as i32).contains(&bx)
+                            && (0..CHUNK_HEIGHT as i32).contains(&by)
+                            && (0..CHUNK_DEPTH as i32).contains(&bz)
+                        {
+                            let cx = bx as usize;
+                            let cy = by as usize;
+                            let cz = bz as usize;
+                            if chunk.blocks[cx][cy][cz] == BlockType::Stone {
+                                chunk.blocks[cx][cy][cz] = block_type;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
