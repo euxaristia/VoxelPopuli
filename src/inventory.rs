@@ -42,7 +42,7 @@ pub fn stack_max(b: BlockType) -> u32 {
 pub fn create_starting_inventory() -> [Option<ItemStack>; INVENTORY_SLOT_COUNT] {
     let mut slots = [None::<ItemStack>; INVENTORY_SLOT_COUNT];
     slots[0] = Some(ItemStack::new(BlockType::TNT, 64));
-    slots[1] = Some(ItemStack::new(BlockType::FlintAndSteel, 1));
+    slots[1] = Some(ItemStack::new_tool(BlockType::FlintAndSteel));
     slots[2] = Some(ItemStack::new(BlockType::Torch, 64));
     slots[3] = Some(ItemStack::new(BlockType::Bread, 16));
     slots[4] = Some(ItemStack::new(BlockType::CookedPorkchop, 16));
@@ -170,8 +170,8 @@ pub enum Axis {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LockStage {
-    /// 1 block placed: constrained to placement face plane
-    Plane { plane_axis: Axis, plane_coord: i32 },
+    /// 1 block placed: allows block #2 to be placed in any direction from P1
+    InitialPlacement((i32, i32, i32)),
     /// 2+ blocks placed: locked to strict 1D line
     Line {
         axis: Axis,
@@ -187,29 +187,9 @@ pub struct LinearPlacementLock {
 }
 
 impl LinearPlacementLock {
-    pub fn new(pos: (i32, i32, i32), normal: (i32, i32, i32)) -> Self {
-        let (nx, ny, nz) = normal;
-        let (x, y, z) = pos;
-
-        let stage = if ny != 0 {
-            LockStage::Plane {
-                plane_axis: Axis::Y,
-                plane_coord: y,
-            }
-        } else if nx != 0 {
-            LockStage::Plane {
-                plane_axis: Axis::X,
-                plane_coord: x,
-            }
-        } else {
-            LockStage::Plane {
-                plane_axis: Axis::Z,
-                plane_coord: z,
-            }
-        };
-
+    pub fn new(pos: (i32, i32, i32), _normal: (i32, i32, i32)) -> Self {
         Self {
-            stage,
+            stage: LockStage::InitialPlacement(pos),
             last_placed: pos,
         }
     }
@@ -217,14 +197,12 @@ impl LinearPlacementLock {
     pub fn matches(&self, pos: (i32, i32, i32)) -> bool {
         let (x, y, z) = pos;
         match self.stage {
-            LockStage::Plane {
-                plane_axis,
-                plane_coord,
-            } => match plane_axis {
-                Axis::X => x == plane_coord,
-                Axis::Y => y == plane_coord,
-                Axis::Z => z == plane_coord,
-            },
+            LockStage::InitialPlacement((x1, y1, z1)) => {
+                let dx = (x - x1).abs();
+                let dy = (y - y1).abs();
+                let dz = (z - z1).abs();
+                pos != (x1, y1, z1) && (dx + dy + dz <= 3)
+            }
             LockStage::Line {
                 axis,
                 fixed_a,
@@ -241,21 +219,21 @@ impl LinearPlacementLock {
         let (x1, y1, z1) = self.last_placed;
         let (x2, y2, z2) = pos;
 
-        if let LockStage::Plane { .. } = self.stage {
+        if let LockStage::InitialPlacement(_) = self.stage {
             let dx = (x2 - x1).abs();
             let dy = (y2 - y1).abs();
             let dz = (z2 - z1).abs();
 
-            if dx > 0 {
-                self.stage = LockStage::Line {
-                    axis: Axis::X,
-                    fixed_a: y2,
-                    fixed_b: z2,
-                };
-            } else if dy > 0 {
+            if dy > 0 {
                 self.stage = LockStage::Line {
                     axis: Axis::Y,
                     fixed_a: x2,
+                    fixed_b: z2,
+                };
+            } else if dx > 0 {
+                self.stage = LockStage::Line {
+                    axis: Axis::X,
+                    fixed_a: y2,
                     fixed_b: z2,
                 };
             } else if dz > 0 {
@@ -778,32 +756,26 @@ mod tests {
     #[test]
     fn test_linear_placement_lock_plane_to_line_transition() {
         let mut lock = LinearPlacementLock::new((10, 64, 5), (0, 1, 0));
-        assert_eq!(
-            lock.stage,
-            LockStage::Plane {
-                plane_axis: Axis::Y,
-                plane_coord: 64
-            }
-        );
-        // Single block on plane matches anywhere on y=64
-        assert!(lock.matches((10, 64, 5)));
+        assert_eq!(lock.stage, LockStage::InitialPlacement((10, 64, 5)));
+
+        // Single block placement allows initial placement adjacent in any direction (including vertical)
         assert!(lock.matches((10, 64, 6))); // Z extension
         assert!(lock.matches((11, 64, 5))); // X extension
-        assert!(!lock.matches((10, 65, 5))); // Different Y altitude rejected
+        assert!(lock.matches((10, 65, 5))); // Y vertical extension
 
-        // Register 2nd block along Z axis
-        lock.register_placement((10, 64, 6));
+        // Register 2nd block along Y axis (vertical pillar)
+        lock.register_placement((10, 65, 5));
         assert_eq!(
             lock.stage,
             LockStage::Line {
-                axis: Axis::Z,
+                axis: Axis::Y,
                 fixed_a: 10,
-                fixed_b: 64
+                fixed_b: 5
             }
         );
 
-        // 3rd block: must stay on Z axis (x=10, y=64)
-        assert!(lock.matches((10, 64, 7)));
-        assert!(!lock.matches((11, 64, 7))); // Drift along X rejected
+        // 3rd block: must stay on vertical Y axis (x=10, z=5)
+        assert!(lock.matches((10, 66, 5)));
+        assert!(!lock.matches((11, 66, 5))); // Drift along X rejected
     }
 }

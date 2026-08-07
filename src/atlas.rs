@@ -42,6 +42,64 @@ pub fn generate_atlas_data() -> Vec<u8> {
         draw_block(7, 1, 210, 160, 130); // RawIron item
         draw_block(8, 1, 245, 245, 245); // IronIngot item
 
+        // Torch (5, 7)
+        for y in 6..14 {
+            draw_pixel(5 * 16 + 7, 7 * 16 + y, 110, 75, 40, 255);
+            draw_pixel(5 * 16 + 8, 7 * 16 + y, 90, 60, 30, 255);
+        }
+        for x in 6..10 {
+            for y in 2..6 {
+                let (r, g, b) = if y <= 3 { (255, 230, 80) } else { (255, 120, 20) };
+                draw_pixel(5 * 16 + x, 7 * 16 + y, r, g, b, 255);
+            }
+        }
+
+        // Bread (6, 8)
+        for x in 3..13 {
+            for y in 6..11 {
+                draw_pixel(6 * 16 + x, 8 * 16 + y, 195, 140, 65, 255);
+            }
+        }
+        draw_pixel(6 * 16 + 5, 8 * 16 + 7, 130, 85, 35, 255);
+        draw_pixel(6 * 16 + 8, 8 * 16 + 7, 130, 85, 35, 255);
+        draw_pixel(6 * 16 + 11, 8 * 16 + 7, 130, 85, 35, 255);
+
+        // Cooked Porkchop (3, 8)
+        for x in 4..12 {
+            for y in 4..12 {
+                draw_pixel(3 * 16 + x, 8 * 16 + y, 160, 80, 50, 255);
+            }
+        }
+
+        // Raw Porkchop (2, 8)
+        for x in 4..12 {
+            for y in 4..12 {
+                draw_pixel(2 * 16 + x, 8 * 16 + y, 235, 140, 150, 255);
+            }
+        }
+
+        // Bow (7, 8)
+        for i in 2..14 {
+            draw_pixel(7 * 16 + 4, 8 * 16 + i, 120, 80, 40, 255);
+            draw_pixel(7 * 16 + 12, 8 * 16 + i, 220, 220, 220, 255);
+        }
+
+        // Arrow (8, 8)
+        for i in 3..13 {
+            draw_pixel(8 * 16 + i, 8 * 16 + i, 130, 90, 50, 255);
+        }
+        draw_pixel(8 * 16 + 12, 8 * 16 + 12, 180, 180, 180, 255);
+        draw_pixel(8 * 16 + 3, 8 * 16 + 3, 240, 240, 240, 255);
+
+        // Iron Chestplate (5, 9)
+        for x in 3..13 {
+            for y in 4..13 {
+                if !((6..10).contains(&x) && (4..7).contains(&y)) {
+                    draw_pixel(5 * 16 + x, 9 * 16 + y, 200, 200, 205, 255);
+                }
+            }
+        }
+
         // Authentic Flint & Steel (hand-drawn pixels from image)
         let fs_p: [(u8, u8, u8, u8); 256] = [
             (0, 0, 0, 0),

@@ -22,7 +22,7 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32) {
                     let rz = zi as f32 / 15.0 * 2.0 - 1.0;
                     let dir = Vec3::new(rx, ry, rz).normalize_or_zero();
 
-                    let mut ray_power = size * (0.7 + rng.random_range(0.0..0.6));
+                    let mut ray_power = size * (0.7 + rng.random_range(0.0..0.2));
                     let step = 0.3f32;
                     let mut current_pos = explosion_center;
 
@@ -135,8 +135,8 @@ mod tests {
     fn test_blast_resistance_values() {
         assert_eq!(BlockType::Bedrock.blast_resistance(), 3_600_000.0);
         assert_eq!(BlockType::Obsidian.blast_resistance(), 1200.0);
-        assert_eq!(BlockType::Stone.blast_resistance(), 30.0);
-        assert_eq!(BlockType::Dirt.blast_resistance(), 2.5);
+        assert_eq!(BlockType::Stone.blast_resistance(), 6.0);
+        assert_eq!(BlockType::Dirt.blast_resistance(), 0.5);
         assert_eq!(BlockType::TNT.blast_resistance(), 0.0);
         assert_eq!(BlockType::Air.blast_resistance(), 0.0);
     }
