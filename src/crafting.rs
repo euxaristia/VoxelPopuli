@@ -126,6 +126,38 @@ const RECIPES: &[Recipe] = &[
         output_count: 1,
         mirror: false,
     },
+    // 1 RedstoneDust over 1 Stick -> RedstoneTorch
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 1,
+            height: 2,
+            pattern: &[RedstoneDust, Stick],
+        },
+        output: RedstoneTorch,
+        output_count: 1,
+        mirror: false,
+    },
+    // 9 RedstoneDust -> RedstoneBlock
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+                RedstoneDust,
+            ],
+        },
+        output: RedstoneBlock,
+        output_count: 1,
+        mirror: false,
+    },
     // 4 Planks 2x2 -> Crafting Table
     Recipe {
         shape: RecipeShape::Shaped {
