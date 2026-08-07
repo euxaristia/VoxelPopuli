@@ -128,6 +128,11 @@ pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
         RedstoneOre => JavaBlockState::with_properties("minecraft:redstone_ore", REDSTONE_ORE),
         MobSpawner => JavaBlockState::new("minecraft:spawner"),
         Bell => JavaBlockState::with_properties("minecraft:bell", BELL),
+        Bed => JavaBlockState::new("minecraft:red_bed"),
+        OakDoor => JavaBlockState::new("minecraft:oak_door"),
+        IronDoor => JavaBlockState::new("minecraft:iron_door"),
+        Lever => JavaBlockState::new("minecraft:lever"),
+        StoneButton => JavaBlockState::new("minecraft:stone_button"),
 
         RawIron | IronIngot | FlintAndSteel | Stick | Coal | GoldIngot | Diamond | LapisLazuli
         | String | Gunpowder | Leather | RedstoneDust | WoodPickaxe | StonePickaxe
@@ -138,7 +143,8 @@ pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
         | CookedPorkchop | RawBeef | Steak | Bread | LeatherHelmet | LeatherChestplate
         | LeatherLeggings | LeatherBoots | IronHelmet | IronChestplate | IronLeggings
         | IronBoots | GoldHelmet | GoldChestplate | GoldLeggings | GoldBoots | DiamondHelmet
-        | DiamondChestplate | DiamondLeggings | DiamondBoots | Bow | Arrow => return None,
+        | DiamondChestplate | DiamondLeggings | DiamondBoots | Bow | Arrow | Bucket
+        | WaterBucket | LavaBucket => return None,
     })
 }
 

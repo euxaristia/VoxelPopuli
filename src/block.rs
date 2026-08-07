@@ -172,11 +172,21 @@ pub enum BlockType {
     // === MC 1.0 Combat & Ranged (106-107) ===
     Bow,
     Arrow,
+
+    // === MC 1.0 Fluid Buckets, Beds & Doors (108-115) ===
+    Bucket,
+    WaterBucket,
+    LavaBucket,
+    Bed,
+    OakDoor,
+    IronDoor,
+    Lever,
+    StoneButton,
 }
 
 #[allow(dead_code)]
 impl BlockType {
-    pub const COUNT: usize = 108;
+    pub const COUNT: usize = 116;
 
     pub fn from_u8(value: u8) -> Self {
         if (value as usize) < Self::COUNT {
@@ -253,6 +263,9 @@ impl BlockType {
                 | BlockType::DiamondBoots
                 | BlockType::Bow
                 | BlockType::Arrow
+                | BlockType::Bucket
+                | BlockType::WaterBucket
+                | BlockType::LavaBucket
         )
     }
 
@@ -263,6 +276,11 @@ impl BlockType {
             | BlockType::Lava
             | BlockType::SnowLayer
             | BlockType::Torch
+            | BlockType::Bed
+            | BlockType::OakDoor
+            | BlockType::IronDoor
+            | BlockType::Lever
+            | BlockType::StoneButton
             | BlockType::Bell => false,
             _ => !self.is_item(),
         }
@@ -311,6 +329,11 @@ impl BlockType {
                 | BlockType::Glass
                 | BlockType::Torch
                 | BlockType::Wheat
+                | BlockType::Bed
+                | BlockType::OakDoor
+                | BlockType::IronDoor
+                | BlockType::Lever
+                | BlockType::StoneButton
                 | BlockType::Bell
         )
     }
@@ -322,7 +345,7 @@ mod tests {
 
     #[test]
     fn test_count() {
-        assert_eq!(BlockType::COUNT, 108);
+        assert_eq!(BlockType::COUNT, 116);
     }
 
     #[test]

@@ -1299,6 +1299,7 @@ impl Chunk {
 
     pub fn set_block(&mut self, x: usize, y: usize, z: usize, block: BlockType) {
         if x < CHUNK_WIDTH && y < CHUNK_HEIGHT && z < CHUNK_DEPTH {
+            let old_block = self.blocks[x][y][z];
             self.blocks[x][y][z] = block;
             if block == BlockType::Water || block == BlockType::Lava {
                 self.liquid_levels[x][y][z] = WATER_SOURCE;
@@ -1306,6 +1307,13 @@ impl Chunk {
                 self.liquid_levels[x][y][z] = 0;
             }
             self.dirty = true;
+            if block == BlockType::Torch
+                || old_block == BlockType::Torch
+                || block == BlockType::Lava
+                || old_block == BlockType::Lava
+            {
+                self.calculate_lighting();
+            }
         }
     }
 
@@ -1340,6 +1348,9 @@ impl ChunkData {
         let mut c_wa = Vec::new();
 
         let should_draw_face = |current: BlockType, neighbor: BlockType| -> bool {
+            if current == BlockType::Torch || current == BlockType::Bell {
+                return true;
+            }
             if neighbor == BlockType::Air {
                 return true;
             }
@@ -1853,14 +1864,14 @@ impl ChunkData {
                     let v0 = ty as f32 * ts + pad;
                     let u1 = (tx + 1) as f32 * ts - pad;
                     let v1 = (ty + 1) as f32 * ts - pad;
-                    let block_top = if block == BlockType::SnowLayer {
-                        0.125
-                    } else if block == BlockType::Torch {
-                        0.625
+                    let (min_x, max_x, min_z, max_z, block_top) = if block == BlockType::Torch {
+                        (fx + 0.4375, fx + 0.5625, fz + 0.4375, fz + 0.5625, 0.625)
+                    } else if block == BlockType::SnowLayer {
+                        (fx, fx + 1.0, fz, fz + 1.0, 0.125)
                     } else if block == BlockType::Bell {
-                        0.6
+                        (fx + 0.2, fx + 0.8, fz + 0.2, fz + 0.8, 0.6)
                     } else {
-                        1.0
+                        (fx, fx + 1.0, fz, fz + 1.0, 1.0)
                     };
                     let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
                     let wy = y as i32;
@@ -1899,24 +1910,24 @@ impl ChunkData {
                         let ao11 = calc_ao(l_21, l_12, l_22);
 
                         v.extend_from_slice(&[
-                            fx,
+                            min_x,
                             fy + block_top,
-                            fz,
-                            fx,
+                            min_z,
+                            min_x,
                             fy + block_top,
-                            fz + 1.0,
-                            fx + 1.0,
+                            max_z,
+                            max_x,
                             fy + block_top,
-                            fz + 1.0,
-                            fx,
+                            max_z,
+                            min_x,
                             fy + block_top,
-                            fz,
-                            fx + 1.0,
+                            min_z,
+                            max_x,
                             fy + block_top,
-                            fz + 1.0,
-                            fx + 1.0,
+                            max_z,
+                            max_x,
                             fy + block_top,
-                            fz,
+                            min_z,
                         ]);
                         t.extend_from_slice(&[
                             tu0, tv0, tu0, tv1, tu1, tv1, tu0, tv0, tu1, tv1, tu1, tv0,
@@ -1973,24 +1984,8 @@ impl ChunkData {
                     };
                     if should_draw_face(block, neighbor_bottom) {
                         v.extend_from_slice(&[
-                            fx,
-                            fy,
-                            fz,
-                            fx + 1.0,
-                            fy,
-                            fz + 1.0,
-                            fx,
-                            fy,
-                            fz + 1.0,
-                            fx,
-                            fy,
-                            fz,
-                            fx + 1.0,
-                            fy,
-                            fz,
-                            fx + 1.0,
-                            fy,
-                            fz + 1.0,
+                            min_x, fy, min_z, max_x, fy, max_z, min_x, fy, max_z, min_x, fy, min_z,
+                            max_x, fy, min_z, max_x, fy, max_z,
                         ]);
                         t.extend_from_slice(&[u0, v0, u1, v1, u0, v1, u0, v0, u1, v0, u1, v1]);
                         for _ in 0..6 {
@@ -2047,90 +2042,90 @@ impl ChunkData {
                             if i == 0 {
                                 // Z+
                                 v.extend_from_slice(&[
-                                    fx,
+                                    min_x,
                                     fy,
-                                    fz + 1.0,
-                                    fx + 1.0,
+                                    max_z,
+                                    max_x,
                                     fy,
-                                    fz + 1.0,
-                                    fx + 1.0,
+                                    max_z,
+                                    max_x,
                                     fy + block_top,
-                                    fz + 1.0,
-                                    fx,
+                                    max_z,
+                                    min_x,
                                     fy,
-                                    fz + 1.0,
-                                    fx + 1.0,
+                                    max_z,
+                                    max_x,
                                     fy + block_top,
-                                    fz + 1.0,
-                                    fx,
+                                    max_z,
+                                    min_x,
                                     fy + block_top,
-                                    fz + 1.0,
+                                    max_z,
                                 ]);
                             } else if i == 1 {
                                 // Z-
                                 v.extend_from_slice(&[
-                                    fx + 1.0,
+                                    max_x,
                                     fy,
-                                    fz,
-                                    fx,
+                                    min_z,
+                                    min_x,
                                     fy,
-                                    fz,
-                                    fx,
+                                    min_z,
+                                    min_x,
                                     fy + block_top,
-                                    fz,
-                                    fx + 1.0,
+                                    min_z,
+                                    max_x,
                                     fy,
-                                    fz,
-                                    fx,
+                                    min_z,
+                                    min_x,
                                     fy + block_top,
-                                    fz,
-                                    fx + 1.0,
+                                    min_z,
+                                    max_x,
                                     fy + block_top,
-                                    fz,
+                                    min_z,
                                 ]);
                             } else if i == 2 {
                                 // X+
                                 v.extend_from_slice(&[
-                                    fx + 1.0,
+                                    max_x,
                                     fy,
-                                    fz + 1.0,
-                                    fx + 1.0,
+                                    max_z,
+                                    max_x,
                                     fy,
-                                    fz,
-                                    fx + 1.0,
+                                    min_z,
+                                    max_x,
                                     fy + block_top,
-                                    fz,
-                                    fx + 1.0,
+                                    min_z,
+                                    max_x,
                                     fy,
-                                    fz + 1.0,
-                                    fx + 1.0,
+                                    max_z,
+                                    max_x,
                                     fy + block_top,
-                                    fz,
-                                    fx + 1.0,
+                                    min_z,
+                                    max_x,
                                     fy + block_top,
-                                    fz + 1.0,
+                                    max_z,
                                 ]);
                             } else {
                                 // X-
                                 v.extend_from_slice(&[
-                                    fx,
+                                    min_x,
                                     fy,
-                                    fz,
-                                    fx,
+                                    min_z,
+                                    min_x,
                                     fy,
-                                    fz + 1.0,
-                                    fx,
+                                    max_z,
+                                    min_x,
                                     fy + block_top,
-                                    fz + 1.0,
-                                    fx,
+                                    max_z,
+                                    min_x,
                                     fy,
-                                    fz,
-                                    fx,
+                                    min_z,
+                                    min_x,
                                     fy + block_top,
-                                    fz + 1.0,
-                                    fx,
+                                    max_z,
+                                    min_x,
                                     fy + block_top,
-                                    fz,
+                                    min_z,
                                 ]);
                             }
                             t.extend_from_slice(&[u0, v1, u1, v1, u1, v0, u0, v1, u1, v0, u0, v0]);

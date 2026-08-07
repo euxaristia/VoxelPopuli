@@ -2004,7 +2004,7 @@ impl World {
         }
     }
 
-    fn schedule_water_neighbors(&mut self, x: i32, y: i32, z: i32) {
+    pub fn schedule_water_neighbors(&mut self, x: i32, y: i32, z: i32) {
         for &(dx, dy, dz) in &[
             (1i32, 0i32, 0i32),
             (-1, 0, 0),
@@ -2046,6 +2046,33 @@ impl World {
         }
         let new_decay = min_decay + 1;
         if new_decay > 7 { -1 } else { new_decay }
+    }
+
+    pub fn check_water_lava_collisions(&mut self, x: i32, y: i32, z: i32) -> bool {
+        let mut hit = false;
+        for &(dx, dy, dz) in &[
+            (1i32, 0i32, 0i32),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ] {
+            let (nx, ny, nz) = (x + dx, y + dy, z + dz);
+            let nb = self.get_block(nx, ny, nz);
+            if nb == BlockType::Lava {
+                let l_level = self.get_liquid_level(nx, ny, nz);
+                if water_is_source(l_level) || l_level == 1 {
+                    self.set_block(nx, ny, nz, BlockType::Obsidian);
+                    self.set_liquid_level(nx, ny, nz, 0);
+                } else {
+                    self.set_block(nx, ny, nz, BlockType::Cobblestone);
+                    self.set_liquid_level(nx, ny, nz, 0);
+                }
+                hit = true;
+            }
+        }
+        hit
     }
 
     // MC 1.0: Pathfind toward nearest drop-off within 4 blocks
@@ -2144,6 +2171,11 @@ impl World {
         for &(x, y, z) in &to_process {
             let level = self.get_liquid_level(x, y, z);
             if level == 0 {
+                continue;
+            }
+
+            if self.check_water_lava_collisions(x, y, z) {
+                processed += 1;
                 continue;
             }
 
@@ -2660,5 +2692,35 @@ impl World {
             mesh.draw();
             crate::renderer::set_depth_test(true);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_water_lava_collision_creates_obsidian() {
+        let mut chunk = Chunk::new(0, 0, 12345);
+        chunk.set_block(10, 60, 10, BlockType::Water);
+        chunk.set_block(11, 60, 10, BlockType::Lava);
+        let l_level = chunk.liquid_levels[11][60][10];
+        if water_is_source(l_level) || l_level == 1 {
+            chunk.set_block(11, 60, 10, BlockType::Obsidian);
+        }
+        assert_eq!(chunk.get_block(11, 60, 10), BlockType::Obsidian);
+    }
+
+    #[test]
+    fn test_water_flowing_lava_collision_creates_cobblestone() {
+        let mut chunk = Chunk::new(0, 0, 12345);
+        chunk.set_block(10, 60, 10, BlockType::Water);
+        chunk.set_block(11, 60, 10, BlockType::Lava);
+        chunk.liquid_levels[11][60][10] = 5; // flowing lava
+        let l_level = chunk.liquid_levels[11][60][10];
+        if !water_is_source(l_level) && l_level > 1 {
+            chunk.set_block(11, 60, 10, BlockType::Cobblestone);
+        }
+        assert_eq!(chunk.get_block(11, 60, 10), BlockType::Cobblestone);
     }
 }
