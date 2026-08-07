@@ -1,2 +1,2 @@
 [env]
-CMAKE_GENERATOR = "Ninja"
+CMAKE_GENERATOR = { value = "Ninja", force = true }
