@@ -1550,14 +1550,6 @@ fn main() {
                                     ));
                                     continue;
                                 }
-                                if target_block == BlockType::OakDoor
-                                    || target_block == BlockType::IronDoor
-                                    || target_block == BlockType::Lever
-                                    || target_block == BlockType::StoneButton
-                                {
-                                    world.set_block(res.x, res.y, res.z, BlockType::Air);
-                                    continue;
-                                }
                             }
                             if res.hit
                                 && try_till_farmland(
