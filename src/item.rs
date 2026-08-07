@@ -117,6 +117,13 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
         // Village bell
         Bell => s(5.0, TT::Pickaxe, TM::Wood, true, Bell, 1),
 
+        // Bed, Doors & Switches
+        Bed => s(0.2, TT::Axe, TM::None, false, Bed, 1),
+        OakDoor => s(3.0, TT::Axe, TM::None, false, OakDoor, 1),
+        IronDoor => s(5.0, TT::Pickaxe, TM::Wood, true, IronDoor, 1),
+        Lever => s(0.5, TT::Pickaxe, TM::None, false, Lever, 1),
+        StoneButton => s(0.5, TT::Pickaxe, TM::None, false, StoneButton, 1),
+
         // Items don't have block hardness (shouldn't be mined)
         _ => s(0.0, TT::None, TM::None, false, b, 1),
     }
@@ -382,6 +389,16 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         DiamondLeggings => (14, 9),
         DiamondBoots => (15, 9),
 
+        // Row 4: material & fluid items
+        Bucket => (10, 4),
+        WaterBucket => (11, 4),
+        LavaBucket => (12, 4),
+        Bed => (13, 4),
+        OakDoor => (14, 4),
+        IronDoor => (15, 4),
+        Lever => (5, 7),
+        StoneButton => (0, 2),
+
         // Default
         Air => (0, 0),
     }
@@ -513,7 +530,16 @@ pub fn atlas_uv_bottom(b: BlockType) -> (u8, u8) {
 
 /// Returns the max stack size for a block/item type.
 pub fn max_stack_size(b: BlockType) -> u32 {
-    if b.is_tool() { 1 } else { 64 }
+    if b.is_tool()
+        || matches!(
+            b,
+            BlockType::Bucket | BlockType::WaterBucket | BlockType::LavaBucket | BlockType::Bed
+        )
+    {
+        1
+    } else {
+        64
+    }
 }
 
 #[cfg(test)]
@@ -1490,5 +1516,17 @@ mod tests {
         assert_eq!(chest.durability, 240);
 
         assert!(armor_properties(BlockType::Dirt).is_none());
+    }
+
+    #[test]
+    fn test_buckets_and_beds_properties() {
+        assert_eq!(max_stack_size(BlockType::Bucket), 1);
+        assert_eq!(max_stack_size(BlockType::WaterBucket), 1);
+        assert_eq!(max_stack_size(BlockType::LavaBucket), 1);
+        assert_eq!(max_stack_size(BlockType::Bed), 1);
+        assert_eq!(atlas_uv(BlockType::Bucket), (10, 4));
+        assert_eq!(atlas_uv(BlockType::WaterBucket), (11, 4));
+        assert_eq!(atlas_uv(BlockType::LavaBucket), (12, 4));
+        assert_eq!(atlas_uv(BlockType::Bed), (13, 4));
     }
 }

@@ -1542,6 +1542,22 @@ fn main() {
                                     window.set_cursor_mode(glfw::CursorMode::Normal);
                                     continue;
                                 }
+                                if target_block == BlockType::Bed {
+                                    player.spawn_point = Some(Vec3::new(
+                                        res.x as f32,
+                                        (res.y + 1) as f32,
+                                        res.z as f32,
+                                    ));
+                                    continue;
+                                }
+                                if target_block == BlockType::OakDoor
+                                    || target_block == BlockType::IronDoor
+                                    || target_block == BlockType::Lever
+                                    || target_block == BlockType::StoneButton
+                                {
+                                    world.set_block(res.x, res.y, res.z, BlockType::Air);
+                                    continue;
+                                }
                             }
                             if res.hit
                                 && try_till_farmland(
@@ -1562,6 +1578,39 @@ fn main() {
                                         prime_tnt(&mut world, res.x, res.y, res.z);
                                         continue;
                                     }
+                                }
+
+                                if s.block == BlockType::Bucket {
+                                    let target = world.get_block(res.x, res.y, res.z);
+                                    if target == BlockType::Water
+                                        || world.get_liquid_level(res.x, res.y, res.z) > 0
+                                    {
+                                        world.set_block(res.x, res.y, res.z, BlockType::Air);
+                                        world.set_liquid_level(res.x, res.y, res.z, 0);
+                                        world.schedule_water_neighbors(res.x, res.y, res.z);
+                                        s.block = BlockType::WaterBucket;
+                                        continue;
+                                    } else if target == BlockType::Lava {
+                                        world.set_block(res.x, res.y, res.z, BlockType::Air);
+                                        world.set_liquid_level(res.x, res.y, res.z, 0);
+                                        s.block = BlockType::LavaBucket;
+                                        continue;
+                                    }
+                                } else if s.block == BlockType::WaterBucket {
+                                    let (nx, ny, nz) =
+                                        (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+                                    world.set_block(nx, ny, nz, BlockType::Water);
+                                    world.set_liquid_level(nx, ny, nz, 1);
+                                    world.schedule_water_neighbors(nx, ny, nz);
+                                    s.block = BlockType::Bucket;
+                                    continue;
+                                } else if s.block == BlockType::LavaBucket {
+                                    let (nx, ny, nz) =
+                                        (res.x + res.nx, res.y + res.ny, res.z + res.nz);
+                                    world.set_block(nx, ny, nz, BlockType::Lava);
+                                    world.set_liquid_level(nx, ny, nz, 1);
+                                    s.block = BlockType::Bucket;
+                                    continue;
                                 }
 
                                 if !s.block.is_item() {

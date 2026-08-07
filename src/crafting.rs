@@ -58,6 +58,74 @@ const RECIPES: &[Recipe] = &[
         output_count: 4,
         mirror: false,
     },
+    // 3 Iron Ingots V-shape -> Bucket
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[IronIngot, Air, IronIngot, Air, IronIngot, Air],
+        },
+        output: Bucket,
+        output_count: 1,
+        mirror: false,
+    },
+    // 3 Wool top row, 3 OakPlanks bottom row -> Bed
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[Wool, Wool, Wool, OakPlanks, OakPlanks, OakPlanks],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    // 6 OakPlanks 2x3 -> OakDoor
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 2,
+            height: 3,
+            pattern: &[
+                OakPlanks, OakPlanks, OakPlanks, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: OakDoor,
+        output_count: 1,
+        mirror: false,
+    },
+    // 6 IronIngots 2x3 -> IronDoor
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 2,
+            height: 3,
+            pattern: &[
+                IronIngot, IronIngot, IronIngot, IronIngot, IronIngot, IronIngot,
+            ],
+        },
+        output: IronDoor,
+        output_count: 1,
+        mirror: false,
+    },
+    // 1 Stick over 1 Cobblestone -> Lever
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 1,
+            height: 2,
+            pattern: &[Stick, Cobblestone],
+        },
+        output: Lever,
+        output_count: 1,
+        mirror: false,
+    },
+    // 1 Stone -> StoneButton
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Stone],
+        },
+        output: StoneButton,
+        output_count: 1,
+        mirror: false,
+    },
     // 4 Planks 2x2 -> Crafting Table
     Recipe {
         shape: RecipeShape::Shaped {
@@ -1874,7 +1942,7 @@ mod tests {
 
     #[test]
     fn test_single_unrecognized_ingredient() {
-        let grid = vec![Some(Stone)];
+        let grid = vec![Some(Dirt)];
         assert_eq!(find_recipe(&grid, 1, 1), None);
     }
 

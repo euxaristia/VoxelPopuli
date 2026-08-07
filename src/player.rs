@@ -22,6 +22,7 @@ pub struct Player {
     pub last_space_release: f64,
     pub space_was_pressed: bool,
     pub damage_cooldown: f32,
+    pub spawn_point: Option<Vec3>,
 }
 
 impl Player {
@@ -45,6 +46,7 @@ impl Player {
             last_space_release: 0.0,
             space_was_pressed: false,
             damage_cooldown: 0.0,
+            spawn_point: None,
         }
     }
 
