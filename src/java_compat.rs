@@ -133,6 +133,10 @@ pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
         IronDoor => JavaBlockState::new("minecraft:iron_door"),
         Lever => JavaBlockState::new("minecraft:lever"),
         StoneButton => JavaBlockState::new("minecraft:stone_button"),
+        RedstoneWire => JavaBlockState::new("minecraft:redstone_wire"),
+        RedstoneTorch => JavaBlockState::new("minecraft:redstone_torch"),
+        RedstoneLamp => JavaBlockState::new("minecraft:redstone_lamp"),
+        RedstoneBlock => JavaBlockState::new("minecraft:redstone_block"),
 
         RawIron | IronIngot | FlintAndSteel | Stick | Coal | GoldIngot | Diamond | LapisLazuli
         | String | Gunpowder | Leather | RedstoneDust | WoodPickaxe | StonePickaxe

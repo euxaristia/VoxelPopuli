@@ -2075,6 +2075,17 @@ impl World {
         hit
     }
 
+    pub fn get_redstone_power(&self, x: i32, y: i32, z: i32) -> u8 {
+        let b = self.get_block(x, y, z);
+        match b {
+            BlockType::RedstoneBlock
+            | BlockType::RedstoneTorch
+            | BlockType::Lever
+            | BlockType::StoneButton => 15,
+            _ => 0,
+        }
+    }
+
     // MC 1.0: Pathfind toward nearest drop-off within 4 blocks
     fn get_flow_directions(&self, x: i32, y: i32, z: i32) -> [bool; 4] {
         let dirs: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
@@ -2722,5 +2733,19 @@ mod tests {
             chunk.set_block(11, 60, 10, BlockType::Cobblestone);
         }
         assert_eq!(chunk.get_block(11, 60, 10), BlockType::Cobblestone);
+    }
+
+    #[test]
+    fn test_redstone_power_sources() {
+        let is_power_source = |b: BlockType| match b {
+            BlockType::RedstoneBlock
+            | BlockType::RedstoneTorch
+            | BlockType::Lever
+            | BlockType::StoneButton => 15,
+            _ => 0,
+        };
+        assert_eq!(is_power_source(BlockType::RedstoneBlock), 15);
+        assert_eq!(is_power_source(BlockType::RedstoneTorch), 15);
+        assert_eq!(is_power_source(BlockType::Air), 0);
     }
 }

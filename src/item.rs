@@ -124,6 +124,12 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
         Lever => s(0.5, TT::Pickaxe, TM::None, false, Lever, 1),
         StoneButton => s(0.5, TT::Pickaxe, TM::None, false, StoneButton, 1),
 
+        // Redstone components
+        RedstoneWire => s(0.0, TT::None, TM::None, false, RedstoneDust, 1),
+        RedstoneTorch => s(0.0, TT::None, TM::None, false, RedstoneTorch, 1),
+        RedstoneLamp => s(0.3, TT::None, TM::None, false, RedstoneLamp, 1),
+        RedstoneBlock => s(5.0, TT::Pickaxe, TM::Wood, true, RedstoneBlock, 1),
+
         // Items don't have block hardness (shouldn't be mined)
         _ => s(0.0, TT::None, TM::None, false, b, 1),
     }
@@ -398,6 +404,10 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         IronDoor => (15, 4),
         Lever => (5, 7),
         StoneButton => (0, 2),
+        RedstoneWire => (4, 10),
+        RedstoneTorch => (3, 10),
+        RedstoneLamp => (2, 10),
+        RedstoneBlock => (1, 10),
 
         // Default
         Air => (0, 0),
