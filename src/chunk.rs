@@ -1542,7 +1542,7 @@ impl ChunkData {
                         } else {
                             BlockType::Air
                         };
-                        if neighbor_top != block {
+                        if neighbor_top != block && !is_solid(neighbor_top) {
                             v_wa.extend_from_slice(&[
                                 fx,
                                 fy + h00,
@@ -1581,7 +1581,7 @@ impl ChunkData {
                         } else {
                             BlockType::Bedrock
                         };
-                        if neighbor_bottom != block {
+                        if neighbor_bottom != block && !is_solid(neighbor_bottom) {
                             v_wa.extend_from_slice(&[
                                 fx,
                                 fy,
@@ -1621,7 +1621,7 @@ impl ChunkData {
                         } else {
                             snap.get_block(wx, wy, wz + 1)
                         };
-                        if n_zpb != block {
+                        if n_zpb != block && !is_solid(n_zpb) {
                             v_wa.extend_from_slice(&[
                                 fx,
                                 fy,
@@ -1660,7 +1660,7 @@ impl ChunkData {
                         } else {
                             snap.get_block(wx, wy, wz - 1)
                         };
-                        if n_znb != block {
+                        if n_znb != block && !is_solid(n_znb) {
                             v_wa.extend_from_slice(&[
                                 fx + 1.0,
                                 fy,
@@ -1699,7 +1699,7 @@ impl ChunkData {
                         } else {
                             snap.get_block(wx + 1, wy, wz)
                         };
-                        if n_xpb != block {
+                        if n_xpb != block && !is_solid(n_xpb) {
                             v_wa.extend_from_slice(&[
                                 fx + 1.0,
                                 fy,
@@ -1738,7 +1738,7 @@ impl ChunkData {
                         } else {
                             snap.get_block(wx - 1, wy, wz)
                         };
-                        if n_xnb != block {
+                        if n_xnb != block && !is_solid(n_xnb) {
                             v_wa.extend_from_slice(&[
                                 fx,
                                 fy,

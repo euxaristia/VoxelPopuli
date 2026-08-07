@@ -13,7 +13,7 @@ lto = true
 [dependencies]
 flate2 = "1.1.9"
 glam = "0.33"
-glfw = { version = "0.62.0", default-features = false, features = ["raw-window-handle-v0-6", "native-handles"] }
+glfw = { version = "0.62.0", default-features = false, features = ["raw-window-handle-v0-6", "wayland", "x11", "native-handles"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 mimalloc = "0.1"
 rand = "0.10"
