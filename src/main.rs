@@ -1493,6 +1493,84 @@ fn main() {
         renderer::set_depth_test(false);
         renderer::set_blend(true);
         renderer::set_cull(false);
+
+        let draw_stack_item = |atlas: &Texture2D,
+                               tex_shader: &Shader,
+                               ui_shader: &Shader,
+                               font_texture: &Texture2D,
+                               s: &ItemStack,
+                               rx: f32,
+                               ry: f32,
+                               slot_size: f32,
+                               sw: f32,
+                               sh: f32| {
+            let icon_size = slot_size - 8.0;
+            draw_item_icon(
+                atlas,
+                tex_shader,
+                s.block,
+                rx + 4.0,
+                ry + 4.0,
+                icon_size,
+                icon_size,
+                sw,
+                sh,
+            );
+
+            // Numeric stack count text (e.g. 64, 16)
+            if s.count > 1 {
+                let count_str = format!("{}", s.count);
+                let font_sz = (slot_size * 0.38).clamp(10.0, 14.0);
+                let tw = text_width(&count_str, font_sz);
+                let tx = rx + slot_size - tw - 2.0;
+                let ty = ry + slot_size - font_sz - 1.0;
+                draw_text_tinted(
+                    font_texture,
+                    &count_str,
+                    tx + 1.0,
+                    ty + 1.0,
+                    font_sz,
+                    tex_shader,
+                    sw,
+                    sh,
+                    TEXT_SHADOW,
+                );
+                draw_text_tinted(
+                    font_texture,
+                    &count_str,
+                    tx,
+                    ty,
+                    font_sz,
+                    tex_shader,
+                    sw,
+                    sh,
+                    TEXT_WHITE,
+                );
+            }
+
+            // Durability bar for tools
+            if let (Some(dur), Some(tool_props)) = (s.durability, item::tool_properties(s.block)) {
+                if tool_props.durability > 0 {
+                    let max_dur = tool_props.durability as f32;
+                    let pct = (dur as f32 / max_dur).clamp(0.0, 1.0);
+                    let bar_max_w = slot_size - 8.0;
+                    let bar_w = (bar_max_w * pct).round();
+                    let bar_y = ry + slot_size - 6.0;
+                    let red = if pct > 0.5 {
+                        ((1.0 - pct) * 2.0 * 255.0) as u8
+                    } else {
+                        255
+                    };
+                    let green = if pct > 0.5 {
+                        255
+                    } else {
+                        (pct * 2.0 * 255.0) as u8
+                    };
+                    draw_rect(ui_shader, rx + 4.0, bar_y, bar_max_w, 2.0, [0, 0, 0, 255], sw, sh);
+                    draw_rect(ui_shader, rx + 4.0, bar_y, bar_w, 2.0, [red, green, 0, 255], sw, sh);
+                }
+            }
+        };
         ui_shader.bind();
         ui_shader.set_vec2(
             ui_shader.get_uniform_location("uScreenSize"),
@@ -1559,14 +1637,15 @@ fn main() {
                 );
             }
             if let Some(s) = inv_slot {
-                draw_item_icon(
+                draw_stack_item(
                     world.atlas.as_ref().unwrap(),
                     &texture_ui_shader,
-                    s.block,
-                    rx + 4.0,
-                    ry + 4.0,
-                    28.0,
-                    28.0,
+                    &ui_shader,
+                    &font_texture,
+                    s,
+                    rx,
+                    ry,
+                    36.0,
                     sw,
                     sh,
                 );
@@ -2191,24 +2270,57 @@ fn main() {
                         sw,
                         sh,
                     );
-                    // Count dots (up to 8 = 64)
-                    let dots = ((s.count as f32 / 8.0).ceil() as usize).clamp(1, 8);
-                    let dsz = 4.0;
-                    let dgap = 2.0;
-                    let dw = dots as f32 * (dsz + dgap) - dgap;
-                    let dx0 = sx + ss - dw - 3.0;
-                    let dy0 = sy + ss - dsz - 3.0;
-                    for d in 0..dots {
-                        draw_rect(
-                            shader,
-                            dx0 + d as f32 * (dsz + dgap),
-                            dy0,
-                            dsz,
-                            dsz,
-                            [255, 255, 255, 200],
+                    if s.count > 1 {
+                        let count_str = format!("{}", s.count);
+                        let font_sz = 13.0;
+                        let tw = text_width(&count_str, font_sz);
+                        let tx = sx + ss - tw - 2.0;
+                        let ty = sy + ss - font_sz - 1.0;
+                        draw_text_tinted(
+                            &font_texture,
+                            &count_str,
+                            tx + 1.0,
+                            ty + 1.0,
+                            font_sz,
+                            tex_shader,
                             sw,
                             sh,
+                            TEXT_SHADOW,
                         );
+                        draw_text_tinted(
+                            &font_texture,
+                            &count_str,
+                            tx,
+                            ty,
+                            font_sz,
+                            tex_shader,
+                            sw,
+                            sh,
+                            TEXT_WHITE,
+                        );
+                    }
+                    if let (Some(dur), Some(tool_props)) =
+                        (s.durability, item::tool_properties(s.block))
+                    {
+                        if tool_props.durability > 0 {
+                            let max_dur = tool_props.durability as f32;
+                            let pct = (dur as f32 / max_dur).clamp(0.0, 1.0);
+                            let bar_max_w = ss - 8.0;
+                            let bar_w = (bar_max_w * pct).round();
+                            let bar_y = sy + ss - 6.0;
+                            let red = if pct > 0.5 {
+                                ((1.0 - pct) * 2.0 * 255.0) as u8
+                            } else {
+                                255
+                            };
+                            let green = if pct > 0.5 {
+                                255
+                            } else {
+                                (pct * 2.0 * 255.0) as u8
+                            };
+                            draw_rect(shader, sx + 4.0, bar_y, bar_max_w, 2.0, [0, 0, 0, 255], sw, sh);
+                            draw_rect(shader, sx + 4.0, bar_y, bar_w, 2.0, [red, green, 0, 255], sw, sh);
+                        }
                     }
                 }
             };
