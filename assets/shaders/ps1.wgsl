@@ -59,10 +59,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let sun_y = max(0.0, u.sun_dir.y);
     let time_light = 0.15 + sun_y * 0.85; // 0.15 at night, 1.0 at noon
 
-    let base_color = texel.rgb * in.color.rgb * u.col_diffuse.rgb;
-    let ambient = texel.rgb * 0.12; // minimum ambient so caves aren't pure black
-    var color = max(base_color * time_light, ambient);
+    let sky_light = in.color.r * time_light;
+    let block_light = in.color.g;
+    let light_level = max(sky_light, block_light);
+    let ao = in.color.b;
+    let light_factor = max(light_level * ao, 0.12);
 
+    var color = texel.rgb * light_factor * u.col_diffuse.rgb;
     color *= mix(vec3(1.0, 0.9, 0.8), vec3(1.0, 1.0, 1.05), sun_y); // slight tinting
 
     return vec4(color, texel.a * in.color.a * u.col_diffuse.a);

@@ -245,63 +245,65 @@ pub struct MeshResult {
 pub const SNAP_W: usize = CHUNK_WIDTH + 2;
 pub const SNAP_D: usize = CHUNK_DEPTH + 2;
 
+#[inline]
+pub fn pack_light(sky: u8, block: u8) -> u8 {
+    ((sky & 0x0F) << 4) | (block & 0x0F)
+}
+
+#[inline]
+pub fn unpack_light(val: u8) -> (u8, u8) {
+    (val >> 4, val & 0x0F)
+}
+
 // Skylight + BFS light propagation over a chunk's own blocks. Shared by the
 // live chunk (generation) and by worker-owned copies (background meshing).
 fn compute_lighting(
     blocks: &[[[BlockType; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH],
     light: &mut [[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH],
 ) {
-    // PASS 7: Simple skylight (top-down sunlight)
+    let mut sky = [[[0u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH];
+    let mut block_light = [[[0u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH];
+
+    // PASS 1: Skylight top-down
     for x in 0..CHUNK_WIDTH {
         for z in 0..CHUNK_DEPTH {
             let mut sunlight: u8 = 15;
             for y in (0..CHUNK_HEIGHT).rev() {
                 let b = blocks[x][y][z];
-                match b {
-                    b if b == BlockType::Air
-                        || b == BlockType::Water
-                        || b == BlockType::Lava
-                        || b.is_transparent() =>
-                    {
-                        light[x][y][z] = sunlight;
-                    }
-                    _ => {
-                        light[x][y][z] = 0;
-                        sunlight = 0;
-                    }
+                if b == BlockType::Air
+                    || b == BlockType::Water
+                    || b == BlockType::Lava
+                    || b.is_transparent()
+                {
+                    sky[x][y][z] = sunlight;
+                } else {
+                    sky[x][y][z] = 0;
+                    sunlight = 0;
                 }
             }
         }
     }
 
-    // Horizontal Light Propagation (BFS queue — no cloning, visits only lit blocks)
-    let mut queue = VecDeque::new();
+    // Horizontal Sky Light Propagation
+    let mut sky_queue = VecDeque::new();
     for x in 0..CHUNK_WIDTH {
         for y in 0..CHUNK_HEIGHT {
             for z in 0..CHUNK_DEPTH {
-                let emitted = match blocks[x][y][z] {
-                    BlockType::Torch => 14,
-                    BlockType::Lava => 15,
-                    _ => 0,
-                };
-                if emitted > light[x][y][z] {
-                    light[x][y][z] = emitted;
-                }
-                if light[x][y][z] > 1 {
-                    queue.push_back((x, y, z));
+                if sky[x][y][z] > 1 {
+                    sky_queue.push_back((x, y, z));
                 }
             }
         }
     }
 
-    while let Some((x, y, z)) = queue.pop_front() {
-        let current_light = light[x][y][z];
+    while let Some((x, y, z)) = sky_queue.pop_front() {
+        let current_light = sky[x][y][z];
         let drop_light = current_light.saturating_sub(1);
         if drop_light == 0 {
             continue;
         }
 
-        let neighbors: [(i32, i32, i32); 6] = [
+        let neighbors = [
             (x as i32 + 1, y as i32, z as i32),
             (x as i32 - 1, y as i32, z as i32),
             (x as i32, y as i32 + 1, z as i32),
@@ -322,10 +324,74 @@ fn compute_lighting(
                 let nb = blocks[ux][uy][uz];
                 let occluding = nb.is_solid() && !nb.is_transparent();
 
-                if !occluding && light[ux][uy][uz] < drop_light {
-                    light[ux][uy][uz] = drop_light;
-                    queue.push_back((ux, uy, uz));
+                if !occluding && sky[ux][uy][uz] < drop_light {
+                    sky[ux][uy][uz] = drop_light;
+                    sky_queue.push_back((ux, uy, uz));
                 }
+            }
+        }
+    }
+
+    // PASS 2: Block light propagation
+    let mut block_queue = VecDeque::new();
+    for x in 0..CHUNK_WIDTH {
+        for y in 0..CHUNK_HEIGHT {
+            for z in 0..CHUNK_DEPTH {
+                let emitted = match blocks[x][y][z] {
+                    BlockType::Torch => 14,
+                    BlockType::RedstoneTorch => 7,
+                    BlockType::Lava => 15,
+                    _ => 0,
+                };
+                if emitted > 0 {
+                    block_light[x][y][z] = emitted;
+                    block_queue.push_back((x, y, z));
+                }
+            }
+        }
+    }
+
+    while let Some((x, y, z)) = block_queue.pop_front() {
+        let current_light = block_light[x][y][z];
+        let drop_light = current_light.saturating_sub(1);
+        if drop_light == 0 {
+            continue;
+        }
+
+        let neighbors = [
+            (x as i32 + 1, y as i32, z as i32),
+            (x as i32 - 1, y as i32, z as i32),
+            (x as i32, y as i32 + 1, z as i32),
+            (x as i32, y as i32 - 1, z as i32),
+            (x as i32, y as i32, z as i32 + 1),
+            (x as i32, y as i32, z as i32 - 1),
+        ];
+
+        for (nx, ny, nz) in neighbors {
+            if nx >= 0
+                && nx < CHUNK_WIDTH as i32
+                && ny >= 0
+                && ny < CHUNK_HEIGHT as i32
+                && nz >= 0
+                && nz < CHUNK_DEPTH as i32
+            {
+                let (ux, uy, uz) = (nx as usize, ny as usize, nz as usize);
+                let nb = blocks[ux][uy][uz];
+                let occluding = nb.is_solid() && !nb.is_transparent();
+
+                if !occluding && block_light[ux][uy][uz] < drop_light {
+                    block_light[ux][uy][uz] = drop_light;
+                    block_queue.push_back((ux, uy, uz));
+                }
+            }
+        }
+    }
+
+    // Combine into light array
+    for x in 0..CHUNK_WIDTH {
+        for y in 0..CHUNK_HEIGHT {
+            for z in 0..CHUNK_DEPTH {
+                light[x][y][z] = pack_light(sky[x][y][z], block_light[x][y][z]);
             }
         }
     }
@@ -1400,7 +1466,7 @@ impl ChunkData {
 
         let get_light_safe = |wx: i32, wy: i32, wz: i32| -> u8 {
             if wy < 0 || wy >= CHUNK_HEIGHT as i32 {
-                return 15;
+                return pack_light(15, 0);
             }
 
             // Local chunk coordinates
@@ -1417,18 +1483,26 @@ impl ChunkData {
         };
 
         let calc_light_f = |light_val: u8| -> f32 {
-            let l = light_val as f32;
-            let mut f = 0.85f32.powf(15.0 - l);
-            if f < 0.1 {
-                f = 0.1;
+            if light_val == 0 {
+                return 0.0;
             }
-            f
+            let l = light_val as f32;
+            let f = 0.85f32.powf(15.0 - l);
+            f.max(0.0)
         };
 
-        let calc_vertex_light = |l0: u8, l1: u8, l2: u8, l3: u8| -> f32 {
-            let avg =
-                (calc_light_f(l0) + calc_light_f(l1) + calc_light_f(l2) + calc_light_f(l3)) / 4.0;
-            if avg < 0.1 { 0.1 } else { avg }
+        let calc_vertex_light = |l0: u8, l1: u8, l2: u8, l3: u8| -> (f32, f32) {
+            let (s0, b0) = unpack_light(l0);
+            let (s1, b1) = unpack_light(l1);
+            let (s2, b2) = unpack_light(l2);
+            let (s3, b3) = unpack_light(l3);
+
+            let sky_avg =
+                (calc_light_f(s0) + calc_light_f(s1) + calc_light_f(s2) + calc_light_f(s3)) * 0.25;
+            let block_avg =
+                (calc_light_f(b0) + calc_light_f(b1) + calc_light_f(b2) + calc_light_f(b3)) * 0.25;
+
+            (sky_avg, block_avg)
         };
 
         let is_solid = |b: BlockType| b.is_solid() && !b.is_transparent();
@@ -1436,13 +1510,13 @@ impl ChunkData {
         // Smooth (per-vertex) lighting + AO for a face, generalizing the
         // corner sampling the top face already used by hand. `base` is the
         // neighbor cell one step along the face normal; `u_axis`/`v_axis`
-        // are the two in-plane world-space unit steps. Returns light*AO for
+        // are the two in-plane world-space unit steps. Returns (sky, block, AO) for
         // corners (-,-), (+,-), (+,+), (-,+) in that order; callers still
         // apply their own directional darkening factor and floor.
         let face_shading = |base: (i32, i32, i32),
                             u_axis: (i32, i32, i32),
                             v_axis: (i32, i32, i32)|
-         -> [f32; 4] {
+         -> [(f32, f32, f32); 4] {
             let offset = |du: i32, dv: i32| -> (i32, i32, i32) {
                 (
                     base.0 + u_axis.0 * du + v_axis.0 * dv,
@@ -1459,11 +1533,11 @@ impl ChunkData {
                 get_light_safe(px, py, pz)
             };
             let l_center = light_at(0, 0);
-            let corner = |du: i32, dv: i32| -> f32 {
+            let corner = |du: i32, dv: i32| -> (f32, f32, f32) {
                 let ao = calc_ao(solid_at(du, 0), solid_at(0, dv), solid_at(du, dv));
-                let light =
+                let (sky, block) =
                     calc_vertex_light(l_center, light_at(du, 0), light_at(0, dv), light_at(du, dv));
-                light * ao
+                (sky, block, ao)
             };
             [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)]
         };
@@ -1524,11 +1598,7 @@ impl ChunkData {
                                     }
                                 }
                             }
-                            if count == 0 {
-                                0.0
-                            } else {
-                                total / count as f32
-                            }
+                            if count > 0 { total / count as f32 } else { 1.0 }
                         };
 
                         let h00 = corner_h(wx, wz); // (x, z) corner
@@ -1569,10 +1639,12 @@ impl ChunkData {
                             for _ in 0..6 {
                                 n_wa.extend_from_slice(&[0.0, 1.0, 0.0]);
                             }
-                            let c_val =
-                                (255.0 * calc_light_f(get_light_safe(wx, wy + 1, wz))) as u8;
+                            let (sky_light, block_light) =
+                                unpack_light(get_light_safe(wx, wy + 1, wz));
+                            let sky_val = (255.0 * calc_light_f(sky_light)) as u8;
+                            let block_val = (255.0 * calc_light_f(block_light)) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[c_val, c_val, c_val, liquid_alpha]);
+                                c_wa.extend_from_slice(&[sky_val, block_val, 255, liquid_alpha]);
                             }
                         }
                         // Bottom face
@@ -1608,10 +1680,12 @@ impl ChunkData {
                             for _ in 0..6 {
                                 n_wa.extend_from_slice(&[0.0, -1.0, 0.0]);
                             }
-                            let shade =
-                                (255.0 * 0.5 * calc_light_f(get_light_safe(wx, wy - 1, wz))) as u8;
+                            let (sky_light, block_light) =
+                                unpack_light(get_light_safe(wx, wy - 1, wz));
+                            let sky_val = (255.0 * 0.5 * calc_light_f(sky_light)) as u8;
+                            let block_val = (255.0 * 0.5 * calc_light_f(block_light)) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[shade, shade, shade, liquid_alpha]);
+                                c_wa.extend_from_slice(&[sky_val, block_val, 255, liquid_alpha]);
                             }
                         }
                         // Side faces with MC-style corner heights
@@ -1648,10 +1722,12 @@ impl ChunkData {
                             for _ in 0..6 {
                                 n_wa.extend_from_slice(&[0.0, 0.0, 1.0]);
                             }
-                            let shade =
-                                (255.0 * 0.6 * calc_light_f(get_light_safe(wx, wy, wz + 1))) as u8;
+                            let (sky_light, block_light) =
+                                unpack_light(get_light_safe(wx, wy, wz + 1));
+                            let sky_val = (255.0 * 0.6 * calc_light_f(sky_light)) as u8;
+                            let block_val = (255.0 * 0.6 * calc_light_f(block_light)) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[shade, shade, shade, liquid_alpha]);
+                                c_wa.extend_from_slice(&[sky_val, block_val, 255, liquid_alpha]);
                             }
                         }
                         // Z- face
@@ -1687,10 +1763,12 @@ impl ChunkData {
                             for _ in 0..6 {
                                 n_wa.extend_from_slice(&[0.0, 0.0, -1.0]);
                             }
-                            let shade =
-                                (255.0 * 0.6 * calc_light_f(get_light_safe(wx, wy, wz - 1))) as u8;
+                            let (sky_light, block_light) =
+                                unpack_light(get_light_safe(wx, wy, wz - 1));
+                            let sky_val = (255.0 * 0.6 * calc_light_f(sky_light)) as u8;
+                            let block_val = (255.0 * 0.6 * calc_light_f(block_light)) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[shade, shade, shade, liquid_alpha]);
+                                c_wa.extend_from_slice(&[sky_val, block_val, 255, liquid_alpha]);
                             }
                         }
                         // X+ face
@@ -1726,10 +1804,12 @@ impl ChunkData {
                             for _ in 0..6 {
                                 n_wa.extend_from_slice(&[1.0, 0.0, 0.0]);
                             }
-                            let shade =
-                                (255.0 * 0.8 * calc_light_f(get_light_safe(wx + 1, wy, wz))) as u8;
+                            let (sky_light, block_light) =
+                                unpack_light(get_light_safe(wx + 1, wy, wz));
+                            let sky_val = (255.0 * 0.8 * calc_light_f(sky_light)) as u8;
+                            let block_val = (255.0 * 0.8 * calc_light_f(block_light)) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[shade, shade, shade, liquid_alpha]);
+                                c_wa.extend_from_slice(&[sky_val, block_val, 255, liquid_alpha]);
                             }
                         }
                         // X- face
@@ -1765,10 +1845,12 @@ impl ChunkData {
                             for _ in 0..6 {
                                 n_wa.extend_from_slice(&[-1.0, 0.0, 0.0]);
                             }
-                            let shade =
-                                (255.0 * 0.8 * calc_light_f(get_light_safe(wx - 1, wy, wz))) as u8;
+                            let (sky_light, block_light) =
+                                unpack_light(get_light_safe(wx - 1, wy, wz));
+                            let sky_val = (255.0 * 0.8 * calc_light_f(sky_light)) as u8;
+                            let block_val = (255.0 * 0.8 * calc_light_f(block_light)) as u8;
                             for _ in 0..6 {
-                                c_wa.extend_from_slice(&[shade, shade, shade, liquid_alpha]);
+                                c_wa.extend_from_slice(&[sky_val, block_val, 255, liquid_alpha]);
                             }
                         }
                         continue;
@@ -1784,13 +1866,12 @@ impl ChunkData {
                         let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
                         let wy = y as i32;
                         let wz = z as i32 + self.z * CHUNK_DEPTH as i32;
-                        let light = calc_light_f(get_light_safe(wx, wy, wz).max(get_light_safe(
-                            wx,
-                            wy + 1,
-                            wz,
-                        )));
-                        let shade = (255.0 * light).max(70.0) as u8;
-                        let color = [shade, shade, shade, 255];
+                        let (sky_light, block_light) = unpack_light(
+                            get_light_safe(wx, wy, wz).max(get_light_safe(wx, wy + 1, wz)),
+                        );
+                        let sky_val = (255.0 * calc_light_f(sky_light)).max(70.0) as u8;
+                        let block_val = (255.0 * calc_light_f(block_light)) as u8;
+                        let color = [sky_val, block_val, 255, 255];
                         let y0 = fy;
                         let y1 = fy + 0.875;
                         let x0 = fx + 0.12;
@@ -1853,6 +1934,103 @@ impl ChunkData {
                         continue;
                     }
 
+                    if block == BlockType::Torch || block == BlockType::RedstoneTorch {
+                        let (v, t, n, c) = (&mut v_tr, &mut t_tr, &mut n_tr, &mut c_tr);
+                        let (tx, ty) = crate::item::atlas_uv(block);
+                        let ts = 1.0 / 16.0;
+                        let pad = 0.5 / 256.0;
+
+                        // 3D Torch Post bounds (2x2 voxels wide, 10 voxels tall)
+                        let min_x = fx + 0.4375;
+                        let max_x = fx + 0.5625;
+                        let min_z = fz + 0.4375;
+                        let max_z = fz + 0.5625;
+                        let min_y = fy;
+                        let max_y = fy + 0.625;
+
+                        // Side UVs (pixels 7..9 in U, 3..13 in V)
+                        let su0 = (tx as f32 + 7.0 / 16.0) * ts + pad;
+                        let su1 = (tx as f32 + 9.0 / 16.0) * ts - pad;
+                        let sv0 = (ty as f32 + 3.0 / 16.0) * ts + pad;
+                        let sv1 = (ty as f32 + 13.0 / 16.0) * ts - pad;
+
+                        // Top UVs (pixels 7..9 in U, 3..5 in V)
+                        let tu0 = (tx as f32 + 7.0 / 16.0) * ts + pad;
+                        let tu1 = (tx as f32 + 9.0 / 16.0) * ts - pad;
+                        let tv0 = (ty as f32 + 3.0 / 16.0) * ts + pad;
+                        let tv1 = (ty as f32 + 5.0 / 16.0) * ts - pad;
+
+                        // Torch color: torch model itself is self-luminous!
+                        let torch_color = [150, 255, 255, 255];
+
+                        // Top face
+                        v.extend_from_slice(&[
+                            min_x, max_y, min_z, min_x, max_y, max_z, max_x, max_y, max_z, min_x,
+                            max_y, min_z, max_x, max_y, max_z, max_x, max_y, min_z,
+                        ]);
+                        t.extend_from_slice(&[
+                            tu0, tv0, tu0, tv1, tu1, tv1, tu0, tv0, tu1, tv1, tu1, tv0,
+                        ]);
+                        for _ in 0..6 {
+                            n.extend_from_slice(&[0.0, 1.0, 0.0]);
+                            c.extend_from_slice(&torch_color);
+                        }
+
+                        // Side Z+
+                        v.extend_from_slice(&[
+                            min_x, min_y, max_z, max_x, min_y, max_z, max_x, max_y, max_z, min_x,
+                            min_y, max_z, max_x, max_y, max_z, min_x, max_y, max_z,
+                        ]);
+                        t.extend_from_slice(&[
+                            su0, sv1, su1, sv1, su1, sv0, su0, sv1, su1, sv0, su0, sv0,
+                        ]);
+                        for _ in 0..6 {
+                            n.extend_from_slice(&[0.0, 0.0, 1.0]);
+                            c.extend_from_slice(&torch_color);
+                        }
+
+                        // Side Z-
+                        v.extend_from_slice(&[
+                            max_x, min_y, min_z, min_x, min_y, min_z, min_x, max_y, min_z, max_x,
+                            min_y, min_z, min_x, max_y, min_z, max_x, max_y, min_z,
+                        ]);
+                        t.extend_from_slice(&[
+                            su0, sv1, su1, sv1, su1, sv0, su0, sv1, su1, sv0, su0, sv0,
+                        ]);
+                        for _ in 0..6 {
+                            n.extend_from_slice(&[0.0, 0.0, -1.0]);
+                            c.extend_from_slice(&torch_color);
+                        }
+
+                        // Side X+
+                        v.extend_from_slice(&[
+                            max_x, min_y, max_z, max_x, min_y, min_z, max_x, max_y, min_z, max_x,
+                            min_y, max_z, max_x, max_y, min_z, max_x, max_y, max_z,
+                        ]);
+                        t.extend_from_slice(&[
+                            su0, sv1, su1, sv1, su1, sv0, su0, sv1, su1, sv0, su0, sv0,
+                        ]);
+                        for _ in 0..6 {
+                            n.extend_from_slice(&[1.0, 0.0, 0.0]);
+                            c.extend_from_slice(&torch_color);
+                        }
+
+                        // Side X-
+                        v.extend_from_slice(&[
+                            min_x, min_y, min_z, min_x, min_y, max_z, min_x, max_y, max_z, min_x,
+                            min_y, min_z, min_x, max_y, max_z, min_x, max_y, min_z,
+                        ]);
+                        t.extend_from_slice(&[
+                            su0, sv1, su1, sv1, su1, sv0, su0, sv1, su1, sv0, su0, sv0,
+                        ]);
+                        for _ in 0..6 {
+                            n.extend_from_slice(&[-1.0, 0.0, 0.0]);
+                            c.extend_from_slice(&torch_color);
+                        }
+
+                        continue;
+                    }
+
                     // STANDARD BLOCK MESHING (OPAQUE)
                     let (v, t, n, c) = (&mut v_op, &mut t_op, &mut n_op, &mut c_op);
                     let (tx, ty) = {
@@ -1864,9 +2042,7 @@ impl ChunkData {
                     let v0 = ty as f32 * ts + pad;
                     let u1 = (tx + 1) as f32 * ts - pad;
                     let v1 = (ty + 1) as f32 * ts - pad;
-                    let (min_x, max_x, min_z, max_z, block_top) = if block == BlockType::Torch {
-                        (fx + 0.4375, fx + 0.5625, fz + 0.4375, fz + 0.5625, 0.625)
-                    } else if block == BlockType::SnowLayer {
+                    let (min_x, max_x, min_z, max_z, block_top) = if block == BlockType::SnowLayer {
                         (fx, fx + 1.0, fz, fz + 1.0, 0.125)
                     } else if block == BlockType::Bell {
                         (fx + 0.2, fx + 0.8, fz + 0.2, fz + 0.8, 0.6)
@@ -1938,25 +2114,25 @@ impl ChunkData {
                         let ll_10 = get_light_safe(wx, wy + 1, wz - 1);
                         let ll_21 = get_light_safe(wx + 1, wy + 1, wz);
                         let ll_12 = get_light_safe(wx, wy + 1, wz + 1);
-                        let light00 = calc_vertex_light(
+                        let (sky00, blk00) = calc_vertex_light(
                             l_b,
                             ll_01,
                             ll_10,
                             get_light_safe(wx - 1, wy + 1, wz - 1),
                         );
-                        let light10 = calc_vertex_light(
+                        let (sky10, blk10) = calc_vertex_light(
                             l_b,
                             ll_21,
                             ll_10,
                             get_light_safe(wx + 1, wy + 1, wz - 1),
                         );
-                        let light01 = calc_vertex_light(
+                        let (sky01, blk01) = calc_vertex_light(
                             l_b,
                             ll_01,
                             ll_12,
                             get_light_safe(wx - 1, wy + 1, wz + 1),
                         );
-                        let light11 = calc_vertex_light(
+                        let (sky11, blk11) = calc_vertex_light(
                             l_b,
                             ll_21,
                             ll_12,
@@ -1966,13 +2142,34 @@ impl ChunkData {
                         for _ in 0..6 {
                             n.extend_from_slice(&[0.0, 1.0, 0.0]);
                         }
-                        let c00 = (255.0 * light00 * ao00).max(35.0) as u8;
-                        let c10 = (255.0 * light10 * ao10).max(35.0) as u8;
-                        let c01 = (255.0 * light01 * ao01).max(35.0) as u8;
-                        let c11 = (255.0 * light11 * ao11).max(35.0) as u8;
+                        let c00 = [
+                            (255.0 * sky00 * ao00).clamp(0.0, 255.0) as u8,
+                            (255.0 * blk00 * ao00).clamp(0.0, 255.0) as u8,
+                            (255.0 * ao00).clamp(0.0, 255.0) as u8,
+                            255,
+                        ];
+                        let c10 = [
+                            (255.0 * sky10 * ao10).clamp(0.0, 255.0) as u8,
+                            (255.0 * blk10 * ao10).clamp(0.0, 255.0) as u8,
+                            (255.0 * ao10).clamp(0.0, 255.0) as u8,
+                            255,
+                        ];
+                        let c01 = [
+                            (255.0 * sky01 * ao01).clamp(0.0, 255.0) as u8,
+                            (255.0 * blk01 * ao01).clamp(0.0, 255.0) as u8,
+                            (255.0 * ao01).clamp(0.0, 255.0) as u8,
+                            255,
+                        ];
+                        let c11 = [
+                            (255.0 * sky11 * ao11).clamp(0.0, 255.0) as u8,
+                            (255.0 * blk11 * ao11).clamp(0.0, 255.0) as u8,
+                            (255.0 * ao11).clamp(0.0, 255.0) as u8,
+                            255,
+                        ];
                         c.extend_from_slice(&[
-                            c00, c00, c00, 255, c01, c01, c01, 255, c11, c11, c11, 255, c00, c00,
-                            c00, 255, c11, c11, c11, 255, c10, c10, c10, 255,
+                            c00[0], c00[1], c00[2], 255, c01[0], c01[1], c01[2], 255, c11[0],
+                            c11[1], c11[2], 255, c00[0], c00[1], c00[2], 255, c11[0], c11[1],
+                            c11[2], 255, c10[0], c10[1], c10[2], 255,
                         ]);
                     }
 
@@ -1993,8 +2190,11 @@ impl ChunkData {
                         }
                         let s = face_shading((wx, wy - 1, wz), (1, 0, 0), (0, 0, 1));
                         for idx in [0usize, 2, 3, 0, 1, 2] {
-                            let g = (255.0 * s[idx] * 0.5).max(35.0) as u8;
-                            c.extend_from_slice(&[g, g, g, 255]);
+                            let (sky_f, block_f, ao_val) = s[idx];
+                            let r = (255.0 * sky_f * 0.5).clamp(0.0, 255.0) as u8;
+                            let g = (255.0 * block_f * 0.5).clamp(0.0, 255.0) as u8;
+                            let b = (255.0 * ao_val).clamp(0.0, 255.0) as u8;
+                            c.extend_from_slice(&[r, g, b, 255]);
                         }
                     }
 
@@ -2144,8 +2344,11 @@ impl ChunkData {
                             };
                             let s = face_shading(base, u_axis, (0, 1, 0));
                             for idx in winding {
-                                let g = (255.0 * s[idx] * s_mul).max(35.0) as u8;
-                                c.extend_from_slice(&[g, g, g, 255]);
+                                let (sky_f, block_f, ao_val) = s[idx];
+                                let r = (255.0 * sky_f * s_mul).clamp(0.0, 255.0) as u8;
+                                let g = (255.0 * block_f * s_mul).clamp(0.0, 255.0) as u8;
+                                let b = (255.0 * ao_val).clamp(0.0, 255.0) as u8;
+                                c.extend_from_slice(&[r, g, b, 255]);
                             }
                         }
                     }
@@ -2441,5 +2644,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_light_packing_and_torch_emission() {
+        let (sky, block) = unpack_light(pack_light(15, 14));
+        assert_eq!(sky, 15);
+        assert_eq!(block, 14);
+
+        let mut chunk = Chunk::new(0, 0, 1);
+        // Put solid roof above to block skylight
+        for x in 0..CHUNK_WIDTH {
+            for z in 0..CHUNK_DEPTH {
+                chunk.blocks[x][50][z] = BlockType::Stone;
+            }
+        }
+        chunk.blocks[8][40][8] = BlockType::Torch;
+        chunk.calculate_lighting();
+
+        let (sky_t, block_t) = unpack_light(chunk.light[8][40][8]);
+        assert_eq!(sky_t, 0, "torch under stone roof should have 0 skylight");
+        assert_eq!(block_t, 14, "torch should emit level 14 block light");
+
+        let (_sky_adj, block_adj) = unpack_light(chunk.light[8][40][9]);
+        assert_eq!(
+            block_adj, 13,
+            "adjacent air cell should receive level 13 block light"
+        );
     }
 }

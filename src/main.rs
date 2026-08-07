@@ -6,6 +6,7 @@ mod chunk;
 mod crafting;
 mod explosion;
 mod hud;
+mod inventory;
 mod item;
 mod java_compat;
 mod mining;
@@ -18,6 +19,7 @@ mod village;
 mod world;
 
 use crate::hud::*;
+use crate::inventory::*;
 use crate::player::Player;
 use crate::world::{CLOUD_HEIGHT, VIEW_DISTANCE, World};
 use block::BlockType;
@@ -39,528 +41,19 @@ pub enum GameState {
     Paused,
 }
 
-// ── Inventory ──────────────────────────────────────────────────────────────
-// Slot layout (45 total):
-//   0-8   hotbar           9-35  main inventory (3×9)
-//   36-39 armor (visual)  40-43  crafting 2×2     44  crafting output
-
-#[derive(Clone, Copy, PartialEq)]
-struct ItemStack {
-    block: BlockType,
-    count: u32,
-    durability: Option<u16>,
-}
-impl ItemStack {
-    fn new(b: BlockType, n: u32) -> Self {
-        Self {
-            block: b,
-            count: n,
-            durability: None,
-        }
-    }
-    fn new_tool(b: BlockType) -> Self {
-        let dur = item::tool_properties(b).map(|t| t.durability);
-        Self {
-            block: b,
-            count: 1,
-            durability: dur,
-        }
-    }
-}
-
-fn stack_max(b: BlockType) -> u32 {
-    item::max_stack_size(b)
-}
-
-/// Add items when mining – hotbar first, then main inventory.
-fn inv_add(slots: &mut [Option<ItemStack>; 45], block: BlockType, mut amt: u32) {
-    let sm = stack_max(block);
-    for pass in 0..2u8 {
-        for i in (0..9).chain(9..36) {
-            if amt == 0 {
-                return;
-            }
-            match slots[i] {
-                Some(s) if s.block == block && s.count < sm && pass == 0 => {
-                    let add = (sm - s.count).min(amt);
-                    slots[i] = Some(ItemStack::new(block, s.count + add));
-                    amt -= add;
-                }
-                None if pass == 1 => {
-                    let add = amt.min(sm);
-                    slots[i] = Some(ItemStack::new(block, add));
-                    amt -= add;
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-/// Add a tool item to inventory (preserves durability).
-#[allow(dead_code)]
-fn inv_add_tool(slots: &mut [Option<ItemStack>; 45], tool: ItemStack) {
-    // Tools stack to 1, so just find an empty slot
-    for i in (0..9).chain(9..36) {
-        if slots[i].is_none() {
-            slots[i] = Some(tool);
-            return;
-        }
-    }
-}
-
-fn is_hoe_item(block: BlockType) -> bool {
-    matches!(
-        block,
-        BlockType::WoodHoe
-            | BlockType::StoneHoe
-            | BlockType::IronHoe
-            | BlockType::DiamondHoe
-            | BlockType::GoldHoe
-    )
-}
-
-fn damage_selected_tool(slots: &mut [Option<ItemStack>; 45], selected_slot: usize) {
-    if let Some(ref mut s) = slots[selected_slot]
-        && s.block.is_tool()
-        && let Some(ref mut dur) = s.durability
-    {
-        *dur = dur.saturating_sub(1);
-        if *dur == 0 {
-            slots[selected_slot] = None;
-        }
-    }
-}
-
-fn try_till_farmland(
-    world: &mut World,
-    slots: &mut [Option<ItemStack>; 45],
-    selected_slot: usize,
-    res: &world::RaycastResult,
-) -> bool {
-    let Some(held) = slots[selected_slot].map(|s| s.block) else {
-        return false;
-    };
-    if !is_hoe_item(held) {
-        return false;
-    }
-
-    let target = world.get_block(res.x, res.y, res.z);
-    let above = world.get_block(res.x, res.y + 1, res.z);
-    if matches!(
-        target,
-        BlockType::Grass | BlockType::Dirt | BlockType::SnowyGrass
-    ) && above == BlockType::Air
-    {
-        world.set_block(res.x, res.y, res.z, BlockType::Farmland);
-        damage_selected_tool(slots, selected_slot);
-        return true;
-    }
-    false
-}
+use rand::RngExt;
 
 fn prime_tnt(world: &mut World, x: i32, y: i32, z: i32) {
     world.set_block(x, y, z, BlockType::Air);
-    let vx = (rand::random::<f32>() - 0.5) * 0.5;
-    let vz = (rand::random::<f32>() - 0.5) * 0.5;
+    let mut rng = rand::rng();
+    let vx = (rng.random_range(0.0..1.0) * 0.04 - 0.02) * 20.0;
+    let vz = (rng.random_range(0.0..1.0) * 0.04 - 0.02) * 20.0;
     world.explosives.push(crate::block::ActiveExplosive {
         position: Vec3::new(x as f32, y as f32, z as f32),
-        velocity: Vec3::new(vx, 3.8, vz),
+        velocity: Vec3::new(vx, 1.2, vz),
         fuse: 4.0,
         initial_fuse: 4.0,
     });
-}
-
-/// Full MC 1.0 slot-click mechanics.
-fn inv_click(
-    slots: &mut [Option<ItemStack>; 45],
-    cursor: &mut Option<ItemStack>,
-    slot: usize,
-    right: bool,
-    shift: bool,
-) {
-    // Crafting output: pick up only (no placing)
-    if slot == 44 {
-        if !right
-            && cursor.is_none()
-            && let Some(output) = slots[44].take()
-        {
-            *cursor = Some(output);
-            // Consume one from each crafting input
-            for slot in slots.iter_mut().take(44).skip(40) {
-                if let Some(s) = slot {
-                    s.count -= 1;
-                    if s.count == 0 {
-                        *slot = None;
-                    }
-                }
-            }
-            // Re-check recipe
-            update_craft_output_2x2(slots);
-        }
-        return;
-    }
-    // Armor slots: simple swap for now
-    if (36..40).contains(&slot) {
-        if !shift {
-            std::mem::swap(&mut slots[slot], cursor);
-        }
-        return;
-    }
-    if shift {
-        if let Some(s) = slots[slot] {
-            slots[slot] = None;
-            let sm = stack_max(s.block);
-            let (a, b) = if slot < 9 {
-                (9usize, 36usize)
-            } else {
-                (0usize, 9usize)
-            };
-            let mut rem = s.count;
-            for slot_ref in slots.iter_mut().take(b).skip(a) {
-                if rem == 0 {
-                    break;
-                }
-                if let Some(d) = *slot_ref
-                    && d.block == s.block
-                    && d.count < sm
-                {
-                    let add = (sm - d.count).min(rem);
-                    *slot_ref = Some(ItemStack::new(s.block, d.count + add));
-                    rem -= add;
-                }
-            }
-            for slot_ref in slots.iter_mut().take(b).skip(a) {
-                if rem == 0 {
-                    break;
-                }
-                if slot_ref.is_none() {
-                    let n = rem.min(sm);
-                    *slot_ref = Some(ItemStack::new(s.block, n));
-                    rem -= n;
-                }
-            }
-            if rem > 0 {
-                slots[slot] = Some(ItemStack::new(s.block, rem));
-            }
-        }
-        // Update crafting output if we touched crafting slots
-        if (40..44).contains(&slot) {
-            update_craft_output_2x2(slots);
-        }
-        return;
-    }
-    if right {
-        if cursor.is_none() {
-            if let Some(s) = slots[slot] {
-                let half = s.count.div_ceil(2);
-                *cursor = Some(ItemStack::new(s.block, half));
-                let left = s.count - half;
-                slots[slot] = if left > 0 {
-                    Some(ItemStack::new(s.block, left))
-                } else {
-                    None
-                };
-            }
-        } else {
-            let held = cursor.unwrap();
-            let sm = stack_max(held.block);
-            let ok = match slots[slot] {
-                None => true,
-                Some(d) => d.block == held.block && d.count < sm,
-            };
-            if ok {
-                match slots[slot] {
-                    None => {
-                        slots[slot] = Some(ItemStack::new(held.block, 1));
-                    }
-                    Some(d) => {
-                        slots[slot] = Some(ItemStack::new(d.block, d.count + 1));
-                    }
-                }
-                let nc = held.count - 1;
-                *cursor = if nc > 0 {
-                    Some(ItemStack::new(held.block, nc))
-                } else {
-                    None
-                };
-            }
-        }
-    } else {
-        match (*cursor, slots[slot]) {
-            (None, _) => {
-                *cursor = slots[slot].take();
-            }
-            (Some(h), None) => {
-                slots[slot] = Some(h);
-                *cursor = None;
-            }
-            (Some(h), Some(d)) if h.block == d.block => {
-                let sm = stack_max(d.block);
-                let add = (sm - d.count).min(h.count);
-                slots[slot] = Some(ItemStack::new(d.block, d.count + add));
-                let nc = h.count - add;
-                *cursor = if nc > 0 {
-                    Some(ItemStack::new(h.block, nc))
-                } else {
-                    None
-                };
-            }
-            _ => {
-                std::mem::swap(&mut slots[slot], cursor);
-            }
-        }
-    }
-    // Update crafting output if we touched crafting slots
-    if (40..44).contains(&slot) {
-        update_craft_output_2x2(slots);
-    }
-}
-
-/// Check 2x2 crafting grid and update output slot.
-fn update_craft_output_2x2(slots: &mut [Option<ItemStack>; 45]) {
-    let grid: Vec<Option<BlockType>> = (40..44).map(|i| slots[i].map(|s| s.block)).collect();
-    if let Some((block, count)) = crafting::find_recipe(&grid, 2, 2) {
-        if block.is_tool() {
-            slots[44] = Some(ItemStack::new_tool(block));
-        } else {
-            slots[44] = Some(ItemStack::new(block, count as u32));
-        }
-    } else {
-        slots[44] = None;
-    }
-}
-
-/// Check 3x3 crafting grid and update output slot.
-fn update_craft_output_3x3(slots: &mut [Option<ItemStack>; 10]) {
-    let grid: Vec<Option<BlockType>> = (0..9).map(|i| slots[i].map(|s| s.block)).collect();
-    if let Some((block, count)) = crafting::find_recipe(&grid, 3, 3) {
-        if block.is_tool() {
-            slots[9] = Some(ItemStack::new_tool(block));
-        } else {
-            slots[9] = Some(ItemStack::new(block, count as u32));
-        }
-    } else {
-        slots[9] = None;
-    }
-}
-
-/// Returns (x, y, w, h) of a slot in the inventory panel.
-fn slot_rect(slot: usize, px: f32, py: f32) -> (f32, f32, f32, f32) {
-    let ss = 36.0f32;
-    let st = 38.0f32; // size, stride
-    match slot {
-        0..=8 => (px + 10.0 + slot as f32 * st, py + 294.0, ss, ss),
-        9..=35 => {
-            let i = slot - 9;
-            (
-                px + 10.0 + (i % 9) as f32 * st,
-                py + 168.0 + (i / 9) as f32 * st,
-                ss,
-                ss,
-            )
-        }
-        36..=39 => (px + 10.0, py + 10.0 + (slot - 36) as f32 * st, ss, ss),
-        40..=43 => {
-            let i = slot - 40;
-            (
-                px + 195.0 + (i % 2) as f32 * st,
-                py + 28.0 + (i / 2) as f32 * st,
-                ss,
-                ss,
-            )
-        }
-        44 => (px + 304.0, py + 42.0, ss, ss),
-        _ => (0.0, 0.0, 0.0, 0.0),
-    }
-}
-
-fn slot_at_pos(mx: f32, my: f32, px: f32, py: f32) -> Option<usize> {
-    for s in (0..45).filter(|&s| !(36..40).contains(&s)) {
-        // skip armor for now
-        let (x, y, w, h) = slot_rect(s, px, py);
-        if mx >= x && mx < x + w && my >= y && my < y + h {
-            return Some(s);
-        }
-    }
-    None
-}
-/// Crafting table UI layout.
-/// Returns (x,y,w,h) for crafting table slots relative to panel origin.
-/// Slots 0-8: 3x3 grid, 9: output, 100-135: inventory (mapped to inv 0-35), 136-144: hotbar overlay
-/// We use 100+ offsets to distinguish from craft_table_slots indices.
-fn ct_slot_rect(slot: usize, px: f32, py: f32) -> (f32, f32, f32, f32) {
-    let ss = 36.0f32;
-    let st = 38.0f32;
-    match slot {
-        // 3x3 crafting grid
-        0..=8 => {
-            let col = slot % 3;
-            let row = slot / 3;
-            (
-                px + 16.0 + col as f32 * st,
-                py + 18.0 + row as f32 * st,
-                ss,
-                ss,
-            )
-        }
-        // Output slot
-        9 => (px + 200.0, py + 52.0, ss, ss),
-        // Main inventory (slots 9-35 of inv_slots, mapped as 100+)
-        100..=126 => {
-            let i = slot - 100;
-            (
-                px + 10.0 + (i % 9) as f32 * st,
-                py + 168.0 + (i / 9) as f32 * st,
-                ss,
-                ss,
-            )
-        }
-        // Hotbar (slots 0-8 of inv_slots, mapped as 127+)
-        127..=135 => {
-            let i = slot - 127;
-            (px + 10.0 + i as f32 * st, py + 294.0, ss, ss)
-        }
-        _ => (0.0, 0.0, 0.0, 0.0),
-    }
-}
-
-fn ct_slot_at_pos(mx: f32, my: f32, px: f32, py: f32) -> Option<usize> {
-    // Check 3x3 grid + output
-    for s in 0..=9 {
-        let (x, y, w, h) = ct_slot_rect(s, px, py);
-        if mx >= x && mx < x + w && my >= y && my < y + h {
-            return Some(s);
-        }
-    }
-    // Check inventory area (inv slots 9-35 → ct slots 100-126)
-    for s in 100..=126 {
-        let (x, y, w, h) = ct_slot_rect(s, px, py);
-        if mx >= x && mx < x + w && my >= y && my < y + h {
-            return Some(s);
-        }
-    }
-    // Check hotbar (inv slots 0-8 → ct slots 127-135)
-    for s in 127..=135 {
-        let (x, y, w, h) = ct_slot_rect(s, px, py);
-        if mx >= x && mx < x + w && my >= y && my < y + h {
-            return Some(s);
-        }
-    }
-    None
-}
-
-/// Handle click in crafting table UI.
-fn ct_click(
-    ct_slots: &mut [Option<ItemStack>; 10],
-    inv_slots: &mut [Option<ItemStack>; 45],
-    cursor: &mut Option<ItemStack>,
-    ct_slot: usize,
-    right: bool,
-) {
-    if ct_slot == 9 {
-        // Output slot: pick up only
-        if !right
-            && cursor.is_none()
-            && let Some(output) = ct_slots[9].take()
-        {
-            *cursor = Some(output);
-            for slot in ct_slots.iter_mut().take(9) {
-                if let Some(s) = slot {
-                    s.count -= 1;
-                    if s.count == 0 {
-                        *slot = None;
-                    }
-                }
-            }
-            update_craft_output_3x3(ct_slots);
-        }
-        return;
-    }
-
-    // Map ct_slot to actual slot reference
-    let slot_ref: &mut Option<ItemStack> = if ct_slot <= 8 {
-        &mut ct_slots[ct_slot]
-    } else if (100..=126).contains(&ct_slot) {
-        &mut inv_slots[ct_slot - 100 + 9]
-    } else if (127..=135).contains(&ct_slot) {
-        &mut inv_slots[ct_slot - 127]
-    } else {
-        return;
-    };
-
-    if right {
-        if cursor.is_none() {
-            if let Some(s) = *slot_ref {
-                let half = s.count.div_ceil(2);
-                *cursor = Some(ItemStack::new(s.block, half));
-                let left = s.count - half;
-                *slot_ref = if left > 0 {
-                    Some(ItemStack::new(s.block, left))
-                } else {
-                    None
-                };
-            }
-        } else {
-            let held = cursor.unwrap();
-            let sm = stack_max(held.block);
-            let ok = match *slot_ref {
-                None => true,
-                Some(d) => d.block == held.block && d.count < sm,
-            };
-            if ok {
-                match *slot_ref {
-                    None => *slot_ref = Some(ItemStack::new(held.block, 1)),
-                    Some(d) => *slot_ref = Some(ItemStack::new(d.block, d.count + 1)),
-                }
-                let nc = held.count - 1;
-                *cursor = if nc > 0 {
-                    Some(ItemStack::new(held.block, nc))
-                } else {
-                    None
-                };
-            }
-        }
-    } else {
-        match (*cursor, *slot_ref) {
-            (None, _) => {
-                *cursor = slot_ref.take();
-            }
-            (Some(h), None) => {
-                *slot_ref = Some(h);
-                *cursor = None;
-            }
-            (Some(h), Some(d)) if h.block == d.block => {
-                let sm = stack_max(d.block);
-                let add = (sm - d.count).min(h.count);
-                *slot_ref = Some(ItemStack::new(d.block, d.count + add));
-                let nc = h.count - add;
-                *cursor = if nc > 0 {
-                    Some(ItemStack::new(h.block, nc))
-                } else {
-                    None
-                };
-            }
-            _ => {
-                std::mem::swap(slot_ref, cursor);
-            }
-        }
-    }
-
-    // Update crafting output if a crafting grid slot was touched
-    if ct_slot <= 8 {
-        update_craft_output_3x3(ct_slots);
-    }
-}
-
-/// Return crafting table items to inventory on close.
-fn ct_close(ct_slots: &mut [Option<ItemStack>; 10], inv_slots: &mut [Option<ItemStack>; 45]) {
-    for slot in ct_slots.iter_mut().take(9) {
-        if let Some(s) = slot.take() {
-            inv_add(inv_slots, s.block, s.count);
-        }
-    }
-    ct_slots[9] = None;
 }
 
 // shader imports
@@ -568,8 +61,8 @@ use renderer::{RenderTexture2D, Shader, Texture2D};
 
 // const WINDOW_WIDTH: u32 = 1920;
 // const WINDOW_HEIGHT: u32 = 1080;
-const RENDER_WIDTH: i32 = 750;
-const RENDER_HEIGHT: i32 = 422;
+const RENDER_WIDTH: i32 = 1125;
+const RENDER_HEIGHT: i32 = 633;
 
 fn render_target_size_for_framebuffer(width: i32, height: i32) -> (i32, i32) {
     // Minimized or degenerate framebuffers (e.g. 3840x0) would otherwise
@@ -903,14 +396,7 @@ fn main() {
 
     let mut game_state = GameState::Loading;
     let mut spawn_y = 150.0;
-    let mut inv_slots = [None::<ItemStack>; 45];
-    inv_slots[0] = Some(ItemStack::new(BlockType::TNT, 64));
-    inv_slots[1] = Some(ItemStack::new(BlockType::FlintAndSteel, 1));
-    inv_slots[2] = Some(ItemStack::new(BlockType::Bread, 16));
-    inv_slots[3] = Some(ItemStack::new(BlockType::CookedPorkchop, 16));
-    inv_slots[4] = Some(ItemStack::new(BlockType::IronChestplate, 1));
-    inv_slots[5] = Some(ItemStack::new(BlockType::Bow, 1));
-    inv_slots[6] = Some(ItemStack::new(BlockType::Arrow, 64));
+    let mut inv_slots = create_starting_inventory();
     let mut inv_cursor: Option<ItemStack> = None;
     let mut player = Player::new(spawn_y);
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
@@ -1894,9 +1380,10 @@ fn main() {
             }
         }
 
-        world.update_clouds(player.position, current_time as f32);
+        let dusk_time = current_time as f32 + 570.0;
+        world.update_clouds(player.position, dusk_time);
         let (sun_angle, sun_y) = {
-            let a = (current_time as f32 / 1200.0) * 2.0 * std::f32::consts::PI;
+            let a = (dusk_time / 1200.0) * 2.0 * std::f32::consts::PI;
             (a, a.sin())
         };
         let sun_dir = glam::Vec3::new(0.0, sun_y, sun_angle.cos());
@@ -1948,8 +1435,8 @@ fn main() {
         let projection = Mat4::perspective_rh(75.0_f32.to_radians(), aspect, 0.1, 1000.0);
         let view = Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
         let mvp = projection * view;
-        world.render_stars(player.position, current_time as f32, &flat_shader, &mvp);
-        draw_sun_moon(&flat_shader, player.position, current_time as f32, mvp);
+        world.render_stars(player.position, dusk_time, &flat_shader, &mvp);
+        draw_sun_moon(&flat_shader, player.position, dusk_time, mvp);
         shader.bind();
         shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
         shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);

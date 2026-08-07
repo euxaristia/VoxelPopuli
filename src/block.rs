@@ -354,6 +354,50 @@ impl BlockType {
                 | BlockType::Bell
         )
     }
+
+    pub fn blast_resistance(self) -> f32 {
+        match self {
+            BlockType::Air => 0.0,
+            BlockType::Bedrock => 3_600_000.0,
+            BlockType::Obsidian => 1200.0,
+            BlockType::Stone
+            | BlockType::Cobblestone
+            | BlockType::MossyCobblestone
+            | BlockType::StoneBrick
+            | BlockType::Brick
+            | BlockType::Sandstone
+            | BlockType::CoalOre
+            | BlockType::IronOre
+            | BlockType::GoldOre
+            | BlockType::DiamondOre
+            | BlockType::LapisOre
+            | BlockType::Furnace
+            | BlockType::IronBlock
+            | BlockType::LapisBlock => 30.0,
+            BlockType::OakLog
+            | BlockType::SpruceLog
+            | BlockType::OakPlanks
+            | BlockType::Chest
+            | BlockType::CraftingTable => 15.0,
+            BlockType::Dirt
+            | BlockType::Grass
+            | BlockType::SnowyGrass
+            | BlockType::Sand
+            | BlockType::Gravel => 2.5,
+            BlockType::OakLeaves
+            | BlockType::SpruceLeaves
+            | BlockType::Sponge
+            | BlockType::Bookshelf
+            | BlockType::Wool => 1.0,
+            BlockType::TNT
+            | BlockType::Glass
+            | BlockType::Torch
+            | BlockType::RedstoneTorch
+            | BlockType::Wheat
+            | BlockType::SnowLayer => 0.0,
+            _ => 1.5,
+        }
+    }
 }
 
 #[cfg(test)]
