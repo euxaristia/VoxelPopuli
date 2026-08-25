@@ -166,7 +166,8 @@ struct Ctx {
     // Vertex buffers are pooled by power-of-two size class: creating GPU
     // buffers is far too slow for the per-frame UI meshes this game makes.
     // Dropped meshes park their buffers in `retired` until the frame is
-    // submitted, then return to the pool, so in-flight draws stay valid.
+    // submitted or discarded, then return to the pool, so recorded draws
+    // cannot observe a later mesh's data.
     buffer_pool: HashMap<u64, Vec<PoolBuffer>>,
     retired: Vec<PoolBuffer>,
     // Bumped once per end_frame; invalidates cached per-shader uniform slots.
@@ -1604,6 +1605,15 @@ fn pooled_buffer(c: &mut Ctx, bytes: &[u8]) -> PoolBuffer {
     buffer
 }
 
+fn recycle_retired_buffers(c: &mut Ctx) {
+    for pooled in std::mem::take(&mut c.retired) {
+        c.buffer_pool
+            .entry(pooled.buffer.size())
+            .or_default()
+            .push(pooled);
+    }
+}
+
 impl Drop for Mesh {
     fn drop(&mut self) {
         // Park the buffer until end_frame; draws recorded this frame still
@@ -1720,6 +1730,8 @@ pub fn end_frame(width: i32, height: i32) {
         let arena = std::mem::take(&mut c.uniform_arena);
         c.frame_stamp += 1;
         if width <= 0 || height <= 0 {
+            drop(passes);
+            recycle_retired_buffers(c);
             return; // minimized: drop the frame
         }
         if c.config.width != width as u32 || c.config.height != height as u32 {
@@ -1730,15 +1742,20 @@ pub fn end_frame(width: i32, height: i32) {
         }
         use wgpu::CurrentSurfaceTexture as Cst;
         let frame = match c.surface.get_current_texture() {
-            Cst::Success(f) | Cst::Suboptimal(f) => f,
+            Cst::Success(f) | Cst::Suboptimal(f) => Some(f),
             Cst::Outdated | Cst::Lost => {
                 c.surface.configure(&c.device, &c.config);
                 match c.surface.get_current_texture() {
-                    Cst::Success(f) | Cst::Suboptimal(f) => f,
-                    _ => return,
+                    Cst::Success(f) | Cst::Suboptimal(f) => Some(f),
+                    _ => None,
                 }
             }
-            Cst::Timeout | Cst::Occluded | Cst::Validation => return,
+            Cst::Timeout | Cst::Occluded | Cst::Validation => None,
+        };
+        let Some(frame) = frame else {
+            drop(passes);
+            recycle_retired_buffers(c);
+            return;
         };
         let frame_view = frame
             .texture
@@ -1873,13 +1890,8 @@ pub fn end_frame(width: i32, height: i32) {
         }
         c.queue.submit([encoder.finish()]);
         c.queue.present(frame);
+        drop(passes);
         // The frame is submitted; retired mesh buffers are safe to reuse.
-        let retired = std::mem::take(&mut c.retired);
-        for pooled in retired {
-            c.buffer_pool
-                .entry(pooled.buffer.size())
-                .or_default()
-                .push(pooled);
-        }
+        recycle_retired_buffers(c);
     });
 }

@@ -629,6 +629,35 @@ impl Chunk {
         }
     }
 
+    pub fn copy_terrain_from(&mut self, other: &Chunk) {
+        self.blocks = other.blocks.clone();
+        self.light = other.light.clone();
+        self.liquid_levels = other.liquid_levels.clone();
+        self.x = other.x;
+        self.z = other.z;
+        self.dirty = true;
+        self.meshing_in_progress = false;
+        self.mesh_job_id = 0;
+        self.mesh_opaque = None;
+        self.mesh_transparent = None;
+        self.mesh_water = None;
+    }
+
+    pub fn hydrate_fluids(&mut self) {
+        for x in 0..CHUNK_WIDTH {
+            for y in 0..CHUNK_HEIGHT {
+                for z in 0..CHUNK_DEPTH {
+                    let block = self.blocks[x][y][z];
+                    if matches!(block, BlockType::Water | BlockType::Lava)
+                        && self.liquid_levels[x][y][z] == 0
+                    {
+                        self.liquid_levels[x][y][z] = WATER_SOURCE;
+                    }
+                }
+            }
+        }
+    }
+
     /// Flat byte views of blocks/light/liquid, in `x*4096 + y*16 + z` order,
     /// for uploading to the GPU voxel pool (see hashed-splashing-haven plan).
     pub fn gpu_bytes(&self) -> (&[u8], &[u8], &[u8]) {
@@ -860,10 +889,10 @@ impl Chunk {
 
         for (block, count, vein_size, min_y, max_y) in ore_specs {
             for _ in 0..count {
-                let x = rng.range_i32(0, CHUNK_WIDTH as i32);
+                let local_x = rng.range_i32(0, CHUNK_WIDTH as i32);
                 let y = rng.range_i32(min_y, max_y);
-                let z = rng.range_i32(0, CHUNK_DEPTH as i32);
-                generate_minable_vein(self, block, vein_size, x, y, z, &mut rng);
+                let local_z = rng.range_i32(0, CHUNK_DEPTH as i32);
+                generate_minable_vein(self, block, vein_size, local_x, y, local_z, &mut rng);
             }
         }
 
@@ -2361,9 +2390,9 @@ pub fn generate_minable_vein(
     chunk: &mut Chunk,
     block_type: BlockType,
     number_of_blocks: usize,
-    chunk_x: i32,
-    chunk_y: i32,
-    chunk_z: i32,
+    local_x: i32,
+    local_y: i32,
+    local_z: i32,
     rng: &mut ChunkRng,
 ) {
     let angle = rng.range_f32(0.0, std::f32::consts::PI);
@@ -2371,16 +2400,16 @@ pub fn generate_minable_vein(
     let cos_a = angle.cos();
 
     let d_blocks = number_of_blocks as f32;
-    let x0 = (chunk_x + 8) as f32;
-    let z0 = (chunk_z + 8) as f32;
+    let x0 = local_x as f32;
+    let z0 = local_z as f32;
 
     let d0 = (x0 + sin_a * d_blocks / 8.0) as f64;
     let d1 = (x0 - sin_a * d_blocks / 8.0) as f64;
     let d2 = (z0 + cos_a * d_blocks / 8.0) as f64;
     let d3 = (z0 - cos_a * d_blocks / 8.0) as f64;
 
-    let d4 = (chunk_y + rng.range_i32(-2, 1)) as f64;
-    let d5 = (chunk_y + rng.range_i32(-2, 1)) as f64;
+    let d4 = (local_y + rng.range_i32(-2, 1)) as f64;
+    let d5 = (local_y + rng.range_i32(-2, 1)) as f64;
 
     for i in 0..=number_of_blocks {
         let t = i as f64 / d_blocks as f64;
@@ -2628,6 +2657,96 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn hydrate_fluids_fills_missing_water_and_lava_levels() {
+        let mut chunk = Chunk::new(0, 0, 1);
+        chunk.blocks[3][10][4] = BlockType::Water;
+        chunk.blocks[5][12][6] = BlockType::Lava;
+        chunk.blocks[7][8][9] = BlockType::Stone;
+        chunk.hydrate_fluids();
+        assert_eq!(chunk.liquid_levels[3][10][4], WATER_SOURCE);
+        assert_eq!(chunk.liquid_levels[5][12][6], WATER_SOURCE);
+        assert_eq!(chunk.liquid_levels[7][8][9], 0);
+    }
+
+    #[test]
+    fn minable_veins_cover_both_chunk_halves_deterministically() {
+        let mut first = Chunk::new(0, 0, 73);
+        let mut second = Chunk::new(0, 0, 73);
+        for x in 0..CHUNK_WIDTH {
+            for y in 56..=72 {
+                for z in 0..CHUNK_DEPTH {
+                    first.blocks[x][y][z] = BlockType::Stone;
+                    second.blocks[x][y][z] = BlockType::Stone;
+                }
+            }
+        }
+
+        let mut first_rng = ChunkRng::new(73, 0, 0, 991);
+        let mut second_rng = ChunkRng::new(73, 0, 0, 991);
+        for local_x in 0..CHUNK_WIDTH as i32 {
+            for local_z in 0..CHUNK_DEPTH as i32 {
+                generate_minable_vein(
+                    &mut first,
+                    BlockType::CoalOre,
+                    4,
+                    local_x,
+                    64,
+                    local_z,
+                    &mut first_rng,
+                );
+                generate_minable_vein(
+                    &mut second,
+                    BlockType::CoalOre,
+                    4,
+                    local_x,
+                    64,
+                    local_z,
+                    &mut second_rng,
+                );
+            }
+        }
+
+        let ore_positions = |chunk: &Chunk| {
+            let mut positions = Vec::new();
+            for x in 0..CHUNK_WIDTH {
+                for y in 0..CHUNK_HEIGHT {
+                    for z in 0..CHUNK_DEPTH {
+                        if chunk.blocks[x][y][z] == BlockType::CoalOre {
+                            positions.push((x, y, z));
+                        }
+                    }
+                }
+            }
+            positions
+        };
+        let first_positions = ore_positions(&first);
+        assert_eq!(first_positions, ore_positions(&second));
+
+        let (mut west, mut east, mut north, mut south) = (0, 0, 0, 0);
+        for &(x, _, z) in &first_positions {
+            if x < CHUNK_WIDTH / 2 {
+                west += 1;
+            } else {
+                east += 1;
+            }
+            if z < CHUNK_DEPTH / 2 {
+                north += 1;
+            } else {
+                south += 1;
+            }
+        }
+
+        assert!(
+            west * 2 >= east && east * 2 >= west,
+            "west={west}, east={east}"
+        );
+        assert!(
+            north * 2 >= south && south * 2 >= north,
+            "north={north}, south={south}"
+        );
     }
 
     #[test]

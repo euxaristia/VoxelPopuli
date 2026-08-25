@@ -15,13 +15,15 @@ mod noise;
 mod player;
 mod profiler;
 mod renderer;
+mod save;
 mod village;
 mod world;
 
 use crate::hud::*;
 use crate::inventory::*;
 use crate::player::Player;
-use crate::world::{CLOUD_HEIGHT, VIEW_DISTANCE, World};
+use crate::save::{GameSave, GameSettings, SAVE_FILE};
+use crate::world::{CLOUD_HEIGHT, World};
 use block::BlockType;
 use glam::{Mat4, Vec2, Vec3};
 use profiler::FrameProfiler;
@@ -289,9 +291,27 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
     renderer::set_depth_test(true);
 }
 
+fn args_force_new_world(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        arg == "--seed"
+            || arg.starts_with("--seed=")
+            || arg == "--import-world"
+            || arg.starts_with("--import-world=")
+    })
+}
+
 fn main() {
     // Entry point
-    let world_seed = resolve_world_seed();
+    let args: Vec<String> = std::env::args().collect();
+    let mut loaded_save = if args_force_new_world(&args) {
+        None
+    } else {
+        GameSave::read_from(std::path::Path::new(SAVE_FILE)).ok()
+    };
+    let world_seed = loaded_save
+        .as_ref()
+        .map(|save| save.seed as i64)
+        .unwrap_or_else(resolve_world_seed);
     if let Some(config) = java_compat::ExportConfig::from_args() {
         match java_compat::export_classic_java_world(world_seed as u64, &config) {
             Ok(summary) => {
@@ -311,22 +331,29 @@ fn main() {
         return;
     }
 
-    let args: Vec<String> = std::env::args().collect();
-    let mut imported_chunks = Vec::new();
+    let mut import_world_path = None;
     if let Some(import_idx) = args.iter().position(|a| a == "--import-world") {
-        if let Some(dir_str) = args.get(import_idx + 1) {
-            let path = std::path::Path::new(dir_str);
-            match java_compat::import_classic_java_world(path) {
-                Ok(chunks) => {
-                    println!(
-                        "Successfully imported {} Minecraft Java chunk(s) from {}",
-                        chunks.len(),
-                        path.display()
-                    );
-                    imported_chunks = chunks;
-                }
-                Err(err) => {
-                    eprintln!("Failed to import Minecraft Java world from {}: {err}", path.display());
+        import_world_path = args.get(import_idx + 1).map(std::path::PathBuf::from);
+    } else if let Some(save) = &loaded_save {
+        import_world_path = save.import_world.clone();
+    }
+    let mut imported_chunks = Vec::new();
+    if let Some(path) = &import_world_path {
+        match java_compat::import_classic_java_world(path) {
+            Ok(chunks) => {
+                println!(
+                    "Successfully imported {} Minecraft Java chunk(s) from {}",
+                    chunks.len(),
+                    path.display()
+                );
+                imported_chunks = chunks;
+            }
+            Err(err) => {
+                eprintln!(
+                    "Failed to import Minecraft Java world from {}: {err}",
+                    path.display()
+                );
+                if loaded_save.is_none() {
                     std::process::exit(1);
                 }
             }
@@ -363,8 +390,9 @@ fn main() {
     let (init_fb_w, init_fb_h) = window.get_framebuffer_size();
     renderer::init(&*window, init_fb_w, init_fb_h);
     let mut world = World::new(world_seed as u64);
-    for chunk in imported_chunks {
-        world.insert_chunk(chunk);
+    world.register_imported_chunks(imported_chunks);
+    if let Some(save) = &loaded_save {
+        world.install_edits(&save.edits);
     }
     world.generate_atlas();
     world.init_celestial();
@@ -418,11 +446,16 @@ fn main() {
     let mut crafting_table_open = false;
     let mut craft_table_slots = [None::<ItemStack>; 10]; // 0-8: 3x3 grid, 9: output
     let mut pause_sub_menu = PauseSubMenu::Main;
-    let mut render_dist_setting = 8i32;
-    let mut fov_setting = 80.0f32;
-    let mut fancy_gfx_setting = true;
+    let settings = loaded_save
+        .as_ref()
+        .map(|save| save.settings.clamped())
+        .unwrap_or_default();
+    let mut render_dist_setting = settings.view_distance;
+    let mut fov_setting = settings.fov;
+    let mut fancy_gfx_setting = settings.fancy_graphics;
     let mut export_status_msg = String::new();
-    let mut selected_skin = 0u8;
+    let mut selected_skin = settings.selected_skin;
+    world.set_view_distance(render_dist_setting);
     let mut placement_lock: Option<LinearPlacementLock> = None;
     let mut place_repeat_timer = 0.0f32;
     let mut prev_gp_lt = -1.0f32;
@@ -458,13 +491,20 @@ fn main() {
             // Update world incrementally
             world.update(Vec3::new(32.5, 0.0, 32.5), current_time as f32);
             if !world.is_loading {
-                for y in (0..255).rev() {
-                    if world.get_block(32, y, 32) != BlockType::Air {
-                        spawn_y = y as f32 + 2.0;
-                        break;
+                if let Some(save) = loaded_save.take() {
+                    player = save.restore_player();
+                    inv_slots = save.inventory;
+                    camera_angle = save.camera_angle;
+                    spawn_y = player.position.y;
+                } else {
+                    for y in (0..255).rev() {
+                        if world.get_block(32, y, 32) != BlockType::Air {
+                            spawn_y = y as f32 + 2.0;
+                            break;
+                        }
                     }
+                    player.position = Vec3::new(32.5, spawn_y, 32.5);
                 }
-                player.position = Vec3::new(32.5, spawn_y, 32.5);
                 game_state = GameState::Playing;
             }
 
@@ -540,7 +580,8 @@ fn main() {
             );
 
             // Progress Fill (tracks fully meshed & GPU ready chunks)
-            let total_chunks = (VIEW_DISTANCE * 2 + 1) as f32 * (VIEW_DISTANCE * 2 + 1) as f32;
+            let total_chunks =
+                (world.view_distance * 2 + 1) as f32 * (world.view_distance * 2 + 1) as f32;
             let ready_chunks = world
                 .chunks
                 .iter()
@@ -779,183 +820,79 @@ fn main() {
                         let sh = inner_win_size.1 as f32;
                         let mx = last_cursor_pos.0 as f32;
                         let my = last_cursor_pos.1 as f32;
-
-                        match pause_sub_menu {
-                            PauseSubMenu::Main => {
-                                let btn_w = 340.0;
-                                let btn_h = 44.0;
-                                let btn_x = 100.0;
-                                let btn_y_start = sh / 2.0 - 130.0;
-
-                                for i in 0..5 {
-                                    let y = btn_y_start + i as f32 * (btn_h + 10.0);
-                                    if mx >= btn_x
-                                        && mx <= btn_x + btn_w
-                                        && my >= y
-                                        && my <= y + btn_h
-                                    {
-                                        match i {
-                                            0 => {
-                                                game_state = GameState::Playing;
-                                                window.set_cursor_mode(glfw::CursorMode::Disabled);
-                                            }
-                                            1 => {
-                                                pause_sub_menu = PauseSubMenu::Settings;
-                                            }
-                                            2 => {
-                                                pause_sub_menu = PauseSubMenu::WorldInfo;
-                                            }
-                                            3 => {
-                                                pause_sub_menu = PauseSubMenu::Profile;
-                                            }
-                                            4 => {
-                                                window.set_should_close(true);
-                                            }
-                                            _ => {}
-                                        }
-                                    }
+                        if let Some(click) = pause_click(pause_sub_menu, sw, sh, mx, my) {
+                            match click {
+                                PauseClick::Resume => {
+                                    game_state = GameState::Playing;
+                                    window.set_cursor_mode(glfw::CursorMode::Disabled);
                                 }
-
-                                let sbtn_s = 44.0;
-                                for i in 0..3 {
-                                    let sx = btn_x + i as f32 * (sbtn_s + 10.0);
-                                    let sy = sh - 70.0;
-                                    if mx >= sx
-                                        && mx <= sx + sbtn_s
-                                        && my >= sy
-                                        && my <= sy + sbtn_s
-                                    {
-                                        if i == 1 {
-                                            pause_sub_menu = PauseSubMenu::Settings;
-                                        } else if i == 2 {
-                                            pause_sub_menu = PauseSubMenu::Profile;
-                                        }
-                                    }
+                                PauseClick::OpenSettings => {
+                                    pause_sub_menu = PauseSubMenu::Settings;
                                 }
-                            }
-                            PauseSubMenu::Settings => {
-                                let panel_w = (sw * 0.75).clamp(450.0, 900.0);
-                                let panel_h = (sh * 0.8).clamp(350.0, 700.0);
-                                let panel_x = (sw - panel_w) / 2.0;
-                                let panel_y = (sh - panel_h) / 2.0;
-
-                                let distances = [4, 6, 8, 12];
-                                for (i, d) in distances.iter().enumerate() {
-                                    let bx = panel_x + 340.0 + i as f32 * 75.0;
-                                    let by = panel_y + 82.0;
-                                    if mx >= bx && mx <= bx + 65.0 && my >= by && my <= by + 32.0 {
-                                        render_dist_setting = *d;
-                                    }
+                                PauseClick::OpenWorldInfo => {
+                                    pause_sub_menu = PauseSubMenu::WorldInfo;
                                 }
-
-                                let fovs = [70.0, 80.0, 90.0, 100.0];
-                                for (i, f) in fovs.iter().enumerate() {
-                                    let bx = panel_x + 340.0 + i as f32 * 75.0;
-                                    let by = panel_y + 137.0;
-                                    if mx >= bx && mx <= bx + 65.0 && my >= by && my <= by + 32.0 {
-                                        fov_setting = *f;
-                                    }
+                                PauseClick::OpenProfile => {
+                                    pause_sub_menu = PauseSubMenu::Profile;
                                 }
-
-                                if mx >= panel_x + 340.0
-                                    && mx <= panel_x + 500.0
-                                    && my >= panel_y + 192.0
-                                    && my <= panel_y + 224.0
-                                {
+                                PauseClick::SaveQuit => {
+                                    window.set_should_close(true);
+                                }
+                                PauseClick::Back => {
+                                    pause_sub_menu = PauseSubMenu::Main;
+                                }
+                                PauseClick::SetRenderDistance(distance) => {
+                                    render_dist_setting = distance;
+                                    world.set_view_distance(distance);
+                                }
+                                PauseClick::SetFov(fov) => {
+                                    fov_setting = fov;
+                                }
+                                PauseClick::ToggleFancy => {
                                     fancy_gfx_setting = !fancy_gfx_setting;
                                 }
-
-                                if mx >= panel_x + 40.0
-                                    && mx <= panel_x + 420.0
-                                    && my >= panel_y + 260.0
-                                    && my <= panel_y + 300.0
-                                {
+                                PauseClick::ExportJava => {
                                     let config = java_compat::ExportConfig {
                                         output_dir: std::path::PathBuf::from("java17_world"),
                                         radius: 4,
                                     };
-                                    match java_compat::export_classic_java_world(
-                                        world_seed as u64,
+                                    match java_compat::export_classic_java_chunks(
+                                        world.seed,
                                         &config,
+                                        |cx, cz| world.chunk_for_export(cx, cz),
                                     ) {
                                         Ok(summary) => {
                                             export_status_msg =
-                                                format!("Exported {} chunks!", summary.chunks)
+                                                format!("Exported {} live chunks!", summary.chunks)
                                         }
                                         Err(e) => export_status_msg = format!("Export failed: {e}"),
                                     }
                                 }
-
-                                if mx >= panel_x + 40.0
-                                    && mx <= panel_x + 220.0
-                                    && my >= panel_y + panel_h - 60.0
-                                    && my <= panel_y + panel_h - 20.0
-                                {
-                                    pause_sub_menu = PauseSubMenu::Main;
-                                }
-                            }
-                            PauseSubMenu::WorldInfo => {
-                                let panel_w = (sw * 0.75).clamp(450.0, 900.0);
-                                let panel_h = (sh * 0.75).clamp(350.0, 700.0);
-                                let panel_x = (sw - panel_w) / 2.0;
-                                let panel_y = (sh - panel_h) / 2.0;
-
-                                if mx >= panel_x + 40.0
-                                    && mx <= panel_x + 400.0
-                                    && my >= panel_y + 250.0
-                                    && my <= panel_y + 294.0
-                                {
-                                    let config = java_compat::ExportConfig {
-                                        output_dir: std::path::PathBuf::from("java17_world"),
-                                        radius: 4,
-                                    };
-                                    match java_compat::export_classic_java_world(
-                                        world_seed as u64,
-                                        &config,
-                                    ) {
-                                        Ok(summary) => {
-                                            export_status_msg =
-                                                format!("Exported {} MCA chunks!", summary.chunks)
-                                        }
-                                        Err(e) => export_status_msg = format!("Export error: {e}"),
-                                    }
-                                }
-
-                                if mx >= panel_x + 40.0
-                                    && mx <= panel_x + 220.0
-                                    && my >= panel_y + panel_h - 60.0
-                                    && my <= panel_y + panel_h - 20.0
-                                {
-                                    pause_sub_menu = PauseSubMenu::Main;
-                                }
-                            }
-                            PauseSubMenu::Profile => {
-                                let panel_w = (sw * 0.75).clamp(450.0, 900.0);
-                                let panel_h = (sh * 0.75).clamp(350.0, 700.0);
-                                let panel_x = (sw - panel_w) / 2.0;
-                                let panel_y = (sh - panel_h) / 2.0;
-
-                                for i in 0..5 {
-                                    let bx = panel_x + 40.0 + i as f32 * 125.0;
-                                    let by = panel_y + 130.0;
-                                    if mx >= bx && mx <= bx + 115.0 && my >= by && my <= by + 120.0
-                                    {
-                                        selected_skin = i as u8;
-                                    }
-                                }
-
-                                if mx >= panel_x + 40.0
-                                    && mx <= panel_x + 220.0
-                                    && my >= panel_y + panel_h - 60.0
-                                    && my <= panel_y + panel_h - 20.0
-                                {
-                                    pause_sub_menu = PauseSubMenu::Main;
+                                PauseClick::SelectSkin(skin) => {
+                                    selected_skin = skin;
                                 }
                             }
                         }
                     } else if game_state == GameState::Playing && !player.inventory_open {
                         if left {
                             left_mouse_held = action == Action::Press;
+                            if action == Action::Press && player.attack_cooldown <= 0.0 {
+                                let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
+                                let look_dir = Vec3::new(
+                                    camera_angle.y.cos() * camera_angle.x.sin(),
+                                    camera_angle.y.sin(),
+                                    camera_angle.y.cos() * camera_angle.x.cos(),
+                                );
+                                let held = inv_slots[player.selected_slot]
+                                    .map(|s| s.block)
+                                    .unwrap_or(BlockType::Air);
+                                if world.try_melee(eye_pos, look_dir, item::melee_damage(held), 4.0)
+                                {
+                                    player.attack_cooldown = 0.4;
+                                    left_mouse_held = false;
+                                    mining_state.reset();
+                                }
+                            }
                             if action == Action::Release {
                                 mining_state.reset();
                             }
@@ -995,6 +932,7 @@ fn main() {
                                             in_ground: false,
                                             damage: (bow_charge * 9.0 + 1.0).round(),
                                             is_critical: bow_charge >= 1.0,
+                                            from_player: true,
                                         });
                                     }
                                 }
@@ -1248,6 +1186,16 @@ fn main() {
             if earned_xp > 0 {
                 player.add_xp(earned_xp);
             }
+            for (block, count) in world.pending_drops.drain(..) {
+                inv_add(&mut inv_slots, block, count);
+            }
+            if world.pending_hurt > 0 {
+                player.take_damage(world.pending_hurt);
+                world.pending_hurt = 0;
+            }
+            if player.health <= 0 {
+                player.respawn(Vec3::new(32.5, spawn_y, 32.5));
+            }
 
             // Per-frame mining update
             let gp_rt_held = gp_gs
@@ -1332,7 +1280,9 @@ fn main() {
         }
 
         let dusk_time = current_time as f32 + 570.0;
-        world.update_clouds(player.position, dusk_time);
+        if fancy_gfx_setting {
+            world.update_clouds(player.position, dusk_time);
+        }
         let (sun_angle, sun_y) = {
             let a = (dusk_time / 1200.0) * 2.0 * std::f32::consts::PI;
             (a, a.sin())
@@ -1383,7 +1333,7 @@ fn main() {
         renderer::clear(sky_c.x, sky_c.y, sky_c.z, 1.0);
         let aspect = target.texture.width as f32 / target.texture.height as f32;
         // perspective_rh maps depth to wgpu's [0, 1] range (GL used [-1, 1]).
-        let projection = Mat4::perspective_rh(75.0_f32.to_radians(), aspect, 0.1, 1000.0);
+        let projection = Mat4::perspective_rh(fov_setting.to_radians(), aspect, 0.1, 1000.0);
         let view = Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
         let mvp = projection * view;
         world.render_stars(player.position, dusk_time, &flat_shader, &mvp);
@@ -1470,7 +1420,7 @@ fn main() {
         // the cloud layer, so each transparent layer is drawn back-to-front.
         let above_clouds = eye_pos.y > CLOUD_HEIGHT;
 
-        if !above_clouds {
+        if fancy_gfx_setting && !above_clouds {
             world.render_clouds(&flat_shader, &mvp);
         }
 
@@ -1489,7 +1439,7 @@ fn main() {
         water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), sky_c);
         world.render_water(&frustum);
 
-        if above_clouds {
+        if fancy_gfx_setting && above_clouds {
             world.render_clouds(&flat_shader, &mvp);
         }
         RenderTexture2D::unbind();
@@ -1591,8 +1541,26 @@ fn main() {
                     } else {
                         (pct * 2.0 * 255.0) as u8
                     };
-                    draw_rect(ui_shader, rx + 4.0, bar_y, bar_max_w, 2.0, [0, 0, 0, 255], sw, sh);
-                    draw_rect(ui_shader, rx + 4.0, bar_y, bar_w, 2.0, [red, green, 0, 255], sw, sh);
+                    draw_rect(
+                        ui_shader,
+                        rx + 4.0,
+                        bar_y,
+                        bar_max_w,
+                        2.0,
+                        [0, 0, 0, 255],
+                        sw,
+                        sh,
+                    );
+                    draw_rect(
+                        ui_shader,
+                        rx + 4.0,
+                        bar_y,
+                        bar_w,
+                        2.0,
+                        [red, green, 0, 255],
+                        sw,
+                        sh,
+                    );
                 }
             }
         };
@@ -2343,8 +2311,26 @@ fn main() {
                             } else {
                                 (pct * 2.0 * 255.0) as u8
                             };
-                            draw_rect(shader, sx + 4.0, bar_y, bar_max_w, 2.0, [0, 0, 0, 255], sw, sh);
-                            draw_rect(shader, sx + 4.0, bar_y, bar_w, 2.0, [red, green, 0, 255], sw, sh);
+                            draw_rect(
+                                shader,
+                                sx + 4.0,
+                                bar_y,
+                                bar_max_w,
+                                2.0,
+                                [0, 0, 0, 255],
+                                sw,
+                                sh,
+                            );
+                            draw_rect(
+                                shader,
+                                sx + 4.0,
+                                bar_y,
+                                bar_w,
+                                2.0,
+                                [red, green, 0, 255],
+                                sw,
+                                sh,
+                            );
                         }
                     }
                 }
@@ -2609,4 +2595,23 @@ fn main() {
         maximized,
     };
     state.save();
+    let settings = GameSettings {
+        view_distance: render_dist_setting,
+        fov: fov_setting,
+        fancy_graphics: fancy_gfx_setting,
+        selected_skin,
+    }
+    .clamped();
+    if let Ok(save) = GameSave::capture(
+        &world,
+        &player,
+        &inv_slots,
+        camera_angle,
+        settings,
+        import_world_path.as_deref(),
+    ) {
+        if let Err(err) = save.write_to(std::path::Path::new(SAVE_FILE)) {
+            eprintln!("Failed to save world: {err}");
+        }
+    }
 }

@@ -6,3 +6,6 @@ perf.data
 perf.data.old
 target/
 window.cfg
+world.vps
+*.vps
+java17_world/

@@ -27,12 +27,15 @@ pub struct Mob {
     /// Anchor the mob stays near (the village plaza)
     pub home: Vec3,
     pub grounded: bool,
+    pub health: f32,
+    pub attack_cooldown: f32,
     /// Cosmetic variation (robe tint for villagers)
     pub variant: u8,
 }
 
 impl Mob {
     pub fn new(kind: MobKind, position: Vec3, home: Vec3, variant: u8) -> Self {
+        let health = Self::max_health_for(kind);
         Self {
             kind,
             position,
@@ -42,8 +45,31 @@ impl Mob {
             wander_timer: 0.5 + (variant as f32) * 0.37,
             home,
             grounded: false,
+            health,
+            attack_cooldown: 0.0,
             variant,
         }
+    }
+
+    fn max_health_for(kind: MobKind) -> f32 {
+        match kind {
+            MobKind::Golem => 100.0,
+            MobKind::Cow => 10.0,
+            MobKind::Pig | MobKind::Sheep => 8.0,
+            MobKind::Villager | MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper => 20.0,
+        }
+    }
+
+    pub fn take_damage(&mut self, damage: f32) -> bool {
+        self.health = (self.health - damage.max(0.0)).max(0.0);
+        self.health <= 0.0
+    }
+
+    pub fn is_hostile(&self) -> bool {
+        matches!(
+            self.kind,
+            MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper
+        )
     }
 
     pub fn height(&self) -> f32 {
@@ -138,8 +164,18 @@ mod tests {
 
         let g = Mob::new(MobKind::Golem, pos, home, 0);
         assert_eq!(g.drop_item(), Some((BlockType::IronIngot, 3)));
+        assert_eq!(g.health, 100.0);
 
         let v = Mob::new(MobKind::Villager, pos, home, 0);
         assert_eq!(v.drop_item(), None);
+    }
+
+    #[test]
+    fn mobs_survive_partial_damage_and_die_at_zero() {
+        let mut zombie = Mob::new(MobKind::Zombie, Vec3::ZERO, Vec3::ZERO, 0);
+        assert!(!zombie.take_damage(5.0));
+        assert_eq!(zombie.health, 15.0);
+        assert!(zombie.take_damage(15.0));
+        assert_eq!(zombie.health, 0.0);
     }
 }

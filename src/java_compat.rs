@@ -209,6 +209,21 @@ impl ExportConfig {
 }
 
 pub fn export_classic_java_world(seed: u64, config: &ExportConfig) -> io::Result<ExportSummary> {
+    export_classic_java_chunks(seed, config, |chunk_x, chunk_z| {
+        let mut chunk = Chunk::new(chunk_x, chunk_z, seed);
+        chunk.generate();
+        chunk
+    })
+}
+
+pub fn export_classic_java_chunks<F>(
+    seed: u64,
+    config: &ExportConfig,
+    mut chunk_at: F,
+) -> io::Result<ExportSummary>
+where
+    F: FnMut(i32, i32) -> Chunk,
+{
     if !classic_world_height_matches_chunks() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -225,8 +240,7 @@ pub fn export_classic_java_world(seed: u64, config: &ExportConfig) -> io::Result
     let mut chunks = 0usize;
     for chunk_x in -config.radius..=config.radius {
         for chunk_z in -config.radius..=config.radius {
-            let mut chunk = Chunk::new(chunk_x, chunk_z, seed);
-            chunk.generate();
+            let chunk = chunk_at(chunk_x, chunk_z);
             let nbt = write_nbt_root(NbtTag::Compound(classic_chunk_fields(&chunk)));
             let compressed = zlib_compress(&nbt)?;
             let region = (
@@ -1035,7 +1049,10 @@ pub fn read_region_file(path: &Path) -> io::Result<Vec<(i32, i32, Vec<u8>)>> {
 
     let bytes = std::fs::read(path)?;
     if bytes.len() < 8192 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Region file too small"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Region file too small",
+        ));
     }
 
     let mut chunks = Vec::new();
@@ -1055,7 +1072,8 @@ pub fn read_region_file(path: &Path) -> io::Result<Vec<(i32, i32, Vec<u8>)>> {
             continue;
         }
 
-        let length = u32::from_be_bytes(bytes[chunk_offset..chunk_offset + 4].try_into().unwrap()) as usize;
+        let length =
+            u32::from_be_bytes(bytes[chunk_offset..chunk_offset + 4].try_into().unwrap()) as usize;
         let compression_type = bytes[chunk_offset + 4];
 
         if length <= 1 || chunk_offset + 4 + length > bytes.len() {
@@ -1242,13 +1260,17 @@ pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
                 let world_y = (sec_y as usize * SECTION_HEIGHT) + y;
 
                 if world_y < CHUNK_HEIGHT {
-                    let block = palette.get(pal_idx as usize).copied().unwrap_or(BlockType::Air);
+                    let block = palette
+                        .get(pal_idx as usize)
+                        .copied()
+                        .unwrap_or(BlockType::Air);
                     chunk.blocks[x][world_y][z] = block;
                 }
             }
         }
     }
 
+    chunk.hydrate_fluids();
     Ok(chunk)
 }
 
@@ -1474,7 +1496,10 @@ mod tests {
             }
         }
         println!("Block mismatches: {:?}", mismatch_map);
-        assert_eq!(matching_blocks, total_blocks, "imported chunk blocks must match 100%");
+        assert_eq!(
+            matching_blocks, total_blocks,
+            "imported chunk blocks must match 100%"
+        );
 
         let _ = std::fs::remove_dir_all(out);
     }
