@@ -22,7 +22,10 @@ pub struct Player {
     pub last_space_release: f64,
     pub space_was_pressed: bool,
     pub damage_cooldown: f32,
+    pub drowning_timer: f32,
+    pub fall_distance: f32,
     pub spawn_point: Option<Vec3>,
+    pub attack_cooldown: f32,
 }
 
 impl Player {
@@ -46,7 +49,10 @@ impl Player {
             last_space_release: 0.0,
             space_was_pressed: false,
             damage_cooldown: 0.0,
+            drowning_timer: 1.0,
+            fall_distance: 0.0,
             spawn_point: None,
+            attack_cooldown: 0.0,
         }
     }
 
@@ -76,6 +82,25 @@ impl Player {
                 }
             }
         }
+    }
+
+    pub fn respawn(&mut self, fallback: Vec3) {
+        self.position = self.spawn_point.unwrap_or(fallback);
+        self.velocity = Vec3::ZERO;
+        self.grounded = false;
+        self.health = 20;
+        self.hunger = 20;
+        self.saturation = 5.0;
+        self.air_seconds = 15.0;
+        self.damage_cooldown = 0.0;
+        self.drowning_timer = 1.0;
+        self.fall_distance = 0.0;
+        self.flying = false;
+        self.attack_cooldown = 0.0;
+    }
+
+    fn apply_starvation_tick(&mut self) {
+        self.health = (self.health - 1).max(0);
     }
 
     pub fn eat_food(&mut self, props: item::FoodProperties) -> bool {
@@ -165,6 +190,9 @@ impl Player {
         is_sneaking: bool,
         current_time: f64,
     ) {
+        if self.attack_cooldown > 0.0 {
+            self.attack_cooldown = (self.attack_cooldown - dt).max(0.0);
+        }
         self.hunger_timer += dt;
         if self.hunger_timer >= 4.0 {
             self.hunger_timer -= 4.0;
@@ -176,7 +204,7 @@ impl Player {
                     self.hunger = (self.hunger - 1).max(0);
                 }
             } else if self.hunger == 0 {
-                self.health = (self.health - 1).max(1);
+                self.apply_starvation_tick();
             }
         }
 
@@ -209,9 +237,14 @@ impl Player {
             self.damage_cooldown = (self.damage_cooldown - dt).max(0.0);
         }
 
-        if self.inventory_open {
-            return;
-        }
+        let controls_enabled = !self.inventory_open;
+        let is_jumping = is_jumping && controls_enabled;
+        let is_sneaking = is_sneaking && controls_enabled;
+        let move_input = if controls_enabled {
+            move_input
+        } else {
+            Vec3::ZERO
+        };
 
         let space_just_pressed = is_jumping && !self.space_was_pressed;
         if space_just_pressed && !self.grounded {
@@ -263,6 +296,7 @@ impl Player {
         }
 
         if self.flying {
+            self.fall_distance = 0.0;
             let fly_drag = 0.09f32.powf(dt);
             self.velocity.x = self.velocity.x * (1.0 - fly_drag) + mv.x * fly_drag;
             self.velocity.z = self.velocity.z * (1.0 - fly_drag) + mv.z * fly_drag;
@@ -289,6 +323,7 @@ impl Player {
                 + mv.z * friction_multiplier * dt * 20.0;
 
             if in_water {
+                self.fall_distance = 0.0;
                 if is_jumping {
                     self.velocity.y += 0.04 * 20.0;
                     if self.velocity.y > 2.0 {
@@ -312,10 +347,18 @@ impl Player {
         }
 
         let dy = self.velocity.y * dt;
+        if self.velocity.y < 0.0 && !self.flying && !in_water {
+            self.fall_distance += -dy;
+        }
         self.position.y += dy;
         if Self::check_collision(world, self.position) {
             if self.velocity.y <= 0.0 {
                 self.grounded = true;
+                let fall_damage = (self.fall_distance - 3.0).floor() as i32;
+                if fall_damage > 0 {
+                    self.take_damage(fall_damage);
+                }
+                self.fall_distance = 0.0;
             }
             self.position.y -= dy;
             self.velocity.y = 0.0;
@@ -337,8 +380,47 @@ impl Player {
 
         if head_in_w {
             self.air_seconds = (self.air_seconds - dt).max(0.0);
+            if self.air_seconds <= 0.0 {
+                self.drowning_timer -= dt;
+                if self.drowning_timer <= 0.0 {
+                    self.take_damage(2);
+                    self.drowning_timer = 1.0;
+                }
+            }
         } else {
             self.air_seconds = (self.air_seconds + dt * 3.0).min(15.0);
+            self.drowning_timer = 1.0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starvation_can_reach_zero_health() {
+        let mut player = Player::new(64.0);
+        player.health = 1;
+        player.hunger = 0;
+        player.apply_starvation_tick();
+        assert_eq!(player.health, 0);
+    }
+
+    #[test]
+    fn respawn_uses_bed_and_resets_survival_state() {
+        let mut player = Player::new(64.0);
+        player.spawn_point = Some(Vec3::new(10.5, 70.0, -4.5));
+        player.health = 0;
+        player.hunger = 0;
+        player.air_seconds = 0.0;
+        player.velocity = Vec3::splat(5.0);
+
+        player.respawn(Vec3::new(32.5, 80.0, 32.5));
+
+        assert_eq!(player.position, Vec3::new(10.5, 70.0, -4.5));
+        assert_eq!(player.velocity, Vec3::ZERO);
+        assert_eq!((player.health, player.hunger), (20, 20));
+        assert_eq!(player.air_seconds, 15.0);
     }
 }

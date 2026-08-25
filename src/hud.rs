@@ -3,12 +3,200 @@ use crate::item;
 use crate::renderer::{Mesh, Shader, Texture2D};
 use glam::{Vec2, Vec4};
 
+const VERTICES_PER_QUAD: usize = 6;
+
+struct SolidQuadBatch {
+    vertices: Vec<f32>,
+    colors: Vec<u8>,
+}
+
+impl SolidQuadBatch {
+    fn with_capacity(quads: usize) -> Self {
+        Self {
+            vertices: Vec::with_capacity(quads * VERTICES_PER_QUAD * 3),
+            colors: Vec::with_capacity(quads * VERTICES_PER_QUAD * 4),
+        }
+    }
+
+    fn push(&mut self, x: f32, y: f32, w: f32, h: f32, color: [u8; 4]) {
+        self.vertices.extend_from_slice(&[
+            x,
+            y,
+            0.0,
+            x + w,
+            y,
+            0.0,
+            x + w,
+            y + h,
+            0.0,
+            x,
+            y,
+            0.0,
+            x + w,
+            y + h,
+            0.0,
+            x,
+            y + h,
+            0.0,
+        ]);
+        for _ in 0..VERTICES_PER_QUAD {
+            self.colors.extend_from_slice(&color);
+        }
+    }
+
+    fn vertex_count(&self) -> usize {
+        self.vertices.len() / 3
+    }
+
+    fn draw(self, shader: &Shader, screen_width: f32, screen_height: f32) {
+        if self.vertex_count() == 0 {
+            return;
+        }
+        let mesh = Mesh::new(&self.vertices, None, None, Some(&self.colors));
+        shader.bind();
+        shader.set_vec2(
+            shader.get_uniform_location("uScreenSize"),
+            Vec2::new(screen_width, screen_height),
+        );
+        mesh.draw();
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PauseSubMenu {
     Main,
     Settings,
     WorldInfo,
     Profile,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PauseClick {
+    Resume,
+    OpenSettings,
+    OpenWorldInfo,
+    OpenProfile,
+    SaveQuit,
+    Back,
+    SetRenderDistance(i32),
+    SetFov(f32),
+    ToggleFancy,
+    ExportJava,
+    SelectSkin(u8),
+}
+
+pub const SKIN_NAMES: [&str; 4] = ["Classic Steve", "Alex", "PS1 Voxel Classic", "Custom Hero"];
+
+pub fn skin_preview_color(selected_skin: u8) -> [u8; 4] {
+    match selected_skin {
+        1 => [220, 180, 140, 255],
+        2 => [160, 90, 70, 255],
+        3 => [80, 140, 200, 255],
+        _ => [200, 150, 100, 255],
+    }
+}
+
+fn in_rect(mx: f32, my: f32, x: f32, y: f32, w: f32, h: f32) -> bool {
+    mx >= x && mx <= x + w && my >= y && my <= y + h
+}
+
+fn centered_panel(sw: f32, sh: f32, panel_w: f32, panel_h: f32) -> (f32, f32, f32, f32) {
+    ((sw - panel_w) / 2.0, (sh - panel_h) / 2.0, panel_w, panel_h)
+}
+
+fn settings_panel(sw: f32, sh: f32) -> (f32, f32, f32, f32) {
+    centered_panel(sw, sh, 700.0, 500.0)
+}
+
+fn world_info_panel(sw: f32, sh: f32) -> (f32, f32, f32, f32) {
+    centered_panel(sw, sh, 680.0, 460.0)
+}
+
+fn profile_panel(sw: f32, sh: f32) -> (f32, f32, f32, f32) {
+    centered_panel(sw, sh, 640.0, 440.0)
+}
+
+pub fn pause_click(menu: PauseSubMenu, sw: f32, sh: f32, mx: f32, my: f32) -> Option<PauseClick> {
+    match menu {
+        PauseSubMenu::Main => {
+            let btn_w = 340.0;
+            let btn_h = 44.0;
+            let btn_x = 100.0;
+            let btn_y_start = sh / 2.0 - 130.0;
+            for i in 0..5 {
+                let y = btn_y_start + i as f32 * (btn_h + 10.0);
+                if in_rect(mx, my, btn_x, y, btn_w, btn_h) {
+                    return Some(match i {
+                        0 => PauseClick::Resume,
+                        1 => PauseClick::OpenSettings,
+                        2 => PauseClick::OpenWorldInfo,
+                        3 => PauseClick::OpenProfile,
+                        _ => PauseClick::SaveQuit,
+                    });
+                }
+            }
+            let sbtn_s = 44.0;
+            for i in 0..3 {
+                let sx = btn_x + i as f32 * (sbtn_s + 10.0);
+                let sy = sh - 70.0;
+                if in_rect(mx, my, sx, sy, sbtn_s, sbtn_s) {
+                    return Some(match i {
+                        1 => PauseClick::OpenSettings,
+                        2 => PauseClick::OpenProfile,
+                        _ => return None,
+                    });
+                }
+            }
+            None
+        }
+        PauseSubMenu::Settings => {
+            let (panel_x, panel_y, _, _) = settings_panel(sw, sh);
+            let distances = [4, 6, 8, 12];
+            for (i, d) in distances.iter().enumerate() {
+                let bx = panel_x + 340.0 + i as f32 * 75.0;
+                if in_rect(mx, my, bx, panel_y + 82.0, 65.0, 32.0) {
+                    return Some(PauseClick::SetRenderDistance(*d));
+                }
+            }
+            let fovs = [60.0, 70.0, 80.0, 90.0, 100.0];
+            for (i, f) in fovs.iter().enumerate() {
+                let bx = panel_x + 340.0 + i as f32 * 65.0;
+                if in_rect(mx, my, bx, panel_y + 152.0, 58.0, 32.0) {
+                    return Some(PauseClick::SetFov(*f));
+                }
+            }
+            if in_rect(mx, my, panel_x + 340.0, panel_y + 222.0, 140.0, 32.0) {
+                return Some(PauseClick::ToggleFancy);
+            }
+            if in_rect(mx, my, panel_x + 230.0, panel_y + 420.0, 240.0, 44.0) {
+                return Some(PauseClick::Back);
+            }
+            None
+        }
+        PauseSubMenu::WorldInfo => {
+            let (panel_x, panel_y, _, _) = world_info_panel(sw, sh);
+            if in_rect(mx, my, panel_x + 40.0, panel_y + 220.0, 320.0, 44.0) {
+                return Some(PauseClick::ExportJava);
+            }
+            if in_rect(mx, my, panel_x + 220.0, panel_y + 380.0, 240.0, 44.0) {
+                return Some(PauseClick::Back);
+            }
+            None
+        }
+        PauseSubMenu::Profile => {
+            let (panel_x, panel_y, _, _) = profile_panel(sw, sh);
+            for i in 0..SKIN_NAMES.len() {
+                let sy = panel_y + 130.0 + i as f32 * 50.0;
+                if in_rect(mx, my, panel_x + 40.0, sy, 340.0, 40.0) {
+                    return Some(PauseClick::SelectSkin(i as u8));
+                }
+            }
+            if in_rect(mx, my, panel_x + 200.0, panel_y + 360.0, 240.0, 44.0) {
+                return Some(PauseClick::Back);
+            }
+            None
+        }
+    }
 }
 
 pub fn draw_rect(
@@ -344,6 +532,7 @@ pub fn draw_heart(
         [220, 20, 20, 255]
     };
     let border = [20, 20, 20, 255];
+    let mut batch = SolidQuadBatch::with_capacity(64);
 
     for px in 0..9 {
         for py in 0..9 {
@@ -390,10 +579,11 @@ pub fn draw_heart(
                 } else {
                     color
                 };
-                draw_rect(shader, bx, by, bw, bw, p_color, screen_width, screen_height);
+                batch.push(bx, by, bw, bw, p_color);
             }
         }
     }
+    batch.draw(shader, screen_width, screen_height);
 }
 
 pub fn draw_bubble(
@@ -411,6 +601,7 @@ pub fn draw_bubble(
         [60, 150, 255, 200]
     };
     let border = [20, 20, 40, 255];
+    let mut batch = SolidQuadBatch::with_capacity(64);
 
     for px in 0..8 {
         for py in 0..8 {
@@ -429,10 +620,11 @@ pub fn draw_bubble(
                     color
                 };
 
-                draw_rect(shader, bx, by, bw, bw, p_color, screen_width, screen_height);
+                batch.push(bx, by, bw, bw, p_color);
             }
         }
     }
+    batch.draw(shader, screen_width, screen_height);
 }
 
 pub fn draw_drumstick(
@@ -448,6 +640,7 @@ pub fn draw_drumstick(
     let bone_color = [230, 220, 200, 255];
     let border_color = [60, 30, 10, 255];
     let empty_color = [40, 25, 15, 180];
+    let mut batch = SolidQuadBatch::with_capacity(64);
 
     for px in 0..8 {
         for py in 0..8 {
@@ -475,10 +668,11 @@ pub fn draw_drumstick(
                 } else {
                     color
                 };
-                draw_rect(shader, bx, by, bw, bw, p_color, screen_width, screen_height);
+                batch.push(bx, by, bw, bw, p_color);
             }
         }
     }
+    batch.draw(shader, screen_width, screen_height);
 }
 
 pub fn draw_armor(
@@ -493,6 +687,7 @@ pub fn draw_armor(
     let metal_color = [190, 200, 210, 255];
     let border_color = [30, 35, 40, 255];
     let empty_color = [30, 30, 30, 160];
+    let mut batch = SolidQuadBatch::with_capacity(64);
 
     for px in 0..8 {
         for py in 0..8 {
@@ -517,9 +712,86 @@ pub fn draw_armor(
                 } else {
                     color
                 };
-                draw_rect(shader, bx, by, bw, bw, p_color, screen_width, screen_height);
+                batch.push(bx, by, bw, bw, p_color);
             }
         }
+    }
+    batch.draw(shader, screen_width, screen_height);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn solid_quad_batch_encodes_six_vertices_and_colors_per_quad() {
+        let mut batch = SolidQuadBatch::with_capacity(2);
+        batch.push(2.0, 3.0, 5.0, 7.0, [10, 20, 30, 40]);
+        batch.push(-1.0, 4.0, 2.0, 3.0, [50, 60, 70, 80]);
+
+        assert_eq!(batch.vertex_count(), 12);
+        assert_eq!(batch.vertices.len(), 12 * 3);
+        assert_eq!(batch.colors.len(), 12 * 4);
+        assert_eq!(
+            &batch.vertices[..18],
+            &[
+                2.0, 3.0, 0.0, 7.0, 3.0, 0.0, 7.0, 10.0, 0.0, 2.0, 3.0, 0.0, 7.0, 10.0, 0.0, 2.0,
+                10.0, 0.0,
+            ]
+        );
+        assert_eq!(&batch.colors[..24], &[10, 20, 30, 40].repeat(6));
+        assert_eq!(&batch.colors[24..], &[50, 60, 70, 80].repeat(6));
+    }
+
+    #[test]
+    fn pause_click_matches_drawn_settings_and_profile_hitboxes() {
+        let sw = 1280.0;
+        let sh = 720.0;
+        let (sx, sy, _, _) = settings_panel(sw, sh);
+        assert_eq!(
+            pause_click(
+                PauseSubMenu::Settings,
+                sw,
+                sh,
+                sx + 340.0 + 2.0 * 75.0 + 4.0,
+                sy + 90.0
+            ),
+            Some(PauseClick::SetRenderDistance(8))
+        );
+        assert_eq!(
+            pause_click(
+                PauseSubMenu::Settings,
+                sw,
+                sh,
+                sx + 340.0 + 65.0 + 4.0,
+                sy + 160.0
+            ),
+            Some(PauseClick::SetFov(70.0))
+        );
+        assert_eq!(
+            pause_click(PauseSubMenu::Settings, sw, sh, sx + 250.0, sy + 430.0),
+            Some(PauseClick::Back)
+        );
+
+        let (px, py, _, _) = profile_panel(sw, sh);
+        assert_eq!(
+            pause_click(PauseSubMenu::Profile, sw, sh, px + 50.0, py + 135.0),
+            Some(PauseClick::SelectSkin(0))
+        );
+        assert_eq!(
+            pause_click(PauseSubMenu::Profile, sw, sh, px + 50.0, py + 185.0),
+            Some(PauseClick::SelectSkin(1))
+        );
+        assert_eq!(
+            pause_click(
+                PauseSubMenu::WorldInfo,
+                sw,
+                sh,
+                world_info_panel(sw, sh).0 + 50.0,
+                world_info_panel(sw, sh).1 + 230.0
+            ),
+            Some(PauseClick::ExportJava)
+        );
     }
 }
 
@@ -813,7 +1085,7 @@ pub fn draw_pause_menu(
                 py + 10.0,
                 30.0,
                 30.0,
-                [200, 150, 100, 255],
+                skin_preview_color(selected_skin),
                 sw,
                 sh,
             );
@@ -830,10 +1102,7 @@ pub fn draw_pause_menu(
         }
 
         PauseSubMenu::Settings => {
-            let panel_w = 700.0;
-            let panel_h = 500.0;
-            let panel_x = sw / 2.0 - panel_w / 2.0;
-            let panel_y = sh / 2.0 - panel_h / 2.0;
+            let (panel_x, panel_y, panel_w, panel_h) = settings_panel(sw, sh);
 
             draw_rect(
                 ui_shader,
@@ -1002,10 +1271,7 @@ pub fn draw_pause_menu(
         }
 
         PauseSubMenu::WorldInfo => {
-            let panel_w = 680.0;
-            let panel_h = 460.0;
-            let panel_x = sw / 2.0 - panel_w / 2.0;
-            let panel_y = sh / 2.0 - panel_h / 2.0;
+            let (panel_x, panel_y, panel_w, panel_h) = world_info_panel(sw, sh);
 
             draw_rect(
                 ui_shader,
@@ -1121,10 +1387,7 @@ pub fn draw_pause_menu(
         }
 
         PauseSubMenu::Profile => {
-            let panel_w = 640.0;
-            let panel_h = 440.0;
-            let panel_x = sw / 2.0 - panel_w / 2.0;
-            let panel_y = sh / 2.0 - panel_h / 2.0;
+            let (panel_x, panel_y, panel_w, panel_h) = profile_panel(sw, sh);
 
             draw_rect(
                 ui_shader,
@@ -1168,7 +1431,6 @@ pub fn draw_pause_menu(
                 sh,
             );
 
-            let skin_names = ["Classic Steve", "Alex", "PS1 Voxel Classic", "Custom Hero"];
             draw_text(
                 font_tex,
                 "Select Active Player Skin:",
@@ -1180,7 +1442,7 @@ pub fn draw_pause_menu(
                 sh,
             );
 
-            for (i, name) in skin_names.iter().enumerate() {
+            for (i, name) in SKIN_NAMES.iter().enumerate() {
                 let sy = panel_y + 130.0 + i as f32 * 50.0;
                 let is_sel = selected_skin == i as u8;
                 let bg_col = if is_sel {

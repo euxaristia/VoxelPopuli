@@ -85,17 +85,19 @@ fn compare_gpu_mesh_test(cpu: &[GpuMeshTestVertex], gpu: &[GpuMeshTestVertex], c
     }
 }
 
-pub const VIEW_DISTANCE: i32 = 35;
-pub const POOL_WIDTH: i32 = VIEW_DISTANCE * 2 + 1;
+pub const DEFAULT_VIEW_DISTANCE: i32 = 8;
+pub const MAX_VIEW_DISTANCE: i32 = 12;
+pub const VIEW_DISTANCE: i32 = DEFAULT_VIEW_DISTANCE;
+pub const POOL_WIDTH: i32 = MAX_VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
 pub const CLOUD_HEIGHT: f32 = 200.0;
 // Upper bound on chunk-generation jobs queued to the worker pool; bounds
 // memory for finished-but-unintegrated chunks without starving meshing jobs.
 const MAX_GEN_IN_FLIGHT: usize = 64;
-// Radius the GPU voxel pool mirrors for meshing, decoupled from and smaller
-// than VIEW_DISTANCE (which governs CPU streaming/collision/water sim) to
-// bound VRAM. See the hashed-splashing-haven plan, M1.
-pub const GPU_POOL_VIEW_DISTANCE: i32 = 20;
+// Radius the GPU voxel pool mirrors for meshing. Kept at the max CPU view
+// distance so settings cannot request a larger GPU neighborhood than we
+// allocated.
+pub const GPU_POOL_VIEW_DISTANCE: i32 = MAX_VIEW_DISTANCE;
 pub const GPU_POOL_WIDTH: i32 = GPU_POOL_VIEW_DISTANCE * 2 + 1;
 pub const GPU_POOL_SIZE: usize = (GPU_POOL_WIDTH * GPU_POOL_WIDTH) as usize;
 
@@ -201,7 +203,10 @@ pub struct World {
     pub edits: RwLock<HashMap<(i32, i32, i32), BlockType>>,
     pub last_pcx: i32,
     pub last_pcz: i32,
+    pub view_distance: i32,
     pub dirty_count: i32,
+    pub pending_hurt: i32,
+    pub pending_drops: Vec<(BlockType, u32)>,
     pub explosives: Vec<crate::block::ActiveExplosive>,
     pub arrows: Vec<crate::block::ArrowEntity>,
     pub xp_orbs: Vec<crate::block::XpOrbEntity>,
@@ -232,6 +237,7 @@ pub struct World {
     spawned_villages: std::collections::HashSet<(i32, i32)>,
     // Chunks whose natural mobs (passive, hostile, spawner) have already been spawned
     spawned_natural_chunks: std::collections::HashSet<(i32, i32)>,
+    imported: HashMap<(i32, i32), Box<Chunk>>,
     villager_mesh: renderer::Mesh,
     golem_mesh: renderer::Mesh,
 }
@@ -256,7 +262,10 @@ impl World {
             edits: RwLock::new(HashMap::new()),
             last_pcx: -999999,
             last_pcz: -999999,
+            view_distance: DEFAULT_VIEW_DISTANCE,
             dirty_count: 0,
+            pending_hurt: 0,
+            pending_drops: Vec::new(),
             explosives: Vec::new(),
             arrows: Vec::new(),
             xp_orbs: Vec::new(),
@@ -284,6 +293,7 @@ impl World {
             mobs: Vec::new(),
             spawned_villages: std::collections::HashSet::new(),
             spawned_natural_chunks: std::collections::HashSet::new(),
+            imported: HashMap::new(),
             villager_mesh: Self::create_textured_cube_mesh(BlockType::Wool),
             golem_mesh: Self::create_textured_cube_mesh(BlockType::IronBlock),
         }
@@ -582,9 +592,122 @@ impl World {
     }
 
     pub fn insert_chunk(&mut self, mut chunk: Chunk) {
+        chunk.hydrate_fluids();
         chunk.calculate_lighting();
+        chunk.dirty = true;
         let index = self.get_pool_index(chunk.x, chunk.z);
+        if let Some(old) = &self.chunks[index]
+            && old.dirty
+        {
+            self.dirty_count -= 1;
+        }
         self.chunks[index] = Some(Box::new(chunk));
+        self.dirty_count += 1;
+    }
+
+    pub fn register_imported_chunks(&mut self, chunks: Vec<Chunk>) {
+        for mut chunk in chunks {
+            chunk.hydrate_fluids();
+            chunk.mesh_opaque = None;
+            chunk.mesh_transparent = None;
+            chunk.mesh_water = None;
+            chunk.dirty = true;
+            chunk.meshing_in_progress = false;
+            self.imported.insert((chunk.x, chunk.z), Box::new(chunk));
+        }
+    }
+
+    pub fn install_edits(&self, edits: &[((i32, i32, i32), BlockType)]) {
+        if let Ok(mut map) = self.edits.write() {
+            map.clear();
+            for (position, block) in edits {
+                map.insert(*position, *block);
+            }
+        }
+    }
+
+    pub fn set_view_distance(&mut self, distance: i32) {
+        let distance = distance.clamp(2, MAX_VIEW_DISTANCE);
+        if distance != self.view_distance {
+            self.view_distance = distance;
+            self.last_pcx = i32::MIN;
+            self.last_pcz = i32::MIN;
+        }
+    }
+
+    pub fn chunk_for_export(&self, cx: i32, cz: i32) -> Chunk {
+        let mut chunk = Chunk::new(cx, cz, self.seed);
+        if let Some(loaded) = self.get_chunk(cx, cz) {
+            chunk.copy_terrain_from(loaded);
+        } else if let Some(imported) = self.imported.get(&(cx, cz)) {
+            chunk.copy_terrain_from(imported);
+        } else {
+            chunk.generate();
+        }
+        if let Ok(edits) = self.edits.read() {
+            Self::apply_edit_map(&mut chunk, &edits);
+        }
+        chunk
+    }
+
+    pub fn collect_mob_drops(&mut self, mob: Mob) {
+        if let Some((block, count)) = mob.drop_item() {
+            self.pending_drops.push((block, count as u32));
+        }
+        let xp_val = match mob.kind {
+            MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper => 5,
+            MobKind::Golem => 10,
+            _ => 2,
+        };
+        self.xp_orbs.push(crate::block::XpOrbEntity {
+            position: mob.position + Vec3::new(0.0, 0.5, 0.0),
+            velocity: Vec3::new(
+                (rand::random::<f32>() - 0.5) * 1.5,
+                2.5,
+                (rand::random::<f32>() - 0.5) * 1.5,
+            ),
+            xp_value: xp_val,
+            life: 300.0,
+        });
+    }
+
+    pub fn try_melee(&mut self, origin: Vec3, direction: Vec3, damage: f32, reach: f32) -> bool {
+        let dir = direction.normalize_or_zero();
+        if dir.length_squared() < 0.01 {
+            return false;
+        }
+        let mut best: Option<(usize, f32)> = None;
+        for (index, mob) in self.mobs.iter().enumerate() {
+            let center = mob.position + Vec3::new(0.0, mob.height() * 0.5, 0.0);
+            let to = center - origin;
+            let dist = to.length();
+            if dist > reach || dist < 0.05 {
+                continue;
+            }
+            if to.normalize().dot(dir) < 0.65 {
+                continue;
+            }
+            if best.is_none_or(|(_, best_dist)| dist < best_dist) {
+                best = Some((index, dist));
+            }
+        }
+        let Some((index, _)) = best else {
+            return false;
+        };
+        if self.mobs[index].take_damage(damage) {
+            let mob = self.mobs.swap_remove(index);
+            self.collect_mob_drops(mob);
+        }
+        true
+    }
+
+    fn player_aabb_hit(player_pos: Vec3, point: Vec3) -> bool {
+        point.x >= player_pos.x - 0.3
+            && point.x <= player_pos.x + 0.3
+            && point.z >= player_pos.z - 0.3
+            && point.z <= player_pos.z + 0.3
+            && point.y >= player_pos.y
+            && point.y <= player_pos.y + 1.8
     }
 
     pub fn get_block(&self, x: i32, y: i32, z: i32) -> BlockType {
@@ -680,31 +803,35 @@ impl World {
         }
     }
 
-    pub fn apply_edits_to_chunk(&mut self, cx: i32, cz: i32) {
-        let chunk_start_x = cx * CHUNK_WIDTH as i32;
-        let chunk_start_z = cz * CHUNK_DEPTH as i32;
+    fn apply_edit_map(chunk: &mut Chunk, edits: &HashMap<(i32, i32, i32), BlockType>) {
+        let chunk_start_x = chunk.x * CHUNK_WIDTH as i32;
+        let chunk_start_z = chunk.z * CHUNK_DEPTH as i32;
         let chunk_end_x = chunk_start_x + CHUNK_WIDTH as i32;
         let chunk_end_z = chunk_start_z + CHUNK_DEPTH as i32;
+        for ((ex, ey, ez), block) in edits {
+            if *ex >= chunk_start_x
+                && *ex < chunk_end_x
+                && *ez >= chunk_start_z
+                && *ez < chunk_end_z
+                && *ey >= 0
+                && *ey < CHUNK_HEIGHT as i32
+            {
+                let bx = (*ex - chunk_start_x) as usize;
+                let bz = (*ez - chunk_start_z) as usize;
+                chunk.set_block(bx, *ey as usize, bz, *block);
+                chunk.dirty = true;
+            }
+        }
+    }
 
+    pub fn apply_edits_to_chunk(&mut self, cx: i32, cz: i32) {
         let edits_clone = if let Ok(edits) = self.edits.read() {
             edits.clone()
         } else {
             return;
         };
-
         if let Some(chunk) = self.get_chunk_mut(cx, cz) {
-            for ((ex, ey, ez), block) in edits_clone {
-                if ex >= chunk_start_x
-                    && ex < chunk_end_x
-                    && ez >= chunk_start_z
-                    && ez < chunk_end_z
-                {
-                    let bx = (ex - chunk_start_x) as usize;
-                    let bz = (ez - chunk_start_z) as usize;
-                    chunk.set_block(bx, ey as usize, bz, block);
-                    chunk.dirty = true;
-                }
-            }
+            Self::apply_edit_map(chunk, &edits_clone);
         }
     }
 
@@ -817,43 +944,66 @@ impl World {
         }
     }
 
+    fn chunk_slot_holds(&self, x: i32, z: i32) -> bool {
+        match &self.chunks[self.get_pool_index(x, z)] {
+            Some(chunk) => chunk.x == x && chunk.z == z,
+            None => false,
+        }
+    }
+
+    fn request_chunk(&mut self, x: i32, z: i32) {
+        if self.gen_in_flight.contains(&(x, z)) {
+            return;
+        }
+        self.gen_in_flight.insert((x, z));
+        if let Some(src) = self.imported.get(&(x, z)) {
+            let mut chunk = Box::new(Chunk::new(x, z, self.seed));
+            chunk.copy_terrain_from(src);
+            let _ = self.gen_result_tx.send(chunk);
+            return;
+        }
+        let seed = self.seed;
+        let tx = self.gen_result_tx.clone();
+        rayon::spawn(move || {
+            let mut chunk = Box::new(Chunk::new(x, z, seed));
+            chunk.generate();
+            let _ = tx.send(chunk);
+        });
+    }
+
+    fn request_missing_chunks(&mut self, pcx: i32, pcz: i32, max_in_flight: usize) -> bool {
+        let view = self.view_distance;
+        let mut all_present = true;
+        'scan: for r in 0..=view {
+            for x in (pcx - r)..=(pcx + r) {
+                for z in (pcz - r)..=(pcz + r) {
+                    if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
+                        continue;
+                    }
+                    if self.chunk_slot_holds(x, z) {
+                        continue;
+                    }
+                    all_present = false;
+                    if self.gen_in_flight.contains(&(x, z)) {
+                        continue;
+                    }
+                    if self.gen_in_flight.len() >= max_in_flight {
+                        break 'scan;
+                    }
+                    self.request_chunk(x, z);
+                }
+            }
+        }
+        all_present && self.gen_in_flight.is_empty()
+    }
+
     pub fn update(&mut self, player_pos: Vec3, _time: f32) -> u32 {
         let pcx = (player_pos.x / CHUNK_WIDTH as f32).floor() as i32;
         let pcz = (player_pos.z / CHUNK_DEPTH as f32).floor() as i32;
 
         // --- Multithreaded Initial World Loading & Spiral Generation ---
         if self.is_loading {
-            let mut all_loaded = true;
-            'loading: for r in 0..=VIEW_DISTANCE {
-                for x in (pcx - r)..=(pcx + r) {
-                    for z in (pcz - r)..=(pcz + r) {
-                        if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
-                            continue;
-                        }
-                        let index = self.get_pool_index(x, z);
-                        let loaded = match &self.chunks[index] {
-                            Some(c) => c.x == x && c.z == z,
-                            None => false,
-                        };
-                        if !loaded {
-                            all_loaded = false;
-                            if !self.gen_in_flight.contains(&(x, z)) {
-                                if self.gen_in_flight.len() >= 256 {
-                                    break 'loading;
-                                }
-                                self.gen_in_flight.insert((x, z));
-                                let seed = self.seed;
-                                let tx = self.gen_result_tx.clone();
-                                rayon::spawn(move || {
-                                    let mut chunk = Box::new(Chunk::new(x, z, seed));
-                                    chunk.generate();
-                                    let _ = tx.send(chunk);
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+            let all_loaded = self.request_missing_chunks(pcx, pcz, 256);
             if all_loaded && self.dirty_count == 0 && self.meshing_in_flight == 0 {
                 self.is_loading = false;
                 self.last_pcx = pcx;
@@ -864,40 +1014,7 @@ impl World {
             // nearest ring first. Generation is a pure function of
             // (seed, x, z), so workers need no access to World; finished
             // chunks come back over a channel and are integrated below.
-            let mut scan_complete = true;
-            'scan: for r in 0..=VIEW_DISTANCE {
-                for x in (pcx - r)..=(pcx + r) {
-                    for z in (pcz - r)..=(pcz + r) {
-                        if x > pcx - r && x < pcx + r && z > pcz - r && z < pcz + r {
-                            continue;
-                        }
-
-                        let index = self.get_pool_index(x, z);
-                        let needed = match &self.chunks[index] {
-                            None => true,
-                            Some(c) => c.x != x || c.z != z,
-                        };
-                        if !needed || self.gen_in_flight.contains(&(x, z)) {
-                            continue;
-                        }
-                        if self.gen_in_flight.len() >= MAX_GEN_IN_FLIGHT {
-                            scan_complete = false;
-                            break 'scan;
-                        }
-                        self.gen_in_flight.insert((x, z));
-                        let seed = self.seed;
-                        let tx = self.gen_result_tx.clone();
-                        rayon::spawn(move || {
-                            let mut chunk = Box::new(Chunk::new(x, z, seed));
-                            chunk.generate();
-                            let _ = tx.send(chunk);
-                        });
-                    }
-                }
-            }
-            // Stop rescanning once every missing chunk is at least in
-            // flight; a later boundary cross restarts the scan.
-            if scan_complete {
+            if self.request_missing_chunks(pcx, pcz, MAX_GEN_IN_FLIGHT) {
                 self.last_pcx = pcx;
                 self.last_pcz = pcz;
             }
@@ -909,7 +1026,7 @@ impl World {
             self.gen_in_flight.remove(&(x, z));
             // Discard arrivals the player has since moved away from; the
             // scan re-dispatches them if the player comes back.
-            if (x - pcx).abs() > VIEW_DISTANCE || (z - pcz).abs() > VIEW_DISTANCE {
+            if (x - pcx).abs() > self.view_distance || (z - pcz).abs() > self.view_distance {
                 continue;
             }
             let index = self.get_pool_index(x, z);
@@ -1163,6 +1280,7 @@ impl World {
                 pos.y.floor() as i32,
                 pos.z.floor() as i32,
                 4,
+                player_pos,
             );
         }
 
@@ -1200,9 +1318,10 @@ impl World {
                 if self.get_block(bx, by, bz).is_solid() {
                     self.arrows[a_idx].in_ground = true;
                     self.arrows[a_idx].velocity = Vec3::ZERO;
-                } else {
+                } else if self.arrows[a_idx].from_player {
                     let mut hit_mob = false;
                     let mut m_idx = 0;
+                    let damage = self.arrows[a_idx].damage;
                     while m_idx < self.mobs.len() {
                         let mob = &self.mobs[m_idx];
                         let feet = mob.position;
@@ -1229,22 +1348,10 @@ impl World {
                                     scale: 0.08,
                                 });
                             }
-                            let dead_mob = self.mobs.swap_remove(m_idx);
-                            let xp_val = match dead_mob.kind {
-                                MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper => 5,
-                                MobKind::Golem => 10,
-                                _ => 2,
-                            };
-                            self.xp_orbs.push(crate::block::XpOrbEntity {
-                                position: dead_mob.position + Vec3::new(0.0, 0.5, 0.0),
-                                velocity: Vec3::new(
-                                    (rand::random::<f32>() - 0.5) * 1.5,
-                                    2.5,
-                                    (rand::random::<f32>() - 0.5) * 1.5,
-                                ),
-                                xp_value: xp_val,
-                                life: 300.0,
-                            });
+                            if self.mobs[m_idx].take_damage(damage) {
+                                let dead_mob = self.mobs.swap_remove(m_idx);
+                                self.collect_mob_drops(dead_mob);
+                            }
                             break;
                         }
                         m_idx += 1;
@@ -1254,6 +1361,11 @@ impl World {
                     } else {
                         self.arrows[a_idx].position = next_pos;
                     }
+                } else if Self::player_aabb_hit(player_pos, next_pos) {
+                    self.pending_hurt += self.arrows[a_idx].damage.round() as i32;
+                    remove_arrow = true;
+                } else {
+                    self.arrows[a_idx].position = next_pos;
                 }
             }
 
@@ -1518,6 +1630,50 @@ impl World {
                 mob.walk_speed = mob.base_speed();
             }
 
+            mob.attack_cooldown = (mob.attack_cooldown - dt).max(0.0);
+            let to_player = Vec3::new(
+                player_pos.x - mob.position.x,
+                0.0,
+                player_pos.z - mob.position.z,
+            );
+            let player_dist = to_player.length();
+            if mob.is_hostile() && player_dist < 16.0 && player_dist > 0.05 {
+                mob.yaw = to_player.z.atan2(to_player.x);
+                mob.walk_speed = mob.base_speed();
+                if mob.kind == MobKind::Creeper && player_dist < 2.2 {
+                    mob.walk_speed = 0.0;
+                    if mob.attack_cooldown <= 0.0 {
+                        self.detonations.push(mob.position);
+                        mob.health = 0.0;
+                    }
+                } else if mob.kind == MobKind::Zombie
+                    && player_dist < 1.6
+                    && mob.attack_cooldown <= 0.0
+                {
+                    self.pending_hurt += 3;
+                    mob.attack_cooldown = 1.0;
+                } else if mob.kind == MobKind::Skeleton
+                    && player_dist < 12.0
+                    && mob.attack_cooldown <= 0.0
+                {
+                    let origin = mob.position + Vec3::new(0.0, 1.4, 0.0);
+                    let target = player_pos + Vec3::new(0.0, 1.4, 0.0);
+                    let dir = (target - origin).normalize_or_zero();
+                    if dir.length_squared() > 0.01 {
+                        self.arrows.push(crate::block::ArrowEntity {
+                            position: origin,
+                            velocity: dir * 18.0,
+                            life: 8.0,
+                            in_ground: false,
+                            damage: 4.0,
+                            is_critical: false,
+                            from_player: false,
+                        });
+                    }
+                    mob.attack_cooldown = 2.0;
+                }
+            }
+
             mob.velocity.x = mob.yaw.cos() * mob.walk_speed;
             mob.velocity.z = mob.yaw.sin() * mob.walk_speed;
             mob.velocity.y = (mob.velocity.y - 22.0 * dt).max(-40.0);
@@ -1573,6 +1729,7 @@ impl World {
                 mob.velocity.y = 0.0;
             }
         }
+        mobs.retain(|mob| mob.health > 0.0);
         self.mobs = mobs;
     }
 
@@ -2826,6 +2983,28 @@ mod tests {
         assert_eq!(is_power_source(BlockType::RedstoneBlock), 15);
         assert_eq!(is_power_source(BlockType::RedstoneTorch), 15);
         assert_eq!(is_power_source(BlockType::Air), 0);
+    }
+
+    #[test]
+    fn view_distance_pool_is_bounded_to_settings_max() {
+        assert_eq!(VIEW_DISTANCE, DEFAULT_VIEW_DISTANCE);
+        assert_eq!(MAX_VIEW_DISTANCE, 12);
+        assert_eq!(POOL_WIDTH, 25);
+        assert_eq!(CHUNK_POOL_SIZE, 625);
+        assert_eq!(GPU_POOL_VIEW_DISTANCE, MAX_VIEW_DISTANCE);
+        assert!(CHUNK_POOL_SIZE < 35 * 35);
+    }
+
+    #[test]
+    fn imported_source_does_not_require_unique_pool_slots() {
+        let a = (0, 0);
+        let b = (POOL_WIDTH, 0);
+        let ix = |cx: i32, cz: i32| {
+            let ix = cx.rem_euclid(POOL_WIDTH);
+            let iz = cz.rem_euclid(POOL_WIDTH);
+            (ix + iz * POOL_WIDTH) as usize
+        };
+        assert_eq!(ix(a.0, a.1), ix(b.0, b.1));
     }
 
     #[test]

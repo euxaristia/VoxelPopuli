@@ -26,6 +26,7 @@ pub struct ArrowEntity {
     pub in_ground: bool,
     pub damage: f32,
     pub is_critical: bool,
+    pub from_player: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -534,6 +535,7 @@ mod tests {
             in_ground: false,
             damage: 10.0,
             is_critical: true,
+            from_player: true,
         };
         assert_eq!(arr.damage, 10.0);
         assert!(arr.is_critical);

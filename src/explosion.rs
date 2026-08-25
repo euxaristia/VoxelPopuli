@@ -4,7 +4,16 @@ use glam::Vec3;
 use rand::RngExt;
 use std::collections::HashSet;
 
-pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32) {
+pub fn explosion_entity_damage(distance: f32, blast_size: f32) -> i32 {
+    let max_impact_dist = blast_size * 2.0;
+    if distance > max_impact_dist {
+        return 0;
+    }
+    let impact = (1.0 - distance / max_impact_dist).clamp(0.0, 1.0);
+    (impact * 14.0).round() as i32
+}
+
+pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32, player_pos: Vec3) {
     let mut rng = rand::rng();
     let explosion_center = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
     let size = blast_size as f32; // Standard TNT blast size = 4.0
@@ -90,7 +99,8 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32) {
     }
 
     // Shockwave on Mobs
-    for mob in &mut world.mobs {
+    let mut dead_mobs = Vec::new();
+    for (index, mob) in world.mobs.iter_mut().enumerate() {
         let mob_center = mob.position + Vec3::new(0.0, mob.height() * 0.5, 0.0);
         let dist = mob_center.distance(explosion_center);
         if dist <= max_impact_dist {
@@ -99,8 +109,17 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32) {
             let force = impact * 16.0;
             mob.velocity += dir * force + Vec3::new(0.0, 3.0 * impact, 0.0);
             mob.grounded = false;
+            if mob.take_damage(explosion_entity_damage(dist, size) as f32) {
+                dead_mobs.push(index);
+            }
         }
     }
+    for index in dead_mobs.into_iter().rev() {
+        let mob = world.mobs.swap_remove(index);
+        world.collect_mob_drops(mob);
+    }
+
+    world.pending_hurt += explosion_entity_damage(player_pos.distance(explosion_center), size);
 
     // 4. Spawn Particles (Shockwave, Flash & Smoke)
     world.particles.push(Particle {
@@ -139,6 +158,14 @@ mod tests {
         assert_eq!(BlockType::Dirt.blast_resistance(), 0.5);
         assert_eq!(BlockType::TNT.blast_resistance(), 0.0);
         assert_eq!(BlockType::Air.blast_resistance(), 0.0);
+    }
+
+    #[test]
+    fn explosion_damage_falls_off_with_distance() {
+        assert_eq!(explosion_entity_damage(0.0, 4.0), 14);
+        assert_eq!(explosion_entity_damage(8.0, 4.0), 0);
+        assert!(explosion_entity_damage(4.0, 4.0) < 14);
+        assert!(explosion_entity_damage(4.0, 4.0) > 0);
     }
 
     #[test]

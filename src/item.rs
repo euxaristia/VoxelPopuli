@@ -252,6 +252,34 @@ pub fn breaking_time(block: BlockType, held: BlockType) -> f32 {
     base_time / speed
 }
 
+pub fn melee_damage(item: BlockType) -> f32 {
+    use BlockType::*;
+    match item {
+        WoodSword | GoldSword => 4.0,
+        StoneSword => 5.0,
+        IronSword => 6.0,
+        DiamondSword => 7.0,
+        WoodAxe | GoldAxe => 3.0,
+        StoneAxe => 4.0,
+        IronAxe => 5.0,
+        DiamondAxe => 6.0,
+        _ => 1.0,
+    }
+}
+
+#[cfg(test)]
+mod melee_tests {
+    use super::*;
+
+    #[test]
+    fn melee_damage_scales_with_sword_tier() {
+        assert_eq!(melee_damage(BlockType::Air), 1.0);
+        assert_eq!(melee_damage(BlockType::WoodSword), 4.0);
+        assert_eq!(melee_damage(BlockType::IronSword), 6.0);
+        assert!(melee_damage(BlockType::DiamondSword) > melee_damage(BlockType::IronSword));
+    }
+}
+
 /// Returns what a block drops when mined with the given tool.
 /// Returns (drop_type, drop_count). Air with count 0 means no drop.
 pub fn get_drop(block: BlockType, held: BlockType) -> (BlockType, u8) {
