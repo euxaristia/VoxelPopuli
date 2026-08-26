@@ -10,6 +10,7 @@ const MAX_DECOMPRESSED_CHUNK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_NBT_DEPTH: usize = 64;
 const MAX_NBT_COLLECTION_LEN: usize = 1_048_576;
 const MIN_IMPORT_DATA_VERSION: i32 = 2566;
+const MAX_IMPORT_DATA_VERSION: i32 = 2730;
 
 pub const TARGET_NAME: &str = "Minecraft Java pre-1.18 Anvil";
 pub const JAVA_1_17_DATA_VERSION: i32 = 2724;
@@ -1320,7 +1321,17 @@ pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
     let (_root_name, root) = decoder.parse_root()?;
 
     let data_version = match root.get("DataVersion") {
-        Some(NbtTag::Int(version)) if *version >= MIN_IMPORT_DATA_VERSION => *version,
+        Some(NbtTag::Int(version))
+            if (MIN_IMPORT_DATA_VERSION..=MAX_IMPORT_DATA_VERSION).contains(version) =>
+        {
+            *version
+        }
+        Some(NbtTag::Int(version)) if *version > MAX_IMPORT_DATA_VERSION => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unsupported post-1.17.1 Java chunk DataVersion {version}"),
+            ));
+        }
         Some(NbtTag::Int(version)) => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1334,7 +1345,7 @@ pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
             ));
         }
     };
-    debug_assert!(data_version >= MIN_IMPORT_DATA_VERSION);
+    debug_assert!((MIN_IMPORT_DATA_VERSION..=MAX_IMPORT_DATA_VERSION).contains(&data_version));
 
     let level = root.get("Level").unwrap_or(&root);
     let (x_pos, z_pos) = match (level.get("xPos"), level.get("zPos")) {
@@ -1581,6 +1592,20 @@ mod tests {
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("pre-1.16"));
+    }
+
+    #[test]
+    fn import_rejects_post_1_17_1_chunk_format() {
+        let bytes = write_nbt_root(NbtTag::Compound(vec![nbt_field(
+            "DataVersion",
+            NbtTag::Int(MAX_IMPORT_DATA_VERSION + 1),
+        )]));
+        let error = match import_chunk_from_nbt(&bytes) {
+            Err(error) => error,
+            Ok(_) => panic!("post-1.17.1 chunk was accepted"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("post-1.17.1"));
     }
 
     #[test]
