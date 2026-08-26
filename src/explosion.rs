@@ -13,6 +13,28 @@ pub fn explosion_entity_damage(distance: f32, blast_size: f32) -> i32 {
     (impact * 14.0).round() as i32
 }
 
+fn chain_ignited_tnt(
+    position: Vec3,
+    explosion_center: Vec3,
+    speed: f32,
+    fuse: f32,
+) -> ActiveExplosive {
+    let dir = (position + Vec3::splat(0.5) - explosion_center).normalize_or_zero();
+    ActiveExplosive {
+        position,
+        velocity: dir * speed + Vec3::new(0.0, 1.5, 0.0),
+        fuse,
+        initial_fuse: fuse,
+    }
+}
+
+fn can_explosion_destroy(block: BlockType) -> bool {
+    !matches!(
+        block,
+        BlockType::Bedrock | BlockType::Air | BlockType::Water | BlockType::Lava
+    )
+}
+
 pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32, player_pos: Vec3) {
     let mut rng = rand::rng();
     let explosion_center = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
@@ -63,21 +85,19 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32, playe
     let mut newly_ignited_tnt = Vec::new();
     for (bx, by, bz) in destroyed_blocks {
         let b = world.get_block(bx, by, bz);
-        if b == BlockType::Bedrock || b == BlockType::Air {
+        if !can_explosion_destroy(b) {
             continue;
         }
 
         if b == BlockType::TNT {
-            let block_center = Vec3::new(bx as f32 + 0.5, by as f32 + 0.5, bz as f32 + 0.5);
-            let dir = (block_center - explosion_center).normalize_or_zero();
             let speed = rng.random_range(2.5..6.0);
             let fuse = rng.random_range(0.5..1.5); // 10..30 ticks in MC
-            newly_ignited_tnt.push(ActiveExplosive {
-                position: Vec3::new(bx as f32, by as f32, bz as f32),
-                velocity: dir * speed + Vec3::new(0.0, 1.5, 0.0),
+            newly_ignited_tnt.push(chain_ignited_tnt(
+                Vec3::new(bx as f32, by as f32, bz as f32),
+                explosion_center,
+                speed,
                 fuse,
-                initial_fuse: fuse,
-            });
+            ));
         }
         world.set_block(bx, by, bz, BlockType::Air);
     }
@@ -151,16 +171,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_blast_resistance_values() {
-        assert_eq!(BlockType::Bedrock.blast_resistance(), 3_600_000.0);
-        assert_eq!(BlockType::Obsidian.blast_resistance(), 1200.0);
-        assert_eq!(BlockType::Stone.blast_resistance(), 6.0);
-        assert_eq!(BlockType::Dirt.blast_resistance(), 0.5);
-        assert_eq!(BlockType::TNT.blast_resistance(), 0.0);
-        assert_eq!(BlockType::Air.blast_resistance(), 0.0);
-    }
-
-    #[test]
     fn explosion_damage_falls_off_with_distance() {
         assert_eq!(explosion_entity_damage(0.0, 4.0), 14);
         assert_eq!(explosion_entity_damage(8.0, 4.0), 0);
@@ -170,18 +180,19 @@ mod tests {
 
     #[test]
     fn test_tnt_chain_ignition_logic() {
-        let mut rng = rand::rng();
         let center = Vec3::new(10.5, 10.5, 10.5);
-        let tnt_pos = Vec3::new(12.5, 10.5, 10.5);
-        let dir = (tnt_pos - center).normalize_or_zero();
-        let speed = rng.random_range(2.5..6.0);
-        let active = ActiveExplosive {
-            position: tnt_pos,
-            velocity: dir * speed + Vec3::new(0.0, 1.5, 0.0),
-            fuse: 1.0,
-            initial_fuse: 1.0,
-        };
+        let active = chain_ignited_tnt(Vec3::new(12.0, 10.0, 10.0), center, 4.0, 1.0);
+        assert_eq!(active.position, Vec3::new(12.0, 10.0, 10.0));
+        assert!(active.velocity.x > 0.0);
         assert!(active.velocity.y > 1.0);
-        assert!(active.fuse >= 0.5 && active.fuse <= 1.5);
+        assert_eq!(active.fuse, 1.0);
+        assert_eq!(active.initial_fuse, 1.0);
+    }
+
+    #[test]
+    fn explosions_preserve_liquids() {
+        assert!(!can_explosion_destroy(BlockType::Water));
+        assert!(!can_explosion_destroy(BlockType::Lava));
+        assert!(can_explosion_destroy(BlockType::Stone));
     }
 }

@@ -151,6 +151,9 @@ struct GpuMeshM3 {
 const M3_DEBUG_DIRECT_DRAW: bool = true;
 
 struct Ctx {
+    instance: wgpu::Instance,
+    raw_display_handle: wgpu::rwh::RawDisplayHandle,
+    raw_window_handle: wgpu::rwh::RawWindowHandle,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
@@ -222,11 +225,13 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
     height: i32,
 ) {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let raw_display_handle = window.display_handle().expect("display handle").as_raw();
+    let raw_window_handle = window.window_handle().expect("window handle").as_raw();
     let surface = unsafe {
         instance
             .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: Some(window.display_handle().expect("display handle").as_raw()),
-                raw_window_handle: window.window_handle().expect("window handle").as_raw(),
+                raw_display_handle: Some(raw_display_handle),
+                raw_window_handle,
             })
             .expect("create surface")
     };
@@ -338,6 +343,9 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
             1,
         )
         .1,
+        instance,
+        raw_display_handle,
+        raw_window_handle,
         device,
         queue,
         surface,
@@ -1743,11 +1751,34 @@ pub fn end_frame(width: i32, height: i32) {
         use wgpu::CurrentSurfaceTexture as Cst;
         let frame = match c.surface.get_current_texture() {
             Cst::Success(f) | Cst::Suboptimal(f) => Some(f),
-            Cst::Outdated | Cst::Lost => {
+            Cst::Outdated => {
                 c.surface.configure(&c.device, &c.config);
                 match c.surface.get_current_texture() {
                     Cst::Success(f) | Cst::Suboptimal(f) => Some(f),
                     _ => None,
+                }
+            }
+            Cst::Lost => {
+                let replacement = unsafe {
+                    c.instance
+                        .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                            raw_display_handle: Some(c.raw_display_handle),
+                            raw_window_handle: c.raw_window_handle,
+                        })
+                };
+                match replacement {
+                    Ok(surface) => {
+                        surface.configure(&c.device, &c.config);
+                        c.surface = surface;
+                        match c.surface.get_current_texture() {
+                            Cst::Success(f) | Cst::Suboptimal(f) => Some(f),
+                            _ => None,
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Failed to recreate lost render surface: {error}");
+                        None
+                    }
                 }
             }
             Cst::Timeout | Cst::Occluded | Cst::Validation => None,

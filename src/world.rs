@@ -8,6 +8,7 @@ use crate::renderer;
 use crate::renderer::{Mesh, Shader, Texture2D};
 use glam::{Mat4, Vec3};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::RwLock;
 
 // M2 test harness (hashed-splashing-haven plan): (pos, uv, normal, color).
@@ -238,6 +239,7 @@ pub struct World {
     // Chunks whose natural mobs (passive, hostile, spawner) have already been spawned
     spawned_natural_chunks: std::collections::HashSet<(i32, i32)>,
     imported: HashMap<(i32, i32), Box<Chunk>>,
+    import_world: Option<PathBuf>,
     villager_mesh: renderer::Mesh,
     golem_mesh: renderer::Mesh,
 }
@@ -248,7 +250,6 @@ impl World {
         for _ in 0..CHUNK_POOL_SIZE {
             chunks.push(None);
         }
-        renderer::gpu_pool_init(GPU_POOL_SIZE);
         let (mesh_result_tx, mesh_result_rx) = std::sync::mpsc::channel();
         let (gen_result_tx, gen_result_rx) = std::sync::mpsc::channel();
         Self {
@@ -294,6 +295,7 @@ impl World {
             spawned_villages: std::collections::HashSet::new(),
             spawned_natural_chunks: std::collections::HashSet::new(),
             imported: HashMap::new(),
+            import_world: None,
             villager_mesh: Self::create_textured_cube_mesh(BlockType::Wool),
             golem_mesh: Self::create_textured_cube_mesh(BlockType::IronBlock),
         }
@@ -486,6 +488,18 @@ impl World {
     // twin (M3). Dev-only, meant to run once at startup.
     #[allow(dead_code)]
     pub fn run_gpu_mesh_tests(&self) {
+        renderer::gpu_pool_init(GPU_POOL_SIZE);
+        for chunk in self.chunks.iter().flatten() {
+            let (blocks, light, liquid) = chunk.gpu_bytes();
+            renderer::gpu_pool_upload_chunk(
+                self.gpu_pool_index(chunk.x, chunk.z) as u32,
+                chunk.x,
+                chunk.z,
+                blocks,
+                light,
+                liquid,
+            );
+        }
         let cx = self.last_pcx;
         let cz = self.last_pcz;
         let Some(chunk) = self.get_chunk(cx, cz) else {
@@ -617,6 +631,12 @@ impl World {
         }
     }
 
+    pub fn set_import_world(&mut self, path: PathBuf) {
+        self.import_world = Some(path);
+        self.last_pcx = i32::MIN;
+        self.last_pcz = i32::MIN;
+    }
+
     pub fn install_edits(&self, edits: &[((i32, i32, i32), BlockType)]) {
         if let Ok(mut map) = self.edits.write() {
             map.clear();
@@ -641,6 +661,15 @@ impl World {
             chunk.copy_terrain_from(loaded);
         } else if let Some(imported) = self.imported.get(&(cx, cz)) {
             chunk.copy_terrain_from(imported);
+        } else if let Some(path) = &self.import_world {
+            match crate::java_compat::import_classic_java_chunk(path, cx, cz) {
+                Ok(Some(imported)) => chunk.copy_terrain_from(&imported),
+                Ok(None) => chunk.generate(),
+                Err(error) => {
+                    eprintln!("Failed to read imported chunk ({cx}, {cz}): {error}");
+                    chunk.generate();
+                }
+            }
         } else {
             chunk.generate();
         }
@@ -963,8 +992,21 @@ impl World {
             return;
         }
         let seed = self.seed;
+        let import_world = self.import_world.clone();
         let tx = self.gen_result_tx.clone();
         rayon::spawn(move || {
+            if let Some(path) = import_world {
+                match crate::java_compat::import_classic_java_chunk(&path, x, z) {
+                    Ok(Some(chunk)) => {
+                        let _ = tx.send(Box::new(chunk));
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("Failed to read imported chunk ({x}, {z}): {error}");
+                    }
+                }
+            }
             let mut chunk = Box::new(Chunk::new(x, z, seed));
             chunk.generate();
             let _ = tx.send(chunk);
@@ -1455,11 +1497,10 @@ impl World {
         if self.spawned_natural_chunks.contains(&(cx, cz)) {
             return;
         }
-        self.spawned_natural_chunks.insert((cx, cz));
-
         if self.mobs.len() >= 48 {
             return;
         }
+        self.spawned_natural_chunks.insert((cx, cz));
 
         let mut new_mobs = Vec::new();
         let mut rng =
@@ -1594,12 +1635,34 @@ impl World {
     pub fn update_mobs(&mut self, player_pos: Vec3, dt: f32) {
         let dt = dt.min(0.1);
         let mut mobs = std::mem::take(&mut self.mobs);
+        let mut despawned_villages = Vec::new();
+        let mut despawned_natural = Vec::new();
         mobs.retain(|mob| {
-            if mob.kind == MobKind::Villager || mob.kind == MobKind::Golem {
-                return mob.position.distance_squared(player_pos) <= 160.0 * 160.0;
+            let max_distance = if matches!(mob.kind, MobKind::Villager | MobKind::Golem) {
+                160.0
+            } else {
+                96.0
+            };
+            if mob.position.distance_squared(player_pos) <= max_distance * max_distance {
+                return true;
             }
-            mob.position.distance_squared(player_pos) <= 96.0 * 96.0
+            let home_chunk = (
+                (mob.home.x / CHUNK_WIDTH as f32).floor() as i32,
+                (mob.home.z / CHUNK_DEPTH as f32).floor() as i32,
+            );
+            if matches!(mob.kind, MobKind::Villager | MobKind::Golem) {
+                despawned_villages.push(home_chunk);
+            } else {
+                despawned_natural.push(home_chunk);
+            }
+            false
         });
+        for chunk in despawned_villages {
+            self.spawned_villages.remove(&chunk);
+        }
+        for chunk in despawned_natural {
+            self.spawned_natural_chunks.remove(&chunk);
+        }
         for mob in &mut mobs {
             // Freeze mobs whose chunk is unloaded so they don't fall
             // through ungenerated terrain.
@@ -1731,6 +1794,11 @@ impl World {
         }
         mobs.retain(|mob| mob.health > 0.0);
         self.mobs = mobs;
+        let player_chunk = (
+            (player_pos.x / CHUNK_WIDTH as f32).floor() as i32,
+            (player_pos.z / CHUNK_DEPTH as f32).floor() as i32,
+        );
+        self.try_spawn_natural_mobs(player_chunk.0, player_chunk.1);
     }
 
     pub fn render_mobs(&self, shader: &Shader, player_pos: Vec3) {

@@ -33,7 +33,7 @@ impl ItemStack {
         }
     }
 
-    fn with_count(mut self, count: u32) -> Self {
+    pub fn with_count(mut self, count: u32) -> Self {
         self.count = count;
         self
     }
@@ -62,17 +62,24 @@ pub fn create_starting_inventory() -> [Option<ItemStack>; INVENTORY_SLOT_COUNT] 
 }
 
 /// Add items when mining – hotbar first, then main inventory.
-pub fn inv_add(slots: &mut [Option<ItemStack>; INVENTORY_SLOT_COUNT], block: BlockType, amt: u32) {
-    inv_add_stack(slots, ItemStack::new(block, amt));
+pub fn inv_add(
+    slots: &mut [Option<ItemStack>; INVENTORY_SLOT_COUNT],
+    block: BlockType,
+    amt: u32,
+) -> u32 {
+    inv_add_stack(slots, ItemStack::new(block, amt)).map_or(0, |stack| stack.count)
 }
 
-fn inv_add_stack(slots: &mut [Option<ItemStack>; INVENTORY_SLOT_COUNT], stack: ItemStack) {
+fn inv_add_stack(
+    slots: &mut [Option<ItemStack>; INVENTORY_SLOT_COUNT],
+    stack: ItemStack,
+) -> Option<ItemStack> {
     let sm = stack_max(stack.block);
     let mut remaining = stack.count;
     for pass in 0..2u8 {
         for i in (0..9).chain(9..36) {
             if remaining == 0 {
-                return;
+                return None;
             }
             match slots[i] {
                 Some(s) if s.can_stack_with(stack) && s.count < sm && pass == 0 => {
@@ -89,12 +96,13 @@ fn inv_add_stack(slots: &mut [Option<ItemStack>; INVENTORY_SLOT_COUNT], stack: I
             }
         }
     }
+    Some(stack.with_count(remaining))
 }
 
 /// Add a tool item to inventory (preserves durability).
 #[allow(dead_code)]
 pub fn inv_add_tool(slots: &mut [Option<ItemStack>; INVENTORY_SLOT_COUNT], tool: ItemStack) {
-    inv_add_stack(slots, tool);
+    let _ = inv_add_stack(slots, tool);
 }
 
 fn bucket_for_liquid(block: BlockType, liquid_level: u8) -> Option<BlockType> {
@@ -200,7 +208,7 @@ pub struct LinearPlacementLock {
 }
 
 impl LinearPlacementLock {
-    pub fn new(pos: (i32, i32, i32), _normal: (i32, i32, i32)) -> Self {
+    pub fn new(pos: (i32, i32, i32)) -> Self {
         Self {
             stage: LockStage::InitialPlacement(pos),
             last_placed: pos,
@@ -214,7 +222,7 @@ impl LinearPlacementLock {
                 let dx = (x - x1).abs();
                 let dy = (y - y1).abs();
                 let dz = (z - z1).abs();
-                pos != (x1, y1, z1) && (dx + dy + dz <= 3)
+                dx + dy + dz == 1
             }
             LockStage::Line {
                 axis,
@@ -287,6 +295,7 @@ pub fn try_place_block_with_lock(
         let target = world.get_block(res.x, res.y, res.z);
         if target == BlockType::TNT {
             prime_tnt(world, res.x, res.y, res.z);
+            damage_selected_tool(inv_slots, selected_slot);
             return true;
         }
     }
@@ -331,10 +340,7 @@ pub fn try_place_block_with_lock(
             world.set_block(nx, ny, nz, s.block);
 
             if lock.is_none() {
-                *lock = Some(LinearPlacementLock::new(
-                    (nx, ny, nz),
-                    (res.nx, res.ny, res.nz),
-                ));
+                *lock = Some(LinearPlacementLock::new((nx, ny, nz)));
             } else if let Some(l) = lock {
                 l.register_placement((nx, ny, nz));
             }
@@ -721,7 +727,7 @@ pub fn ct_close(
 ) {
     for slot in ct_slots.iter_mut().take(9) {
         if let Some(s) = slot.take() {
-            inv_add_stack(inv_slots, s);
+            *slot = inv_add_stack(inv_slots, s);
         }
     }
 }
@@ -742,11 +748,22 @@ mod tests {
     #[test]
     fn test_inv_add_stacks_properly() {
         let mut inv = [None::<ItemStack>; INVENTORY_SLOT_COUNT];
-        inv_add(&mut inv, BlockType::Dirt, 30);
+        assert_eq!(inv_add(&mut inv, BlockType::Dirt, 30), 0);
         assert_eq!(inv[0].unwrap().count, 30);
         inv_add(&mut inv, BlockType::Dirt, 40);
         assert_eq!(inv[0].unwrap().count, 64);
         assert_eq!(inv[1].unwrap().count, 6);
+    }
+
+    #[test]
+    fn crafting_close_keeps_items_when_inventory_is_full() {
+        let mut inv = [Some(ItemStack::new(BlockType::Stone, 64)); INVENTORY_SLOT_COUNT];
+        let mut ct = [None::<ItemStack>; CRAFT_TABLE_SLOT_COUNT];
+        ct[0] = Some(ItemStack::new(BlockType::Dirt, 3));
+
+        ct_close(&mut ct, &mut inv);
+
+        assert_eq!(ct[0], Some(ItemStack::new(BlockType::Dirt, 3)));
     }
 
     #[test]
@@ -841,13 +858,15 @@ mod tests {
 
     #[test]
     fn test_linear_placement_lock_plane_to_line_transition() {
-        let mut lock = LinearPlacementLock::new((10, 64, 5), (0, 1, 0));
+        let mut lock = LinearPlacementLock::new((10, 64, 5));
         assert_eq!(lock.stage, LockStage::InitialPlacement((10, 64, 5)));
 
         // Single block placement allows initial placement adjacent in any direction (including vertical)
         assert!(lock.matches((10, 64, 6))); // Z extension
         assert!(lock.matches((11, 64, 5))); // X extension
         assert!(lock.matches((10, 65, 5))); // Y vertical extension
+        assert!(!lock.matches((11, 65, 5))); // Diagonal rejected
+        assert!(!lock.matches((10, 64, 7))); // Non-adjacent rejected
 
         // Register 2nd block along Y axis (vertical pillar)
         lock.register_placement((10, 65, 5));

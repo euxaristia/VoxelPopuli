@@ -435,6 +435,16 @@ mod tests {
     }
 
     #[test]
+    fn test_blast_resistance_values() {
+        assert_eq!(BlockType::Bedrock.blast_resistance(), 3_600_000.0);
+        assert_eq!(BlockType::Obsidian.blast_resistance(), 1200.0);
+        assert_eq!(BlockType::Stone.blast_resistance(), 6.0);
+        assert_eq!(BlockType::Dirt.blast_resistance(), 0.5);
+        assert_eq!(BlockType::TNT.blast_resistance(), 0.0);
+        assert_eq!(BlockType::Air.blast_resistance(), 0.0);
+    }
+
+    #[test]
     fn test_blocks_are_solid() {
         assert!(BlockType::Stone.is_solid());
         assert!(BlockType::Dirt.is_solid());

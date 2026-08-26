@@ -160,10 +160,21 @@ impl GameSave {
         let bytes = self.encode()?;
         let temporary = path.with_extension("tmp");
         std::fs::write(&temporary, bytes)?;
-        if path.exists() {
-            std::fs::remove_file(path)?;
+        match std::fs::rename(&temporary, path) {
+            Ok(()) => Ok(()),
+            Err(rename_error) if path.exists() => {
+                std::fs::remove_file(path)?;
+                std::fs::rename(&temporary, path).map_err(|retry_error| {
+                    io::Error::new(
+                        retry_error.kind(),
+                        format!(
+                            "failed to replace save after rename error ({rename_error}): {retry_error}"
+                        ),
+                    )
+                })
+            }
+            Err(error) => Err(error),
         }
-        std::fs::rename(temporary, path)
     }
 
     pub fn read_from(path: &Path) -> io::Result<Self> {
@@ -214,7 +225,7 @@ impl GameSave {
         put_optional_string(&mut out, import_path.as_deref())?;
         put_u32(&mut out, INVENTORY_SLOT_COUNT as u32);
         for stack in self.inventory {
-            put_stack(&mut out, stack);
+            put_stack(&mut out, stack)?;
         }
         put_u32(&mut out, self.edits.len() as u32);
         for ((x, y, z), block) in &self.edits {
@@ -262,7 +273,8 @@ impl GameSave {
             fov: reader.f32()?,
             fancy_graphics: reader.bool()?,
             selected_skin: reader.u8()?,
-        };
+        }
+        .clamped();
         let import_world = reader.optional_string()?.map(PathBuf::from);
         let inventory_len = reader.u32()? as usize;
         if inventory_len != INVENTORY_SLOT_COUNT {
@@ -360,7 +372,15 @@ fn put_armor(out: &mut Vec<u8>, armor: Option<(BlockType, u16)>) {
     }
 }
 
-fn put_stack(out: &mut Vec<u8>, stack: Option<ItemStack>) {
+fn put_stack(out: &mut Vec<u8>, stack: Option<ItemStack>) -> io::Result<()> {
+    if let Some(stack) = stack
+        && !(1..=64).contains(&stack.count)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "inventory stack count must be in 1..=64",
+        ));
+    }
     put_bool(out, stack.is_some());
     if let Some(stack) = stack {
         out.push(stack.block as u8);
@@ -370,6 +390,7 @@ fn put_stack(out: &mut Vec<u8>, stack: Option<ItemStack>) {
             out.extend_from_slice(&durability.to_le_bytes());
         }
     }
+    Ok(())
 }
 
 fn put_optional_string(out: &mut Vec<u8>, value: Option<&str>) -> io::Result<()> {
@@ -590,5 +611,29 @@ mod tests {
         assert_eq!(settings.view_distance, 12);
         assert_eq!(settings.fov, 60.0);
         assert_eq!(settings.selected_skin, 3);
+    }
+
+    #[test]
+    fn decode_clamps_saved_settings() {
+        let mut save = sample_save();
+        save.settings.view_distance = 99;
+        save.settings.fov = 12.0;
+        save.settings.selected_skin = 9;
+        let decoded = GameSave::decode(&save.encode().unwrap()).unwrap();
+        assert_eq!(decoded.settings.view_distance, 12);
+        assert_eq!(decoded.settings.fov, 60.0);
+        assert_eq!(decoded.settings.selected_skin, 3);
+    }
+
+    #[test]
+    fn encode_rejects_invalid_stack_counts() {
+        let mut save = sample_save();
+        save.inventory[0].as_mut().unwrap().count = 0;
+        let error = save.encode().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+        save.inventory[0].as_mut().unwrap().count = 65;
+        let error = save.encode().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }
