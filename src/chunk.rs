@@ -455,7 +455,7 @@ impl MeshSnapshot {
             x: cx,
             z: cz,
             blocks: vec![BlockType::Air; SNAP_LEN].into_boxed_slice(),
-            light: vec![15u8; SNAP_LEN].into_boxed_slice(),
+            light: vec![pack_light(15, 0); SNAP_LEN].into_boxed_slice(),
             liquid: vec![0u8; SNAP_LEN].into_boxed_slice(),
         };
 
@@ -575,11 +575,11 @@ impl MeshSnapshot {
 
     pub fn get_light(&self, wx: i32, wy: i32, wz: i32) -> u8 {
         if wy < 0 || wy >= CHUNK_HEIGHT as i32 {
-            return 15;
+            return pack_light(15, 0);
         }
         match self.local(wx, wz) {
             Some((lx, lz)) => self.light[flat_idx(lx, wy as usize, lz)],
-            None => 15,
+            None => pack_light(15, 0),
         }
     }
 
@@ -1314,11 +1314,13 @@ impl Chunk {
                 self.liquid_levels[x][y][z] = 0;
             }
             self.dirty = true;
-            if block == BlockType::Torch
-                || old_block == BlockType::Torch
-                || block == BlockType::Lava
-                || old_block == BlockType::Lava
-            {
+            if matches!(
+                block,
+                BlockType::Torch | BlockType::RedstoneTorch | BlockType::Lava
+            ) || matches!(
+                old_block,
+                BlockType::Torch | BlockType::RedstoneTorch | BlockType::Lava
+            ) {
                 self.calculate_lighting();
             }
         }
@@ -1807,9 +1809,10 @@ impl ChunkData {
                         let wx = x as i32 + self.x * CHUNK_WIDTH as i32;
                         let wy = y as i32;
                         let wz = z as i32 + self.z * CHUNK_DEPTH as i32;
-                        let (sky_light, block_light) = unpack_light(
-                            get_light_safe(wx, wy, wz).max(get_light_safe(wx, wy + 1, wz)),
-                        );
+                        let (sky0, block0) = unpack_light(get_light_safe(wx, wy, wz));
+                        let (sky1, block1) = unpack_light(get_light_safe(wx, wy + 1, wz));
+                        let sky_light = sky0.max(sky1);
+                        let block_light = block0.max(block1);
                         let sky_val = (255.0 * calc_light_f(sky_light)).max(70.0) as u8;
                         let block_val = (255.0 * calc_light_f(block_light)) as u8;
                         let color = [sky_val, block_val, 255, 255];
@@ -2084,26 +2087,26 @@ impl ChunkData {
                             n.extend_from_slice(&[0.0, 1.0, 0.0]);
                         }
                         let c00 = [
-                            (255.0 * sky00 * ao00).clamp(0.0, 255.0) as u8,
-                            (255.0 * blk00 * ao00).clamp(0.0, 255.0) as u8,
+                            (255.0 * sky00).clamp(0.0, 255.0) as u8,
+                            (255.0 * blk00).clamp(0.0, 255.0) as u8,
                             (255.0 * ao00).clamp(0.0, 255.0) as u8,
                             255,
                         ];
                         let c10 = [
-                            (255.0 * sky10 * ao10).clamp(0.0, 255.0) as u8,
-                            (255.0 * blk10 * ao10).clamp(0.0, 255.0) as u8,
+                            (255.0 * sky10).clamp(0.0, 255.0) as u8,
+                            (255.0 * blk10).clamp(0.0, 255.0) as u8,
                             (255.0 * ao10).clamp(0.0, 255.0) as u8,
                             255,
                         ];
                         let c01 = [
-                            (255.0 * sky01 * ao01).clamp(0.0, 255.0) as u8,
-                            (255.0 * blk01 * ao01).clamp(0.0, 255.0) as u8,
+                            (255.0 * sky01).clamp(0.0, 255.0) as u8,
+                            (255.0 * blk01).clamp(0.0, 255.0) as u8,
                             (255.0 * ao01).clamp(0.0, 255.0) as u8,
                             255,
                         ];
                         let c11 = [
-                            (255.0 * sky11 * ao11).clamp(0.0, 255.0) as u8,
-                            (255.0 * blk11 * ao11).clamp(0.0, 255.0) as u8,
+                            (255.0 * sky11).clamp(0.0, 255.0) as u8,
+                            (255.0 * blk11).clamp(0.0, 255.0) as u8,
                             (255.0 * ao11).clamp(0.0, 255.0) as u8,
                             255,
                         ];
@@ -2494,7 +2497,7 @@ mod tests {
                 } else {
                     0
                 };
-                (block, 15, liquid)
+                (block, pack_light(15, 0), liquid)
             }
         }
     }
@@ -2600,6 +2603,7 @@ mod tests {
 
         let actual = MeshSnapshot::build(0, 0, neighbors, fallback_pattern);
         assert_snapshot_matches_ground_truth(&actual, 0, 0, neighbors, fallback_pattern);
+        assert_eq!(unpack_light(actual.get_light(16, 64, 0)), (15, 0));
     }
 
     #[test]
@@ -2774,5 +2778,22 @@ mod tests {
             block_adj, 13,
             "adjacent air cell should receive level 13 block light"
         );
+    }
+
+    #[test]
+    fn redstone_torch_changes_recalculate_block_light() {
+        let mut chunk = Chunk::new(0, 0, 1);
+        for x in 0..CHUNK_WIDTH {
+            for z in 0..CHUNK_DEPTH {
+                chunk.blocks[x][50][z] = BlockType::Stone;
+            }
+        }
+        chunk.calculate_lighting();
+
+        chunk.set_block(8, 40, 8, BlockType::RedstoneTorch);
+        assert_eq!(unpack_light(chunk.light[8][40][8]).1, 7);
+
+        chunk.set_block(8, 40, 8, BlockType::Air);
+        assert_eq!(unpack_light(chunk.light[8][40][8]).1, 0);
     }
 }

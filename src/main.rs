@@ -333,29 +333,28 @@ fn main() {
 
     let mut import_world_path = None;
     if let Some(import_idx) = args.iter().position(|a| a == "--import-world") {
-        import_world_path = args.get(import_idx + 1).map(std::path::PathBuf::from);
+        let Some(path) = args.get(import_idx + 1) else {
+            eprintln!("--import-world requires a world directory path");
+            std::process::exit(1);
+        };
+        import_world_path = Some(std::path::PathBuf::from(path));
     } else if let Some(save) = &loaded_save {
         import_world_path = save.import_world.clone();
     }
-    let mut imported_chunks = Vec::new();
     if let Some(path) = &import_world_path {
-        match java_compat::import_classic_java_world(path) {
-            Ok(chunks) => {
+        match java_compat::validate_classic_java_world(path) {
+            Ok(regions) => {
                 println!(
-                    "Successfully imported {} Minecraft Java chunk(s) from {}",
-                    chunks.len(),
+                    "Streaming Minecraft Java chunks from {regions} region file(s) in {}",
                     path.display()
                 );
-                imported_chunks = chunks;
             }
             Err(err) => {
                 eprintln!(
                     "Failed to import Minecraft Java world from {}: {err}",
                     path.display()
                 );
-                if loaded_save.is_none() {
-                    std::process::exit(1);
-                }
+                std::process::exit(1);
             }
         }
     }
@@ -390,7 +389,9 @@ fn main() {
     let (init_fb_w, init_fb_h) = window.get_framebuffer_size();
     renderer::init(&*window, init_fb_w, init_fb_h);
     let mut world = World::new(world_seed as u64);
-    world.register_imported_chunks(imported_chunks);
+    if let Some(path) = import_world_path.clone() {
+        world.set_import_world(path);
+    }
     if let Some(save) = &loaded_save {
         world.install_edits(&save.edits);
     }
@@ -637,15 +638,15 @@ fn main() {
                             crafting_table_open = false;
                             player.inventory_open = false;
                             if let Some(c) = inv_cursor {
-                                inv_add(&mut inv_slots, c.block, c.count);
-                                inv_cursor = None;
+                                let remaining = inv_add(&mut inv_slots, c.block, c.count);
+                                inv_cursor = (remaining > 0).then(|| c.with_count(remaining));
                             }
                             window.set_cursor_mode(glfw::CursorMode::Disabled);
                         } else if player.inventory_open {
                             player.inventory_open = false;
                             if let Some(c) = inv_cursor {
-                                inv_add(&mut inv_slots, c.block, c.count);
-                                inv_cursor = None;
+                                let remaining = inv_add(&mut inv_slots, c.block, c.count);
+                                inv_cursor = (remaining > 0).then(|| c.with_count(remaining));
                             }
                             window.set_cursor_mode(glfw::CursorMode::Disabled);
                         } else {
@@ -663,8 +664,8 @@ fn main() {
                         crafting_table_open = false;
                         player.inventory_open = false;
                         if let Some(c) = inv_cursor {
-                            inv_add(&mut inv_slots, c.block, c.count);
-                            inv_cursor = None;
+                            let remaining = inv_add(&mut inv_slots, c.block, c.count);
+                            inv_cursor = (remaining > 0).then(|| c.with_count(remaining));
                         }
                         window.set_cursor_mode(glfw::CursorMode::Disabled);
                     } else {
@@ -673,8 +674,8 @@ fn main() {
                             window.set_cursor_mode(glfw::CursorMode::Normal);
                         } else {
                             if let Some(c) = inv_cursor {
-                                inv_add(&mut inv_slots, c.block, c.count);
-                                inv_cursor = None;
+                                let remaining = inv_add(&mut inv_slots, c.block, c.count);
+                                inv_cursor = (remaining > 0).then(|| c.with_count(remaining));
                             }
                             window.set_cursor_mode(glfw::CursorMode::Disabled);
                         }
@@ -1261,7 +1262,7 @@ fn main() {
             if is_placing {
                 place_repeat_timer -= delta_time;
                 if place_repeat_timer <= 0.0 {
-                    if try_place_block_with_lock(
+                    try_place_block_with_lock(
                         &mut world,
                         &mut inv_slots,
                         player.selected_slot,
@@ -1269,9 +1270,8 @@ fn main() {
                         look_dir,
                         &player,
                         &mut placement_lock,
-                    ) {
-                        place_repeat_timer = 0.20;
-                    }
+                    );
+                    place_repeat_timer = 0.20;
                 }
             } else {
                 placement_lock = None;

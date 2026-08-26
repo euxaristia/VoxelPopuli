@@ -10,8 +10,8 @@ A lightweight Minecraft-inspired voxel sandbox written in Rust with `wgpu` and G
 - **Crafting & Smelting**: 3x3 Crafting Table, Furnace smelting, Chests, Farmland farming, and 100+ items/blocks
 - **Explosions & TNT**: Chain-reaction ignition, blast shockwaves, and 3D bounce physics
 - **Terrain & Environment**: Procedural biomes, Perlin noise heightmaps, Minecraft 1.0 WorldGenMinable ore veins, dynamic clouds, celestial bodies (Sun, Moon, Stars), and smooth ambient occlusion lighting
-- **Java Anvil Export**: Export worlds directly to Minecraft Java Anvil `.mca` format (Y 0..255)
-- **Java World Import**: Load real Minecraft Java edition world saves (Anvil `.mca` + NBT) directly into the game
+- **Java Anvil Export**: Export worlds directly to Minecraft Java Anvil `.mca` format (Y 0..=255)
+- **Java World Import**: Load Minecraft Java 1.16-1.17 worlds (Y 0..=255, Anvil `.mca` + NBT) directly into the game
 - **Inventory System**: Hotbar and full inventory grid with stack counts, durability bars, procedural item icons, and Bedrock-style linear block placement
 - **Combat**: Bow & Arrow ranged projectiles, melee attacks, and Experience Orbs with XP bar
 - **Performance Telemetry**: Real-time F3 debug overlay with frame time percentiles (P95/P99), subsystem breakdowns, and latency histogram

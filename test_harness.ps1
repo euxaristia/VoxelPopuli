@@ -24,7 +24,8 @@ Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
 Write-Output "Building game binary..."
-cargo build --release
+$manifestPath = Join-Path $PSScriptRoot "Cargo.toml"
+cargo build --release --manifest-path $manifestPath
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Cargo build failed!"
@@ -32,7 +33,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Output "Launching VoxelPopuli..."
-$proc = Start-Process -FilePath "target\release\VoxelPopuli.exe" -PassThru
+$exePath = Join-Path $PSScriptRoot "target\release\VoxelPopuli.exe"
+$proc = Start-Process -FilePath $exePath -PassThru
+try {
 
 # Wait for OpenGL window & chunk streaming
 Start-Sleep -Seconds 5
@@ -40,10 +43,9 @@ Start-Sleep -Seconds 5
 $wshell = New-Object -ComObject WScript.Shell
 $activated = $wshell.AppActivate("VoxelPopuli")
 Write-Output "Game window activated: $activated"
-Start-Sleep -Milliseconds 500
-
-# Send ESC to resume playing state if on pause menu
-[System.Windows.Forms.SendKeys]::SendWait("{ESC}")
+if (-not $activated) {
+    throw "Could not activate the VoxelPopuli window."
+}
 Start-Sleep -Milliseconds 500
 
 # Position mouse cursor in window center
@@ -75,14 +77,17 @@ $bmp = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height)
 $graphics = [System.Drawing.Graphics]::FromImage($bmp)
 $graphics.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
 
-$outPath = "assets\test_placing_result.png"
+$outDir = Join-Path $PSScriptRoot "target\test-artifacts"
+New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+$outPath = Join-Path $outDir "test_placing_result.png"
 $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
 $graphics.Dispose()
 $bmp.Dispose()
 Write-Output "Saved verification screenshot to $outPath"
 
-# Terminate process cleanly
-if (-not $proc.HasExited) {
-    Stop-Process -Id $proc.Id -Force
+} finally {
+    if ($proc -and -not $proc.HasExited) {
+        Stop-Process -Id $proc.Id -Force
+    }
 }
 Write-Output "Test harness completed successfully."

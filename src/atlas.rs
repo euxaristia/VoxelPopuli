@@ -49,7 +49,11 @@ pub fn generate_atlas_data() -> Vec<u8> {
         }
         for x in 6..10 {
             for y in 2..6 {
-                let (r, g, b) = if y <= 3 { (255, 230, 80) } else { (255, 120, 20) };
+                let (r, g, b) = if y <= 3 {
+                    (255, 230, 80)
+                } else {
+                    (255, 120, 20)
+                };
                 draw_pixel(5 * 16 + x, 7 * 16 + y, r, g, b, 255);
             }
         }
@@ -1367,18 +1371,6 @@ pub fn generate_atlas_data() -> Vec<u8> {
             for y in 0..16i32 {
                 if (x * 7 + y * 3) % 11 == 0 {
                     sp(&mut data, 4 * 16 + x, 7 * 16 + y, 30, 60, 180, 255);
-                }
-            }
-        }
-        // Torch (5,7)
-        for x in 0..16i32 {
-            for y in 0..16i32 {
-                let flame = (6..=9).contains(&x) && (2..=5).contains(&y);
-                let stick = (7..=8).contains(&x) && (6..=14).contains(&y);
-                if flame {
-                    sp(&mut data, 5 * 16 + x, 7 * 16 + y, 255, 200, 50, 255);
-                } else if stick {
-                    sp(&mut data, 5 * 16 + x, 7 * 16 + y, 130, 90, 50, 255);
                 }
             }
         }

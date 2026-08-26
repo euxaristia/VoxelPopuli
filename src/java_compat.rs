@@ -2,9 +2,14 @@ use crate::block::BlockType;
 use crate::chunk::{Biome, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, biome_at};
 use flate2::Compression;
 use flate2::write::{GzEncoder, ZlibEncoder};
-use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+
+const MAX_DECOMPRESSED_CHUNK_BYTES: usize = 16 * 1024 * 1024;
+const MAX_NBT_DEPTH: usize = 64;
+const MAX_NBT_COLLECTION_LEN: usize = 1_048_576;
+const MIN_IMPORT_DATA_VERSION: i32 = 2566;
 
 pub const TARGET_NAME: &str = "Minecraft Java pre-1.18 Anvil";
 pub const JAVA_1_17_DATA_VERSION: i32 = 2724;
@@ -930,6 +935,10 @@ impl<'a> NbtDecoder<'a> {
         Ok(v)
     }
 
+    fn read_u16(&mut self) -> io::Result<u16> {
+        Ok(self.read_i16()? as u16)
+    }
+
     fn read_i32(&mut self) -> io::Result<i32> {
         if self.pos + 4 > self.data.len() {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "NBT EOF"));
@@ -957,16 +966,53 @@ impl<'a> NbtDecoder<'a> {
     }
 
     fn read_string(&mut self) -> io::Result<String> {
-        let len = self.read_i16()? as usize;
-        if self.pos + len > self.data.len() {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "NBT EOF"));
-        }
-        let s = String::from_utf8_lossy(&self.data[self.pos..self.pos + len]).into_owned();
-        self.pos += len;
+        let len = self.read_u16()? as usize;
+        let bytes = self.read_bytes(len)?;
+        let s = String::from_utf8_lossy(bytes).into_owned();
         Ok(s)
     }
 
-    fn read_tag_payload(&mut self, tag_type: u8) -> io::Result<NbtTag> {
+    fn read_bytes(&mut self, len: usize) -> io::Result<&'a [u8]> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .filter(|end| *end <= self.data.len())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "NBT EOF"))?;
+        let bytes = &self.data[self.pos..end];
+        self.pos = end;
+        Ok(bytes)
+    }
+
+    fn read_collection_len(&mut self, kind: &str, element_bytes: usize) -> io::Result<usize> {
+        let raw = self.read_i32()?;
+        if raw < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Negative NBT {kind} length {raw}"),
+            ));
+        }
+        let len = raw as usize;
+        if len > MAX_NBT_COLLECTION_LEN
+            || element_bytes > 0
+                && len
+                    .checked_mul(element_bytes)
+                    .is_none_or(|bytes| bytes > self.data.len().saturating_sub(self.pos))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("NBT {kind} length {len} exceeds safe bounds"),
+            ));
+        }
+        Ok(len)
+    }
+
+    fn read_tag_payload(&mut self, tag_type: u8, depth: usize) -> io::Result<NbtTag> {
+        if depth > MAX_NBT_DEPTH {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "NBT nesting exceeds safe depth",
+            ));
+        }
         match tag_type {
             1 => Ok(NbtTag::Byte(self.read_i8()?)),
             2 => Ok(NbtTag::Short(self.read_i16()?)),
@@ -975,21 +1021,17 @@ impl<'a> NbtDecoder<'a> {
             5 => Ok(NbtTag::Float(self.read_f32()?)),
             6 => Ok(NbtTag::Double(self.read_f64()?)),
             7 => {
-                let len = self.read_i32()? as usize;
-                if self.pos + len > self.data.len() {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "NBT EOF"));
-                }
-                let bytes = self.data[self.pos..self.pos + len].to_vec();
-                self.pos += len;
+                let len = self.read_collection_len("byte array", 1)?;
+                let bytes = self.read_bytes(len)?.to_vec();
                 Ok(NbtTag::ByteArray(bytes))
             }
             8 => Ok(NbtTag::String(self.read_string()?)),
             9 => {
                 let elem_type = self.read_u8()?;
-                let len = self.read_i32()? as usize;
+                let len = self.read_collection_len("list", 0)?;
                 let mut tags = Vec::with_capacity(len.min(1024));
                 for _ in 0..len {
-                    tags.push(self.read_tag_payload(elem_type)?);
+                    tags.push(self.read_tag_payload(elem_type, depth + 1)?);
                 }
                 Ok(NbtTag::List {
                     element_type: elem_type,
@@ -999,18 +1041,24 @@ impl<'a> NbtDecoder<'a> {
             10 => {
                 let mut fields = Vec::new();
                 loop {
+                    if fields.len() >= MAX_NBT_COLLECTION_LEN {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "NBT compound has too many fields",
+                        ));
+                    }
                     let field_type = self.read_u8()?;
                     if field_type == 0 {
                         break;
                     }
                     let name = self.read_string()?;
-                    let val = self.read_tag_payload(field_type)?;
+                    let val = self.read_tag_payload(field_type, depth + 1)?;
                     fields.push((name, val));
                 }
                 Ok(NbtTag::Compound(fields))
             }
             11 => {
-                let len = self.read_i32()? as usize;
+                let len = self.read_collection_len("int array", 4)?;
                 let mut ints = Vec::with_capacity(len.min(1024));
                 for _ in 0..len {
                     ints.push(self.read_i32()?);
@@ -1018,7 +1066,7 @@ impl<'a> NbtDecoder<'a> {
                 Ok(NbtTag::IntArray(ints))
             }
             12 => {
-                let len = self.read_i32()? as usize;
+                let len = self.read_collection_len("long array", 8)?;
                 let mut longs = Vec::with_capacity(len.min(1024));
                 for _ in 0..len {
                     longs.push(self.read_i64()?);
@@ -1038,67 +1086,148 @@ impl<'a> NbtDecoder<'a> {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty NBT root"));
         }
         let root_name = self.read_string()?;
-        let root_tag = self.read_tag_payload(type_id)?;
+        let root_tag = self.read_tag_payload(type_id, 0)?;
         Ok((root_name, root_tag))
     }
 }
 
-pub fn read_region_file(path: &Path) -> io::Result<Vec<(i32, i32, Vec<u8>)>> {
-    use flate2::read::ZlibDecoder;
-    use std::io::Read;
-
-    let bytes = std::fs::read(path)?;
-    if bytes.len() < 8192 {
+fn decompress_chunk_payload(compression_type: u8, compressed: &[u8]) -> io::Result<Vec<u8>> {
+    let reader: Box<dyn Read> = match compression_type {
+        1 => Box::new(flate2::read::GzDecoder::new(compressed)),
+        2 => Box::new(flate2::read::ZlibDecoder::new(compressed)),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unsupported Anvil compression type {compression_type}"),
+            ));
+        }
+    };
+    let mut decompressed = Vec::new();
+    reader
+        .take(MAX_DECOMPRESSED_CHUNK_BYTES as u64 + 1)
+        .read_to_end(&mut decompressed)?;
+    if decompressed.len() > MAX_DECOMPRESSED_CHUNK_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Region file too small",
+            "Decompressed Anvil chunk exceeds 16 MiB safety limit",
+        ));
+    }
+    Ok(decompressed)
+}
+
+fn read_region_chunk(path: &Path, local_x: usize, local_z: usize) -> io::Result<Option<Vec<u8>>> {
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len < 8192 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Region file is too small: {}", path.display()),
         ));
     }
 
-    let mut chunks = Vec::new();
-    for i in 0..1024 {
-        let loc_offset = i * 4;
-        let offset = ((bytes[loc_offset] as usize) << 16)
-            | ((bytes[loc_offset + 1] as usize) << 8)
-            | (bytes[loc_offset + 2] as usize);
-        let sector_count = bytes[loc_offset + 3] as usize;
-
-        if offset == 0 || sector_count == 0 {
-            continue;
-        }
-
-        let chunk_offset = offset * 4096;
-        if chunk_offset + 5 > bytes.len() {
-            continue;
-        }
-
-        let length =
-            u32::from_be_bytes(bytes[chunk_offset..chunk_offset + 4].try_into().unwrap()) as usize;
-        let compression_type = bytes[chunk_offset + 4];
-
-        if length <= 1 || chunk_offset + 4 + length > bytes.len() {
-            continue;
-        }
-
-        let compressed_payload = &bytes[chunk_offset + 5..chunk_offset + 4 + length];
-        let mut decompressed = Vec::new();
-
-        if compression_type == 2 {
-            let mut decoder = ZlibDecoder::new(compressed_payload);
-            decoder.read_to_end(&mut decompressed)?;
-        } else if compression_type == 1 {
-            let mut decoder = flate2::read::GzDecoder::new(compressed_payload);
-            decoder.read_to_end(&mut decompressed)?;
-        } else {
-            continue;
-        }
-
-        let rel_x = (i % 32) as i32;
-        let rel_z = (i / 32) as i32;
-        chunks.push((rel_x, rel_z, decompressed));
+    let header_offset = ((local_x + local_z * 32) * 4) as u64;
+    file.seek(SeekFrom::Start(header_offset))?;
+    let mut location = [0_u8; 4];
+    file.read_exact(&mut location)?;
+    let sector_offset =
+        ((location[0] as u64) << 16) | ((location[1] as u64) << 8) | location[2] as u64;
+    let sector_count = location[3] as u64;
+    if sector_offset == 0 || sector_count == 0 {
+        return Ok(None);
     }
 
-    Ok(chunks)
+    let chunk_offset = sector_offset
+        .checked_mul(4096)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Anvil chunk offset overflow"))?;
+    let sector_bytes = sector_count * 4096;
+    if chunk_offset
+        .checked_add(sector_bytes)
+        .is_none_or(|end| end > file_len)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Chunk sectors exceed region file: {}", path.display()),
+        ));
+    }
+
+    file.seek(SeekFrom::Start(chunk_offset))?;
+    let mut record_header = [0_u8; 5];
+    file.read_exact(&mut record_header)?;
+    let length = u32::from_be_bytes(record_header[..4].try_into().unwrap()) as u64;
+    if length <= 1 || length + 4 > sector_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid chunk length in {}", path.display()),
+        ));
+    }
+    let compressed_len = usize::try_from(length - 1).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Anvil chunk length is too large",
+        )
+    })?;
+    let mut compressed = vec![0_u8; compressed_len];
+    file.read_exact(&mut compressed)?;
+    decompress_chunk_payload(record_header[4], &compressed).map(Some)
+}
+
+pub fn validate_classic_java_world(world_dir: &Path) -> io::Result<usize> {
+    let region_dir = world_dir.join("region");
+    if !region_dir.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("No region directory found at {}", region_dir.display()),
+        ));
+    }
+
+    let mut region_count = 0;
+    for entry in std::fs::read_dir(region_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("mca") {
+            region_count += 1;
+        }
+    }
+    if region_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Java world contains no Anvil region files",
+        ));
+    }
+    Ok(region_count)
+}
+
+pub fn import_classic_java_chunk(
+    world_dir: &Path,
+    chunk_x: i32,
+    chunk_z: i32,
+) -> io::Result<Option<Chunk>> {
+    let region_x = chunk_x.div_euclid(32);
+    let region_z = chunk_z.div_euclid(32);
+    let path = world_dir
+        .join("region")
+        .join(format!("r.{region_x}.{region_z}.mca"));
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let Some(payload) = read_region_chunk(
+        &path,
+        chunk_x.rem_euclid(32) as usize,
+        chunk_z.rem_euclid(32) as usize,
+    )?
+    else {
+        return Ok(None);
+    };
+    let chunk = import_chunk_from_nbt(&payload)?;
+    if chunk.x != chunk_x || chunk.z != chunk_z {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Anvil chunk coordinate mismatch: requested ({chunk_x}, {chunk_z}), found ({}, {})",
+                chunk.x, chunk.z
+            ),
+        ));
+    }
+    Ok(Some(chunk))
 }
 
 pub fn java_block_name_to_block_type(name: &str) -> BlockType {
@@ -1190,17 +1319,36 @@ pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
     let mut decoder = NbtDecoder::new(decompressed_nbt);
     let (_root_name, root) = decoder.parse_root()?;
 
-    let level = root.get("Level").unwrap_or(&root);
-    let x_pos = match level.get("xPos") {
-        Some(NbtTag::Int(val)) => *val,
-        _ => 0,
+    let data_version = match root.get("DataVersion") {
+        Some(NbtTag::Int(version)) if *version >= MIN_IMPORT_DATA_VERSION => *version,
+        Some(NbtTag::Int(version)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unsupported pre-1.16 Java chunk DataVersion {version}"),
+            ));
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Java chunk is missing DataVersion",
+            ));
+        }
     };
-    let z_pos = match level.get("zPos") {
-        Some(NbtTag::Int(val)) => *val,
-        _ => 0,
+    debug_assert!(data_version >= MIN_IMPORT_DATA_VERSION);
+
+    let level = root.get("Level").unwrap_or(&root);
+    let (x_pos, z_pos) = match (level.get("xPos"), level.get("zPos")) {
+        (Some(NbtTag::Int(x)), Some(NbtTag::Int(z))) => (*x, *z),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Java chunk is missing xPos or zPos",
+            ));
+        }
     };
 
     let mut chunk = Chunk::new(x_pos, z_pos, 0);
+    let mut unknown_blocks = BTreeSet::new();
 
     if let Some(NbtTag::List { tags: sections, .. }) = level.get("Sections") {
         for sec in sections {
@@ -1219,6 +1367,14 @@ pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
                     .map(|t| {
                         if let Some(NbtTag::String(name)) = t.get("Name") {
                             let mut btype = java_block_name_to_block_type(name);
+                            if btype == BlockType::Air
+                                && !matches!(
+                                    name.as_str(),
+                                    "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
+                                )
+                            {
+                                unknown_blocks.insert(name.clone());
+                            }
                             if btype == BlockType::Grass {
                                 if let Some(NbtTag::Compound(props)) = t.get("Properties") {
                                     for (k, v) in props {
@@ -1271,34 +1427,13 @@ pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
     }
 
     chunk.hydrate_fluids();
+    if !unknown_blocks.is_empty() {
+        eprintln!(
+            "Imported chunk ({x_pos}, {z_pos}) replaced unsupported Java blocks with air: {}",
+            unknown_blocks.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
     Ok(chunk)
-}
-
-pub fn import_classic_java_world(world_dir: &Path) -> io::Result<Vec<Chunk>> {
-    let region_dir = world_dir.join("region");
-    if !region_dir.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("No region directory found at {}", region_dir.display()),
-        ));
-    }
-
-    let mut chunks = Vec::new();
-    for entry in std::fs::read_dir(region_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("mca") {
-            if let Ok(raw_chunks) = read_region_file(&path) {
-                for (_rx, _rz, payload) in raw_chunks {
-                    if let Ok(chunk) = import_chunk_from_nbt(&payload) {
-                        chunks.push(chunk);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(chunks)
 }
 
 #[cfg(test)]
@@ -1311,6 +1446,26 @@ mod tests {
         assert_eq!((MIN_Y, MAX_Y), (0, 255));
         assert_eq!(classic_chunk_dimensions(), (16, 256, 16));
         assert!(classic_world_height_matches_chunks());
+    }
+
+    #[test]
+    fn nbt_rejects_negative_collection_lengths() {
+        let bytes = [9, 0, 0, 1, 0xff, 0xff, 0xff, 0xff];
+        let error = NbtDecoder::new(&bytes).parse_root().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("Negative NBT list length"));
+    }
+
+    #[test]
+    fn nbt_rejects_excessive_nesting() {
+        let mut bytes = vec![10, 0, 0];
+        for _ in 0..=MAX_NBT_DEPTH {
+            bytes.extend_from_slice(&[10, 0, 0]);
+        }
+        bytes.extend(std::iter::repeat_n(0, MAX_NBT_DEPTH + 2));
+        let error = NbtDecoder::new(&bytes).parse_root().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("safe depth"));
     }
 
     #[test]
@@ -1395,6 +1550,40 @@ mod tests {
     }
 
     #[test]
+    fn import_rejects_missing_chunk_coordinates() {
+        let bytes = write_nbt_root(NbtTag::Compound(vec![
+            nbt_field("DataVersion", NbtTag::Int(JAVA_1_17_DATA_VERSION)),
+            nbt_field("Level", NbtTag::Compound(Vec::new())),
+        ]));
+        let error = match import_chunk_from_nbt(&bytes) {
+            Err(error) => error,
+            Ok(_) => panic!("chunk without coordinates was accepted"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("xPos or zPos"));
+    }
+
+    #[test]
+    fn import_rejects_pre_1_16_packing() {
+        let bytes = write_nbt_root(NbtTag::Compound(vec![
+            nbt_field("DataVersion", NbtTag::Int(MIN_IMPORT_DATA_VERSION - 1)),
+            nbt_field(
+                "Level",
+                NbtTag::Compound(vec![
+                    nbt_field("xPos", NbtTag::Int(0)),
+                    nbt_field("zPos", NbtTag::Int(0)),
+                ]),
+            ),
+        ]));
+        let error = match import_chunk_from_nbt(&bytes) {
+            Err(error) => error,
+            Ok(_) => panic!("pre-1.16 chunk was accepted"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("pre-1.16"));
+    }
+
+    #[test]
     fn export_radius_zero_writes_level_and_region_files() {
         let out = std::env::temp_dir().join(format!(
             "voxelpopuli-java17-export-test-{}",
@@ -1469,14 +1658,15 @@ mod tests {
         let summary = export_classic_java_world(9999, &config).unwrap();
         assert_eq!(summary.chunks, 1);
 
-        let imported = import_classic_java_world(&out).unwrap();
-        assert_eq!(imported.len(), 1);
+        let streamed = import_classic_java_chunk(&out, 0, 0).unwrap().unwrap();
+        assert_eq!((streamed.x, streamed.z), (0, 0));
+        assert!(import_classic_java_chunk(&out, 1, 0).unwrap().is_none());
 
         let mut original = Chunk::new(0, 0, 9999);
         original.generate();
 
-        assert_eq!(imported[0].x, original.x);
-        assert_eq!(imported[0].z, original.z);
+        assert_eq!(streamed.x, original.x);
+        assert_eq!(streamed.z, original.z);
 
         let mut matching_blocks = 0;
         let mut total_blocks = 0;
@@ -1486,7 +1676,7 @@ mod tests {
                 for z in 0..CHUNK_DEPTH {
                     total_blocks += 1;
                     let orig = original.blocks[x][y][z];
-                    let imp = imported[0].blocks[x][y][z];
+                    let imp = streamed.blocks[x][y][z];
                     if imp == orig {
                         matching_blocks += 1;
                     } else {
