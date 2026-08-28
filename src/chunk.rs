@@ -360,7 +360,7 @@ fn compute_lighting(
                 let emitted = match blocks[x][y][z] {
                     BlockType::Torch => 14,
                     BlockType::RedstoneTorch => 7,
-                    BlockType::Lava => 15,
+                    BlockType::Lava | BlockType::Fire => 15,
                     _ => 0,
                 };
                 if emitted > 0 {
@@ -1328,10 +1328,10 @@ impl Chunk {
             self.dirty = true;
             if matches!(
                 block,
-                BlockType::Torch | BlockType::RedstoneTorch | BlockType::Lava
+                BlockType::Torch | BlockType::RedstoneTorch | BlockType::Lava | BlockType::Fire
             ) || matches!(
                 old_block,
-                BlockType::Torch | BlockType::RedstoneTorch | BlockType::Lava
+                BlockType::Torch | BlockType::RedstoneTorch | BlockType::Lava | BlockType::Fire
             ) {
                 self.calculate_lighting();
             }
@@ -1494,7 +1494,7 @@ impl ChunkData {
             for y in 0..CHUNK_HEIGHT {
                 for z in 0..CHUNK_DEPTH {
                     let block = self.blocks[x][y][z];
-                    if block == BlockType::Air {
+                    if block == BlockType::Air || block == BlockType::Fire {
                         continue;
                     }
 

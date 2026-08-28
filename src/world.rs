@@ -224,7 +224,11 @@ pub struct World {
     pub chunks_generated_count: i32,
     pub active_water: std::collections::HashSet<(i32, i32, i32)>,
     pub active_falling: std::collections::HashSet<(i32, i32, i32)>,
+    pub active_fire: std::collections::HashSet<(i32, i32, i32)>,
     pub water_tick_timer: f32,
+    fire_timer: f32,
+    burn_timer: f32,
+    fire_meshes: [renderer::Mesh; 8],
     pub visible_chunks: Vec<usize>,
     pub meshing_in_flight: i32,
     next_mesh_job_id: u64,
@@ -283,7 +287,11 @@ impl World {
             chunks_generated_count: 0,
             active_water: std::collections::HashSet::new(),
             active_falling: std::collections::HashSet::new(),
+            active_fire: std::collections::HashSet::new(),
             water_tick_timer: 0.0,
+            fire_timer: 0.0,
+            burn_timer: 0.0,
+            fire_meshes: std::array::from_fn(crate::fire::build_frame_mesh),
             visible_chunks: Vec::new(),
             meshing_in_flight: 0,
             next_mesh_job_id: 1,
@@ -848,6 +856,11 @@ impl World {
                 self.active_water.insert((x, y, z));
             } else if block == BlockType::Sand || block == BlockType::Gravel {
                 self.active_falling.insert((x, y, z));
+            }
+            if block == BlockType::Fire {
+                self.active_fire.insert((x, y, z));
+            } else {
+                self.active_fire.remove(&(x, y, z));
             }
             // Neighbors might now be able to flow or fall
             let neighbors = [
@@ -1525,6 +1538,26 @@ impl World {
         // --- Physics Simulation ---
         self.update_water(_time);
         self.update_falling_blocks();
+        self.update_fire(_time);
+        let standing_in_fire = self.get_block(
+            player_pos.x.floor() as i32,
+            player_pos.y.floor() as i32,
+            player_pos.z.floor() as i32,
+        ) == BlockType::Fire
+            || self.get_block(
+                player_pos.x.floor() as i32,
+                (player_pos.y + 1.0).floor() as i32,
+                player_pos.z.floor() as i32,
+            ) == BlockType::Fire;
+        if standing_in_fire {
+            self.burn_timer += _time;
+            if self.burn_timer >= 1.0 {
+                self.pending_hurt += 1;
+                self.burn_timer = 0.0;
+            }
+        } else {
+            self.burn_timer = 0.0;
+        }
         self.update_mobs(player_pos, _time, held);
         collected_xp
     }
@@ -2609,6 +2642,147 @@ impl World {
                 self.active_water.insert((nx, ny, nz));
             }
         }
+    }
+
+    pub fn try_ignite(&mut self, x: i32, y: i32, z: i32) -> bool {
+        if !crate::fire::can_occupy(self.get_block(x, y, z)) {
+            return false;
+        }
+        if matches!(self.get_block(x, y, z), BlockType::Water | BlockType::Lava) {
+            return false;
+        }
+        let below = self.get_block(x, y - 1, z);
+        let support = below.is_solid()
+            || crate::fire::is_flammable(below)
+            || crate::fire::is_eternal_fuel(below)
+            || crate::fire::is_flammable(self.get_block(x + 1, y, z))
+            || crate::fire::is_flammable(self.get_block(x - 1, y, z))
+            || crate::fire::is_flammable(self.get_block(x, y, z + 1))
+            || crate::fire::is_flammable(self.get_block(x, y, z - 1));
+        if !support {
+            return false;
+        }
+        self.set_block(x, y, z, BlockType::Fire);
+        true
+    }
+
+    fn update_fire(&mut self, dt: f32) {
+        self.fire_timer += dt;
+        if self.fire_timer < 0.4 {
+            return;
+        }
+        self.fire_timer = 0.0;
+        let cells: Vec<(i32, i32, i32)> = self.active_fire.iter().copied().collect();
+        let mut born = Vec::new();
+        let mut died = Vec::new();
+        let mut ignite_tnt = Vec::new();
+        for (x, y, z) in cells {
+            if self.get_block(x, y, z) != BlockType::Fire {
+                died.push((x, y, z));
+                continue;
+            }
+            if self.get_block(x, y, z) == BlockType::Water {
+                died.push((x, y, z));
+                continue;
+            }
+            let below = self.get_block(x, y - 1, z);
+            let eternal = crate::fire::is_eternal_fuel(below);
+            if !below.is_solid() && !crate::fire::is_flammable(below) && !eternal {
+                died.push((x, y, z));
+                continue;
+            }
+            if crate::fire::is_flammable(below) && rand::random::<f32>() < 0.25 {
+                let replacement = if matches!(below, BlockType::Grass | BlockType::SnowyGrass) {
+                    BlockType::Dirt
+                } else {
+                    BlockType::Air
+                };
+                self.set_block(x, y - 1, z, replacement);
+            }
+            for &(dx, dy, dz) in &[
+                (1i32, 0, 0),
+                (-1, 0, 0),
+                (0, 0, 1),
+                (0, 0, -1),
+                (0, 1, 0),
+                (0, -1, 0),
+            ] {
+                let nb = self.get_block(x + dx, y + dy, z + dz);
+                if nb == BlockType::TNT {
+                    ignite_tnt.push((x + dx, y + dy, z + dz));
+                }
+                if nb == BlockType::Air {
+                    let resting = self.get_block(x + dx, y + dy - 1, z + dz);
+                    let hungry = crate::fire::is_flammable(resting)
+                        || crate::fire::is_flammable(self.get_block(x + dx + 1, y + dy, z + dz))
+                        || crate::fire::is_flammable(self.get_block(x + dx - 1, y + dy, z + dz))
+                        || crate::fire::is_flammable(self.get_block(x + dx, y + dy, z + dz + 1))
+                        || crate::fire::is_flammable(self.get_block(x + dx, y + dy, z + dz - 1));
+                    if hungry {
+                        let chance = if matches!(
+                            resting,
+                            BlockType::Grass | BlockType::SnowyGrass | BlockType::OakLeaves
+                        ) {
+                            0.4
+                        } else {
+                            0.18
+                        };
+                        if rand::random::<f32>() < chance {
+                            born.push((x + dx, y + dy, z + dz));
+                        }
+                    }
+                }
+            }
+            if !eternal && rand::random::<f32>() < 0.18 {
+                died.push((x, y, z));
+            }
+        }
+        for (x, y, z) in ignite_tnt {
+            if self.get_block(x, y, z) == BlockType::TNT {
+                self.set_block(x, y, z, BlockType::Air);
+                self.explosives.push(crate::block::ActiveExplosive {
+                    position: Vec3::new(x as f32, y as f32, z as f32),
+                    velocity: Vec3::new(0.0, 1.2, 0.0),
+                    fuse: 4.0,
+                    initial_fuse: 4.0,
+                });
+            }
+        }
+        for (x, y, z) in born {
+            let _ = self.try_ignite(x, y, z);
+        }
+        for (x, y, z) in died {
+            if self.get_block(x, y, z) == BlockType::Fire {
+                self.set_block(x, y, z, BlockType::Air);
+            }
+        }
+    }
+
+    pub fn render_fire(&self, shader: &Shader, time: f32) {
+        if self.active_fire.is_empty() {
+            return;
+        }
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
+        let (tx, _) = crate::fire::atlas_frame(time);
+        let mesh = &self.fire_meshes[tx as usize];
+        renderer::set_blend(true);
+        renderer::set_depth_write(false);
+        shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
+        shader.set_vec4(
+            shader.get_uniform_location("uColor"),
+            glam::Vec4::new(1.0, 0.4, 1.0, 1.0),
+        );
+        for &(x, y, z) in &self.active_fire {
+            let model = Mat4::from_translation(Vec3::new(x as f32, y as f32, z as f32));
+            shader.set_mat4(shader.get_uniform_location("uModel"), &model);
+            mesh.draw();
+        }
+        shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+        shader.set_vec4(shader.get_uniform_location("uColor"), glam::Vec4::ZERO);
+        renderer::set_depth_write(true);
+        renderer::set_blend(false);
     }
 
     // MC 1.0: Find the smallest flow decay among horizontal neighbors and above

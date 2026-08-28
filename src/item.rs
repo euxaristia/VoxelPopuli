@@ -109,6 +109,7 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
         Water => s(-1.0, TT::None, TM::None, false, Air, 0),
         Lava => s(-1.0, TT::None, TM::None, false, Air, 0),
         Air => s(0.0, TT::None, TM::None, false, Air, 0),
+        Fire => s(0.0, TT::None, TM::None, false, Air, 0),
         MobSpawner => s(5.0, TT::Pickaxe, TM::Wood, true, Air, 0),
 
         // TNT drops itself
@@ -444,6 +445,7 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         Piston => (11, 6),
         StickyPiston => (10, 6),
         PistonHead => (12, 6),
+        Fire => (0, 11),
 
         // Default
         Air => (0, 0),

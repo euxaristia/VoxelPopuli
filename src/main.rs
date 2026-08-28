@@ -5,6 +5,8 @@ mod block;
 mod chunk;
 mod crafting;
 mod explosion;
+mod fire;
+mod hand;
 mod hud;
 mod inventory;
 mod item;
@@ -476,6 +478,13 @@ fn main() {
     let mut fancy_gfx_setting = settings.fancy_graphics;
     let mut export_status_msg = String::new();
     let mut selected_skin = settings.selected_skin;
+    // Built white once: the skin, shirt and trouser colours are applied per
+    // draw through colDiffuse, so changing skin needs no rebuild.
+    let arm_mesh = hand::build_arm_mesh();
+    let torso_mesh = hand::build_torso_mesh();
+    let leg_mesh = hand::build_leg_mesh();
+    let mut held_item_mesh: Option<(BlockType, renderer::Mesh)> = None;
+    let mut hand_swing = 0.0f32;
     world.set_view_distance(render_dist_setting);
     let mut placement_lock: Option<LinearPlacementLock> = None;
     let mut place_repeat_timer = 0.0f32;
@@ -916,6 +925,7 @@ fn main() {
                                     player.attack_cooldown = 0.4;
                                     left_mouse_held = false;
                                     mining_state.reset();
+                                    hand_swing = 1.0;
                                 }
                             }
                             if action == Action::Release {
@@ -933,6 +943,7 @@ fn main() {
                                 let held = inv_slots[player.selected_slot]
                                     .map(|s| s.block)
                                     .unwrap_or(BlockType::Air);
+                                hand_swing = 1.0;
                                 if world.try_feed_animal(eye_pos, look_dir, held) {
                                     if let Some(slot) = inv_slots[player.selected_slot].as_mut() {
                                         slot.count -= 1;
@@ -1309,7 +1320,7 @@ fn main() {
             if is_placing {
                 place_repeat_timer -= delta_time;
                 if place_repeat_timer <= 0.0 {
-                    try_place_block_with_lock(
+                    if try_place_block_with_lock(
                         &mut world,
                         &mut inv_slots,
                         player.selected_slot,
@@ -1317,13 +1328,19 @@ fn main() {
                         look_dir,
                         &player,
                         &mut placement_lock,
-                    );
+                    ) {
+                        hand_swing = 1.0;
+                    }
                     place_repeat_timer = 0.20;
                 }
             } else {
                 placement_lock = None;
                 place_repeat_timer = 0.0;
             }
+        }
+
+        if game_state == GameState::Playing && !player.inventory_open {
+            hand_swing = (hand_swing - delta_time as f32 * 4.0).max(0.0);
         }
 
         let dusk_time = current_time as f32 + 570.0;
@@ -1452,6 +1469,59 @@ fn main() {
         world.render_xp_orbs(world_shader, current_time as f32);
         world.render_mobs(world_shader, player.position);
 
+        if game_state == GameState::Playing && !player.inventory_open {
+            // The player's own torso and legs, so looking down shows them.
+            // Ordinary world geometry, drawn before the view-space arm.
+            if let Some(atlas) = world.atlas.as_ref() {
+                hand::draw_body(
+                    world_shader,
+                    atlas,
+                    &torso_mesh,
+                    &leg_mesh,
+                    &mvp,
+                    selected_skin,
+                    player.position,
+                    camera_angle.x,
+                    player.velocity.x.hypot(player.velocity.z),
+                    current_time as f32,
+                    world.entity_lighting(eye_pos),
+                );
+            }
+            let held_block = inv_slots[player.selected_slot].map(|s| s.block);
+            let item_ref = if let Some(block) = held_block.filter(|b| *b != BlockType::Air) {
+                if held_item_mesh
+                    .as_ref()
+                    .is_none_or(|(cached, _)| *cached != block)
+                {
+                    held_item_mesh = Some((block, hand::build_item_mesh(block)));
+                }
+                held_item_mesh.as_ref().map(|(_, mesh)| mesh)
+            } else {
+                None
+            };
+            if let Some(atlas) = world.atlas.as_ref() {
+                let bob = player.velocity.x.hypot(player.velocity.z)
+                    * (current_time as f32 * 8.0).sin()
+                    * 0.04;
+                // The arm is wound outward like chunk geometry, so it culls
+                // with the pass default instead of turning culling off. It
+                // also builds its own fixed-FOV projection from the aspect
+                // ratio, so the FOV slider does not resize the player's hand.
+                hand::draw(
+                    world_shader,
+                    atlas,
+                    &arm_mesh,
+                    item_ref,
+                    &mvp,
+                    selected_skin,
+                    aspect,
+                    hand_swing,
+                    bob,
+                    world.entity_lighting(eye_pos),
+                );
+            }
+        }
+
         // Resolve the G-buffer, then draw everything that cannot be
         // deferred -- blended decals, particles and the sky discs --
         // forward into the lit HDR target.
@@ -1549,6 +1619,11 @@ fn main() {
         water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), eye_pos);
         water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), sky_c);
         world.render_water(&water_shader, &frustum);
+
+        shader.bind();
+        shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+        shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+        world.render_fire(&shader, current_time as f32);
 
         if fancy_gfx_setting && above_clouds {
             world.render_clouds(&flat_shader, &mvp);

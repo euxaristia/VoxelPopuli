@@ -1860,6 +1860,43 @@ pub fn generate_atlas_data() -> Vec<u8> {
         }
     }
 
+    // Fire sprites (0..8, 11): magenta-rimmed PS1 flames, 8-frame loop.
+    for frame in 0..8 {
+        for x in 0..16i32 {
+            for y in 0..16i32 {
+                let tip = y as f32 / 15.0;
+                let flicker = crate::noise::noise_2d(
+                    x as f32 * 0.45 + frame as f32 * 1.7,
+                    y as f32 * 0.35 + frame as f32 * 0.4,
+                );
+                let half = 1.6 + tip * 5.2 + flicker * 1.8;
+                let dist = (x as f32 - 7.5).abs();
+                if dist > half {
+                    continue;
+                }
+                let heat = ((1.0 - dist / half.max(0.2)) * (0.35 + tip)).clamp(0.0, 1.0);
+                let (r, g, b, a) = if heat > 0.75 {
+                    (255, 250, 220, 255)
+                } else if heat > 0.45 {
+                    (255, 140, 40, 255)
+                } else if heat > 0.2 {
+                    (220, 40, 90, 240)
+                } else {
+                    (140, 20, 180, 180)
+                };
+                let px = frame * 16 + x;
+                let py = 11 * 16 + y;
+                if (0..256).contains(&px) && (0..256).contains(&py) {
+                    let idx = ((py * 256 + px) * 4) as usize;
+                    data[idx] = r;
+                    data[idx + 1] = g;
+                    data[idx + 2] = b;
+                    data[idx + 3] = a;
+                }
+            }
+        }
+    }
+
     data
 }
 
@@ -1903,6 +1940,23 @@ mod tests {
             pale_label_pixels > 50,
             "TNT tile should have a clear label band"
         );
+    }
+
+    #[test]
+    fn fire_tiles_have_transparent_corners_and_a_hot_core() {
+        let data = generate_atlas_data();
+        let [_, _, _, corner_a] = pixel(&data, 0, 11 * TILE_SIZE);
+        assert_eq!(corner_a, 0, "flame tip corners stay transparent");
+        let mut hot = 0;
+        for y in 8..16 {
+            for x in 4..12 {
+                let [r, g, _, a] = pixel(&data, x, 11 * TILE_SIZE + y);
+                if a > 200 && r > 200 && g > 80 {
+                    hot += 1;
+                }
+            }
+        }
+        assert!(hot > 20, "fire base should have a hot core, got {hot}");
     }
 
     #[test]

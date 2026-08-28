@@ -194,11 +194,12 @@ pub enum BlockType {
     Piston,
     StickyPiston,
     PistonHead,
+    Fire,
 }
 
 #[allow(dead_code)]
 impl BlockType {
-    pub const COUNT: usize = 123;
+    pub const COUNT: usize = 124;
 
     pub fn from_u8(value: u8) -> Self {
         if (value as usize) < Self::COUNT {
@@ -296,7 +297,8 @@ impl BlockType {
             | BlockType::RedstoneWire
             | BlockType::RedstoneTorch
             | BlockType::PistonHead
-            | BlockType::Bell => false,
+            | BlockType::Bell
+            | BlockType::Fire => false,
             _ => !self.is_item(),
         }
     }
@@ -353,6 +355,7 @@ impl BlockType {
                 | BlockType::RedstoneTorch
                 | BlockType::PistonHead
                 | BlockType::Bell
+                | BlockType::Fire
         )
     }
 
@@ -395,7 +398,8 @@ impl BlockType {
             | BlockType::Torch
             | BlockType::RedstoneTorch
             | BlockType::Wheat
-            | BlockType::SnowLayer => 0.0,
+            | BlockType::SnowLayer
+            | BlockType::Fire => 0.0,
             _ => 1.0,
         }
     }
@@ -407,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_count() {
-        assert_eq!(BlockType::COUNT, 123);
+        assert_eq!(BlockType::COUNT, 124);
     }
 
     #[test]
@@ -423,6 +427,14 @@ mod tests {
         assert_eq!(BlockType::from_u8(BlockType::COUNT as u8), BlockType::Air);
         assert_eq!(BlockType::from_u8(128), BlockType::Air);
         assert_eq!(BlockType::from_u8(255), BlockType::Air);
+    }
+
+    #[test]
+    fn test_fire_is_a_nonsolid_sprite_block() {
+        assert!(!BlockType::Fire.is_solid());
+        assert!(BlockType::Fire.is_transparent());
+        assert!(!BlockType::Fire.is_item());
+        assert_eq!(BlockType::Fire.blast_resistance(), 0.0);
     }
 
     #[test]
