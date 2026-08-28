@@ -2187,6 +2187,9 @@ impl World {
             }
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
+        // Chunk passes draw with whatever uModel is left bound, so the
+        // per-part matrices must not outlive this function.
+        shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
     }
 
     pub fn get_liquid_level(&self, x: i32, y: i32, z: i32) -> u8 {
@@ -3013,6 +3016,34 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The chunk passes (`render_opaque`/`render_transparent`/`render_water`)
+    /// draw with whatever `uModel` was left bound by the previous pass, so every
+    /// entity pass that writes `uModel` must restore the identity before it
+    /// returns. When `render_mobs` forgot to, the whole transparent chunk layer
+    /// was drawn through the last mob body part's matrix, scattering shrunken
+    /// torches through the sky around each mob.
+    #[test]
+    fn entity_render_passes_restore_the_model_matrix() {
+        let src = include_str!("world.rs");
+        let src = &src[..src.find("#[cfg(test)]").expect("test module")];
+        let mut checked = 0;
+        for body in src.split("\n    pub fn ").skip(1) {
+            let name = body.split('(').next().unwrap_or_default();
+            if !name.starts_with("render_") || !body.contains("set_mat4(loc_model") {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                body.contains("set_mat4(loc_model, &glam::Mat4::IDENTITY)"),
+                "{name} binds uModel but never restores the identity matrix"
+            );
+        }
+        assert!(
+            checked >= 5,
+            "expected every entity pass to be scanned, saw {checked}"
+        );
+    }
 
     #[test]
     fn test_water_lava_collision_creates_obsidian() {
