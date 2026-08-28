@@ -2936,7 +2936,15 @@ impl World {
         }
     }
 
-    pub fn render_opaque(&self, _frustum: &Frustum) {
+    /// Chunk meshes are baked in world coordinates, so every chunk pass draws
+    /// with an identity model matrix. Each pass restates it instead of trusting
+    /// whatever an entity pass happened to leave bound.
+    fn bind_identity_model(shader: &Shader) {
+        shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+    }
+
+    pub fn render_opaque(&self, shader: &Shader, _frustum: &Frustum) {
+        Self::bind_identity_model(shader);
         if let Some(atlas) = &self.atlas {
             atlas.bind(0);
         }
@@ -2949,7 +2957,8 @@ impl World {
         }
     }
 
-    pub fn render_transparent(&self, _frustum: &Frustum) {
+    pub fn render_transparent(&self, shader: &Shader, _frustum: &Frustum) {
+        Self::bind_identity_model(shader);
         crate::renderer::set_blend(true);
         crate::renderer::set_cull(true);
         for &i in &self.visible_chunks {
@@ -2961,7 +2970,8 @@ impl World {
         }
     }
 
-    pub fn render_water(&self, _frustum: &Frustum) {
+    pub fn render_water(&self, shader: &Shader, _frustum: &Frustum) {
+        Self::bind_identity_model(shader);
         crate::renderer::set_blend(true);
         crate::renderer::set_depth_write(false);
         crate::renderer::set_cull(true);
@@ -3043,6 +3053,26 @@ mod tests {
             checked >= 5,
             "expected every entity pass to be scanned, saw {checked}"
         );
+    }
+
+    /// The other half of the same contract: a chunk pass must state the model
+    /// matrix it draws with rather than inheriting the one an entity pass left
+    /// bound.
+    #[test]
+    fn chunk_render_passes_bind_their_own_model_matrix() {
+        let src = include_str!("world.rs");
+        let src = &src[..src.find("#[cfg(test)]").expect("test module")];
+        for name in ["render_opaque", "render_transparent", "render_water"] {
+            let body = src
+                .split(&format!("\n    pub fn {name}("))
+                .nth(1)
+                .unwrap_or_else(|| panic!("{name} not found"));
+            let body = body.split("\n    pub fn ").next().unwrap_or_default();
+            assert!(
+                body.contains("Self::bind_identity_model(shader)"),
+                "{name} draws chunk meshes without binding its own uModel"
+            );
+        }
     }
 
     #[test]

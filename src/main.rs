@@ -1352,7 +1352,7 @@ fn main() {
         shader.set_vec4(shader.get_uniform_location("skyCol"), sky_c);
         let frustum = world::Frustum::from_matrix(&mvp);
         world.compute_visible_chunks(&frustum);
-        world.render_opaque(&frustum);
+        world.render_opaque(&shader, &frustum);
 
         // Render crack overlay on mining target
         if let Some((cx, cy, cz, stage)) = mining_state.crack_stage() {
@@ -1425,11 +1425,10 @@ fn main() {
         }
 
         shader.bind();
-        world.render_transparent(&frustum);
+        world.render_transparent(&shader, &frustum);
 
         water_shader.bind();
         water_shader.set_mat4(water_shader.get_uniform_location("uMVP"), &mvp);
-        water_shader.set_mat4(water_shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
         water_shader.set_float(
             water_shader.get_uniform_location("uTime"),
             current_time as f32,
@@ -1437,7 +1436,7 @@ fn main() {
         water_shader.set_vec3(water_shader.get_uniform_location("sunDir"), sun_dir);
         water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), eye_pos);
         water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), sky_c);
-        world.render_water(&frustum);
+        world.render_water(&water_shader, &frustum);
 
         if fancy_gfx_setting && above_clouds {
             world.render_clouds(&flat_shader, &mvp);
