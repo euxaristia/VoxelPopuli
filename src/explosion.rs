@@ -4,6 +4,11 @@ use glam::Vec3;
 use rand::RngExt;
 use std::collections::HashSet;
 
+/// Minecraft TNT is power 4. Triple that so a single block actually
+/// reshapes terrain instead of nicking a 3-block crater.
+pub const TNT_BLAST_POWER: i32 = 12;
+pub const CREEPER_BLAST_POWER: i32 = 4;
+
 pub fn explosion_entity_damage(distance: f32, blast_size: f32) -> i32 {
     let max_impact_dist = blast_size * 2.0;
     if distance > max_impact_dist {
@@ -38,7 +43,7 @@ fn can_explosion_destroy(block: BlockType) -> bool {
 pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32, player_pos: Vec3) {
     let mut rng = rand::rng();
     let explosion_center = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
-    let size = blast_size as f32; // Standard TNT blast size = 4.0
+    let size = blast_size as f32;
 
     // 1. Raytracing Sphere Pass (Minecraft Vanilla 16x16x16 face sampling)
     let mut destroyed_blocks = HashSet::new();
@@ -104,7 +109,7 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32, playe
     world.explosives.extend(newly_ignited_tnt);
 
     // 3. Shockwave Impulse on Entities (Primed TNT & Mobs)
-    let max_impact_dist = size * 2.0; // 8.0 blocks
+    let max_impact_dist = size * 2.0;
 
     // Shockwave on active TNT entities (chain reaction physics)
     for exp in &mut world.explosives {
@@ -176,6 +181,13 @@ mod tests {
         assert_eq!(explosion_entity_damage(8.0, 4.0), 0);
         assert!(explosion_entity_damage(4.0, 4.0) < 14);
         assert!(explosion_entity_damage(4.0, 4.0) > 0);
+    }
+
+    #[test]
+    fn tnt_is_three_times_minecraft_power() {
+        assert_eq!(TNT_BLAST_POWER, 12);
+        assert_eq!(CREEPER_BLAST_POWER, 4);
+        assert_eq!(TNT_BLAST_POWER, CREEPER_BLAST_POWER * 3);
     }
 
     #[test]

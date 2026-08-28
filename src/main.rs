@@ -510,7 +510,11 @@ fn main() {
 
         if game_state == GameState::Loading {
             // Update world incrementally
-            world.update(Vec3::new(32.5, 0.0, 32.5), current_time as f32);
+            world.update(
+                Vec3::new(32.5, 0.0, 32.5),
+                current_time as f32,
+                BlockType::Air,
+            );
             if !world.is_loading {
                 if let Some(save) = loaded_save.take() {
                     player = save.restore_player();
@@ -920,8 +924,28 @@ fn main() {
                         }
                         if right {
                             if action == Action::Press {
-                                right_mouse_held = true;
-                                place_repeat_timer = 0.0;
+                                let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
+                                let look_dir = Vec3::new(
+                                    camera_angle.y.cos() * camera_angle.x.sin(),
+                                    camera_angle.y.sin(),
+                                    camera_angle.y.cos() * camera_angle.x.cos(),
+                                );
+                                let held = inv_slots[player.selected_slot]
+                                    .map(|s| s.block)
+                                    .unwrap_or(BlockType::Air);
+                                if world.try_feed_animal(eye_pos, look_dir, held) {
+                                    if let Some(slot) = inv_slots[player.selected_slot].as_mut() {
+                                        slot.count -= 1;
+                                        if slot.count == 0 {
+                                            inv_slots[player.selected_slot] = None;
+                                        }
+                                    }
+                                    right_mouse_held = false;
+                                    place_repeat_timer = 0.0;
+                                } else {
+                                    right_mouse_held = true;
+                                    place_repeat_timer = 0.0;
+                                }
                             } else if action == Action::Release {
                                 right_mouse_held = false;
                                 placement_lock = None;
@@ -1202,7 +1226,10 @@ fn main() {
                 current_time,
             );
             let t_wu = std::time::Instant::now();
-            let earned_xp = world.update(player.position, delta_time as f32);
+            let held = inv_slots[player.selected_slot]
+                .map(|s| s.block)
+                .unwrap_or(BlockType::Air);
+            let earned_xp = world.update(player.position, delta_time as f32, held);
             profiler.world_update_ms = t_wu.elapsed().as_secs_f32() * 1000.0;
             if earned_xp > 0 {
                 player.add_xp(earned_xp);

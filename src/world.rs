@@ -213,7 +213,7 @@ pub struct World {
     pub arrows: Vec<crate::block::ArrowEntity>,
     pub xp_orbs: Vec<crate::block::XpOrbEntity>,
     pub particles: Vec<crate::block::Particle>,
-    pub detonations: Vec<glam::Vec3>,
+    pub detonations: Vec<(glam::Vec3, i32)>,
     pub tnt_mesh: renderer::Mesh,
     pub spark_mesh: renderer::Mesh,
     pub particle_mesh: renderer::Mesh,
@@ -712,12 +712,16 @@ impl World {
     }
 
     pub fn collect_mob_drops(&mut self, mob: Mob) {
+        if mob.is_baby() {
+            return;
+        }
         if let Some((block, count)) = mob.drop_item() {
             self.pending_drops.push((block, count as u32));
         }
         let xp_val = match mob.kind {
             MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper => 5,
             MobKind::Golem => 10,
+            MobKind::Pig | MobKind::Cow | MobKind::Sheep => 1 + (rand::random::<u32>() % 3),
             _ => 2,
         };
         self.xp_orbs.push(crate::block::XpOrbEntity {
@@ -1095,7 +1099,7 @@ impl World {
         all_present && self.gen_in_flight.is_empty()
     }
 
-    pub fn update(&mut self, player_pos: Vec3, _time: f32) -> u32 {
+    pub fn update(&mut self, player_pos: Vec3, _time: f32, held: BlockType) -> u32 {
         let pcx = (player_pos.x / CHUNK_WIDTH as f32).floor() as i32;
         let pcz = (player_pos.z / CHUNK_DEPTH as f32).floor() as i32;
 
@@ -1362,7 +1366,8 @@ impl World {
             }
             if self.explosives[i].fuse <= 0.0 {
                 let e = self.explosives.remove(i);
-                self.detonations.push(e.position);
+                self.detonations
+                    .push((e.position, crate::explosion::TNT_BLAST_POWER));
             } else {
                 i += 1;
             }
@@ -1370,14 +1375,14 @@ impl World {
         self.particles.extend(fuse_particles);
 
         // --- Process Detonations ---
-        let dets: Vec<glam::Vec3> = std::mem::take(&mut self.detonations);
-        for pos in dets {
+        let dets = std::mem::take(&mut self.detonations);
+        for (pos, power) in dets {
             crate::explosion::explode(
                 self,
                 pos.x.floor() as i32,
                 pos.y.floor() as i32,
                 pos.z.floor() as i32,
-                4,
+                power,
                 player_pos,
             );
         }
@@ -1520,7 +1525,7 @@ impl World {
         // --- Physics Simulation ---
         self.update_water(_time);
         self.update_falling_blocks();
-        self.update_mobs(player_pos, _time);
+        self.update_mobs(player_pos, _time, held);
         collected_xp
     }
 
@@ -1688,12 +1693,249 @@ impl World {
         false
     }
 
-    pub fn update_mobs(&mut self, player_pos: Vec3, dt: f32) {
+    fn block_at_feet(&self, pos: Vec3) -> BlockType {
+        self.get_block(
+            pos.x.floor() as i32,
+            pos.y.floor() as i32,
+            pos.z.floor() as i32,
+        )
+    }
+
+    fn animal_in_water(&self, mob: &Mob) -> bool {
+        matches!(
+            self.block_at_feet(mob.position + Vec3::new(0.0, 0.2, 0.0)),
+            BlockType::Water
+        )
+    }
+
+    fn grass_under(&self, pos: Vec3) -> bool {
+        let b = self.get_block(
+            pos.x.floor() as i32,
+            (pos.y - 0.05).floor() as i32,
+            pos.z.floor() as i32,
+        );
+        matches!(b, BlockType::Grass | BlockType::SnowyGrass)
+    }
+
+    /// LandRandomPos: a standable column that is not water, within xz/y.
+    fn pick_land_pos(&self, from: Vec3, xz: i32, y: i32) -> Option<(f32, f32)> {
+        for _ in 0..10 {
+            let span_xz = (xz * 2 + 1) as u32;
+            let span_y = (y * 2 + 1) as u32;
+            let dx = (rand::random::<u32>() % span_xz) as i32 - xz;
+            let dz = (rand::random::<u32>() % span_xz) as i32 - xz;
+            let dy = (rand::random::<u32>() % span_y) as i32 - y;
+            let x = from.x + dx as f32;
+            let z = from.z + dz as f32;
+            let gy = from.y + dy as f32;
+            let ix = x.floor() as i32;
+            let iz = z.floor() as i32;
+            let iy = gy.floor() as i32;
+            let below = self.get_block(ix, iy - 1, iz);
+            let feet = self.get_block(ix, iy, iz);
+            let head = self.get_block(ix, iy + 1, iz);
+            if below.is_solid()
+                && !matches!(feet, BlockType::Water | BlockType::Lava)
+                && !feet.is_solid()
+                && !head.is_solid()
+            {
+                return Some((ix as f32 + 0.5, iz as f32 + 0.5));
+            }
+        }
+        None
+    }
+
+    fn steer_toward(mob: &mut Mob, dest_x: f32, dest_z: f32, speed: f32) -> bool {
+        let dx = dest_x - mob.position.x;
+        let dz = dest_z - mob.position.z;
+        let dist = (dx * dx + dz * dz).sqrt();
+        if dist < 1.0 {
+            mob.walk_speed = 0.0;
+            return true;
+        }
+        mob.yaw = dz.atan2(dx);
+        mob.walk_speed = speed;
+        false
+    }
+
+    /// Java Cow/Pig/Sheep goal stack, evaluated in priority order.
+    fn tick_animal_goals(
+        &mut self,
+        mob: &mut Mob,
+        parent_xz: Option<(f32, f32)>,
+        player_pos: Vec3,
+        held: BlockType,
+        dt: f32,
+    ) {
+        mob.animal.panic_time = (mob.animal.panic_time - dt).max(0.0);
+        mob.animal.look_time = (mob.animal.look_time - dt).max(0.0);
+        mob.animal.love_time = (mob.animal.love_time - dt).max(0.0);
+        mob.animal.breed_cooldown = (mob.animal.breed_cooldown - dt).max(0.0);
+        if mob.animal.growth > 0.0 {
+            mob.animal.growth = (mob.animal.growth - dt).max(0.0);
+        }
+
+        let base = mob.walk_speed_mps();
+        if self.animal_in_water(mob) {
+            // FloatGoal: swim up until the head clears the surface.
+            mob.velocity.y = mob.velocity.y.max(4.0);
+        }
+
+        // PanicGoal
+        if mob.animal.panic_time > 0.0 {
+            if mob.animal.dest.is_none() {
+                mob.animal.dest = self.pick_land_pos(mob.position, 5, 4);
+            }
+            if let Some((x, z)) = mob.animal.dest {
+                if Self::steer_toward(mob, x, z, base * mob.panic_multiplier()) {
+                    mob.animal.dest = self.pick_land_pos(mob.position, 5, 4);
+                }
+            } else {
+                mob.yaw += dt * 3.0;
+                mob.walk_speed = base * mob.panic_multiplier();
+            }
+            return;
+        }
+
+        // FollowParentGoal
+        if mob.is_baby()
+            && let Some((x, z)) = parent_xz
+        {
+            let dx = x - mob.position.x;
+            let dz = z - mob.position.z;
+            if dx * dx + dz * dz > 4.0 {
+                Self::steer_toward(mob, x, z, base * 1.1);
+                return;
+            }
+        }
+
+        // TemptGoal
+        if let Some(food) = mob.food_item()
+            && held == food
+        {
+            let dx = player_pos.x - mob.position.x;
+            let dz = player_pos.z - mob.position.z;
+            let dist = (dx * dx + dz * dz).sqrt();
+            if dist < 10.0 && dist > 0.05 {
+                mob.yaw = dz.atan2(dx);
+                mob.walk_speed = if dist > 2.0 {
+                    base * mob.tempt_multiplier()
+                } else {
+                    0.0
+                };
+                return;
+            }
+        }
+
+        // EatBlockGoal (sheep)
+        if mob.kind == MobKind::Sheep {
+            if mob.animal.eat_time > 0.0 {
+                mob.animal.eat_time -= dt;
+                mob.walk_speed = 0.0;
+                if mob.animal.eat_time <= 0.0 && self.grass_under(mob.position) {
+                    let x = mob.position.x.floor() as i32;
+                    let y = (mob.position.y - 0.05).floor() as i32;
+                    let z = mob.position.z.floor() as i32;
+                    self.set_block(x, y, z, BlockType::Dirt);
+                }
+                return;
+            }
+            // 1/1000 per Java tick.
+            if self.grass_under(mob.position) && rand::random::<f32>() < dt * 0.02 {
+                mob.animal.eat_time = 2.0;
+                mob.walk_speed = 0.0;
+                return;
+            }
+        }
+
+        // WaterAvoidingRandomStrollGoal
+        if let Some((x, z)) = mob.animal.dest {
+            if Self::steer_toward(mob, x, z, base) {
+                mob.animal.dest = None;
+            }
+            return;
+        }
+
+        mob.walk_speed = 0.0;
+        // 1/120 per tick to start a stroll.
+        if rand::random::<f32>() < dt / 6.0 {
+            mob.animal.dest = self.pick_land_pos(mob.position, 10, 7);
+            if let Some((x, z)) = mob.animal.dest {
+                Self::steer_toward(mob, x, z, base);
+                return;
+            }
+        }
+
+        // LookAtPlayerGoal, then RandomLookAroundGoal.
+        let pdx = player_pos.x - mob.position.x;
+        let pdz = player_pos.z - mob.position.z;
+        let pdist = (pdx * pdx + pdz * pdz).sqrt();
+        if mob.animal.look_time > 0.0 {
+            if pdist < 6.0 && pdist > 0.05 {
+                mob.yaw = pdz.atan2(pdx);
+            }
+            return;
+        }
+        if pdist < 6.0 && rand::random::<f32>() < dt * 0.4 {
+            mob.animal.look_time = 2.0 + rand::random::<f32>() * 2.0;
+            return;
+        }
+        if rand::random::<f32>() < dt * 1.0 {
+            mob.yaw += (rand::random::<f32>() - 0.5) * 1.2;
+            mob.animal.look_time = 1.0 + rand::random::<f32>();
+        }
+    }
+
+    pub fn try_feed_animal(&mut self, origin: Vec3, direction: Vec3, item: BlockType) -> bool {
+        let dir = direction.normalize_or_zero();
+        if dir.length_squared() < 0.01 {
+            return false;
+        }
+        let mut best: Option<usize> = None;
+        let mut best_dist = 5.0f32;
+        for (index, mob) in self.mobs.iter().enumerate() {
+            if !mob.is_animal() || mob.food_item() != Some(item) {
+                continue;
+            }
+            let center = mob.position + Vec3::new(0.0, mob.height() * 0.5, 0.0);
+            let to = center - origin;
+            let dist = to.length();
+            if dist > 4.0 || dist < 0.05 {
+                continue;
+            }
+            if to.normalize().dot(dir) < 0.65 {
+                continue;
+            }
+            if dist < best_dist {
+                best_dist = dist;
+                best = Some(index);
+            }
+        }
+        let Some(index) = best else {
+            return false;
+        };
+        let mob = &mut self.mobs[index];
+        if mob.is_baby() {
+            mob.animal.growth *= 0.9;
+            return true;
+        }
+        if mob.animal.breed_cooldown > 0.0 || mob.animal.love_time > 0.0 {
+            return false;
+        }
+        mob.animal.love_time = 30.0;
+        true
+    }
+
+    pub fn update_mobs(&mut self, player_pos: Vec3, dt: f32, held: BlockType) {
         let dt = dt.min(0.1);
         let mut mobs = std::mem::take(&mut self.mobs);
         let mut despawned_villages = Vec::new();
         let mut despawned_natural = Vec::new();
         mobs.retain(|mob| {
+            // Java animals do not despawn. Village mobs stay farther out.
+            if mob.is_animal() {
+                return true;
+            }
             let max_distance = if matches!(mob.kind, MobKind::Villager | MobKind::Golem) {
                 160.0
             } else {
@@ -1719,6 +1961,11 @@ impl World {
         for chunk in despawned_natural {
             self.spawned_natural_chunks.remove(&chunk);
         }
+        let parents: Vec<(MobKind, f32, f32)> = mobs
+            .iter()
+            .filter(|m| m.is_animal() && !m.is_baby())
+            .map(|m| (m.kind, m.position.x, m.position.z))
+            .collect();
         for mob in &mut mobs {
             // Freeze mobs whose chunk is unloaded so they don't fall
             // through ungenerated terrain.
@@ -1728,25 +1975,41 @@ impl World {
                 continue;
             }
 
-            mob.wander_timer -= dt;
-            if mob.wander_timer <= 0.0 {
-                if rand::random::<f32>() < 0.35 {
-                    mob.walk_speed = 0.0;
+            if mob.is_animal() {
+                let parent_xz = if mob.is_baby() {
+                    parents
+                        .iter()
+                        .filter(|(kind, _, _)| *kind == mob.kind)
+                        .min_by(|a, b| {
+                            let da = (a.1 - mob.position.x).hypot(a.2 - mob.position.z);
+                            let db = (b.1 - mob.position.x).hypot(b.2 - mob.position.z);
+                            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(_, x, z)| (*x, *z))
                 } else {
-                    mob.yaw = rand::random::<f32>() * std::f32::consts::TAU;
+                    None
+                };
+                self.tick_animal_goals(mob, parent_xz, player_pos, held, dt);
+            } else {
+                mob.wander_timer -= dt;
+                if mob.wander_timer <= 0.0 {
+                    if rand::random::<f32>() < 0.35 {
+                        mob.walk_speed = 0.0;
+                    } else {
+                        mob.yaw = rand::random::<f32>() * std::f32::consts::TAU;
+                        mob.walk_speed = mob.base_speed();
+                    }
+                    mob.wander_timer = 1.5 + rand::random::<f32>() * 3.5;
+                }
+                let to_home = Vec3::new(
+                    mob.home.x - mob.position.x,
+                    0.0,
+                    mob.home.z - mob.position.z,
+                );
+                if to_home.length() > mob.leash_range() {
+                    mob.yaw = to_home.z.atan2(to_home.x);
                     mob.walk_speed = mob.base_speed();
                 }
-                mob.wander_timer = 1.5 + rand::random::<f32>() * 3.5;
-            }
-            // Head back when wandering past the leash
-            let to_home = Vec3::new(
-                mob.home.x - mob.position.x,
-                0.0,
-                mob.home.z - mob.position.z,
-            );
-            if to_home.length() > mob.leash_range() {
-                mob.yaw = to_home.z.atan2(to_home.x);
-                mob.walk_speed = mob.base_speed();
             }
 
             mob.attack_cooldown = (mob.attack_cooldown - dt).max(0.0);
@@ -1762,7 +2025,8 @@ impl World {
                 if mob.kind == MobKind::Creeper && player_dist < 2.2 {
                     mob.walk_speed = 0.0;
                     if mob.attack_cooldown <= 0.0 {
-                        self.detonations.push(mob.position);
+                        self.detonations
+                            .push((mob.position, crate::explosion::CREEPER_BLAST_POWER));
                         mob.health = 0.0;
                     }
                 } else if mob.kind == MobKind::Zombie
@@ -1823,10 +2087,13 @@ impl World {
                     up.y += 1.0;
                     if !self.mob_box_blocked(up, hw, height) {
                         mob.position = up;
+                    } else if mob.is_animal() {
+                        mob.animal.dest = None;
                     } else {
-                        // Walled in: re-roll direction soon
                         mob.wander_timer = mob.wander_timer.min(0.2);
                     }
+                } else if mob.is_animal() {
+                    mob.animal.dest = None;
                 } else {
                     mob.wander_timer = mob.wander_timer.min(0.2);
                 }
@@ -1848,6 +2115,34 @@ impl World {
                 mob.velocity.y = 0.0;
             }
         }
+
+        let mut births = Vec::new();
+        for i in 0..mobs.len() {
+            if !mobs[i].is_animal() || mobs[i].is_baby() || mobs[i].animal.love_time <= 0.0 {
+                continue;
+            }
+            for j in (i + 1)..mobs.len() {
+                if mobs[j].kind != mobs[i].kind
+                    || mobs[j].is_baby()
+                    || mobs[j].animal.love_time <= 0.0
+                {
+                    continue;
+                }
+                if mobs[i].position.distance(mobs[j].position) > 8.0 {
+                    continue;
+                }
+                let mid = (mobs[i].position + mobs[j].position) * 0.5;
+                let mut baby = Mob::new(mobs[i].kind, mid, mid, mobs[i].variant);
+                baby.animal.growth = 1200.0;
+                births.push(baby);
+                mobs[i].animal.love_time = 0.0;
+                mobs[j].animal.love_time = 0.0;
+                mobs[i].animal.breed_cooldown = 300.0;
+                mobs[j].animal.breed_cooldown = 300.0;
+                break;
+            }
+        }
+        mobs.extend(births);
         mobs.retain(|mob| mob.health > 0.0);
         self.mobs = mobs;
         let player_chunk = (
@@ -1880,7 +2175,10 @@ impl World {
                 continue;
             }
             shader.set_vec4(loc_light, self.entity_lighting(mob.position));
-            let base = Mat4::from_translation(mob.position) * Mat4::from_rotation_y(-mob.yaw);
+            let scale = if mob.is_baby() { 0.5 } else { 1.0 };
+            let base = Mat4::from_translation(mob.position)
+                * Mat4::from_rotation_y(-mob.yaw)
+                * Mat4::from_scale(Vec3::splat(scale));
             let part = |mesh: &Mesh, center: Vec3, size: Vec3, tint: glam::Vec4| {
                 shader.set_vec4(loc_diff, tint);
                 let model =
