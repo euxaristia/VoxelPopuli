@@ -19,6 +19,24 @@ const UNIFORM_STRIDE: usize = 256;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+// Deferred G-buffer attachments (Vibrant Visuals geometry pass).
+//   albedo    RGB base color, A alpha coverage. sRGB so the hardware does
+//             the encode on write and the decode on read, which keeps dark
+//             albedo out of the banding an 8-bit linear store would cause.
+//   normal    world-space normal, XYZ; float, because an 8-bit encode
+//             visibly facets smooth specular highlights.
+//   mers      metalness / emissive / roughness / subsurface, one byte each,
+//             matching the packed MERS texture channel order.
+//   lighting  the terms the mesher already baked per vertex: R sky
+//             visibility, G block light, B ambient occlusion.
+const GBUFFER_ALBEDO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const GBUFFER_NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const GBUFFER_MERS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+const GBUFFER_LIGHTING_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+// Scene radiance before tone mapping. Illuminance is authored in lux, so
+// the lighting pass routinely writes values in the thousands.
+const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 fn uniform_offset(name: &str) -> i32 {
     match name {
         "uMVP" => 0,
@@ -32,6 +50,7 @@ fn uniform_offset(name: &str) -> i32 {
         "time" => 204,
         "uScreenSize" => 208,
         "uBodyType" => 216,
+        "uHdrScale" => 220,
         // Unknown names behave like GL's -1 location: sets are ignored.
         _ => -1,
     }
@@ -68,6 +87,100 @@ enum Target {
         color: wgpu::TextureView,
         depth: wgpu::TextureView,
     },
+    /// Deferred geometry pass: four color attachments plus depth.
+    GBuffer {
+        albedo: wgpu::TextureView,
+        normal: wgpu::TextureView,
+        mers: wgpu::TextureView,
+        lighting: wgpu::TextureView,
+        depth: wgpu::TextureView,
+    },
+    /// The lighting resolve. No depth attachment: the resolve writes every
+    /// pixel, and it *samples* the G-buffer depth, which a pass may not do
+    /// while also holding that texture as a depth attachment.
+    HdrResolve {
+        color: wgpu::TextureView,
+    },
+    /// Scene radiance in lux, with the G-buffer depth bound so forward
+    /// transparents test against the geometry that was already resolved.
+    Hdr {
+        color: wgpu::TextureView,
+        depth: wgpu::TextureView,
+    },
+}
+
+/// The attachment layout of a target. Pipelines are compatible across
+/// targets of the same kind, so this and not the view identity is what
+/// keys the pipeline cache.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum TargetKind {
+    Surface,
+    Offscreen,
+    GBuffer,
+    Hdr,
+}
+
+impl Target {
+    fn kind(&self) -> TargetKind {
+        match self {
+            Target::Surface => TargetKind::Surface,
+            Target::Offscreen { .. } => TargetKind::Offscreen,
+            Target::GBuffer { .. } => TargetKind::GBuffer,
+            Target::HdrResolve { .. } | Target::Hdr { .. } => TargetKind::Hdr,
+        }
+    }
+
+    fn color_views(&self, frame_view: &wgpu::TextureView) -> Vec<wgpu::TextureView> {
+        match self {
+            Target::Surface => vec![frame_view.clone()],
+            Target::Offscreen { color, .. }
+            | Target::Hdr { color, .. }
+            | Target::HdrResolve { color } => vec![color.clone()],
+            Target::GBuffer {
+                albedo,
+                normal,
+                mers,
+                lighting,
+                ..
+            } => vec![
+                albedo.clone(),
+                normal.clone(),
+                mers.clone(),
+                lighting.clone(),
+            ],
+        }
+    }
+
+    fn depth_view<'a>(
+        &'a self,
+        surface_depth: &'a wgpu::TextureView,
+    ) -> Option<&'a wgpu::TextureView> {
+        match self {
+            Target::Surface => Some(surface_depth),
+            Target::Offscreen { depth, .. }
+            | Target::GBuffer { depth, .. }
+            | Target::Hdr { depth, .. } => Some(depth),
+            Target::HdrResolve { .. } => None,
+        }
+    }
+}
+
+impl TargetKind {
+    /// Formats of each color attachment, in binding order. `surface` is
+    /// passed in because the swapchain format is chosen at init.
+    fn color_formats(self, surface: wgpu::TextureFormat) -> Vec<wgpu::TextureFormat> {
+        match self {
+            TargetKind::Surface => vec![surface],
+            TargetKind::Offscreen => vec![OFFSCREEN_FORMAT],
+            TargetKind::GBuffer => vec![
+                GBUFFER_ALBEDO_FORMAT,
+                GBUFFER_NORMAL_FORMAT,
+                GBUFFER_MERS_FORMAT,
+                GBUFFER_LIGHTING_FORMAT,
+            ],
+            TargetKind::Hdr => vec![HDR_FORMAT],
+        }
+    }
 }
 
 // A pooled vertex buffer with a stable identity for rebind elision.
@@ -91,11 +204,27 @@ struct DrawRec {
     indirect: Option<wgpu::Buffer>,
 }
 
+// A fullscreen step: the deferred lighting resolve, tone mapping, and the
+// post passes that follow them. These bring their own pipeline and bind
+// groups instead of going through the GL-style state machine, because they
+// read several textures at once and have no vertex buffer.
+struct FullscreenRec {
+    pipeline: Arc<wgpu::RenderPipeline>,
+    bind_groups: Vec<wgpu::BindGroup>,
+}
+
+// Steps are one ordered list so a fullscreen resolve lands between the
+// draws that precede and follow it, rather than being appended to the pass.
+enum Step {
+    Draw(DrawRec),
+    Fullscreen(FullscreenRec),
+}
+
 struct PassRec {
     target: Target,
     clear_color: Option<[f64; 4]>,
     clear_depth: bool,
-    draws: Vec<DrawRec>,
+    steps: Vec<Step>,
 }
 
 impl PassRec {
@@ -104,8 +233,27 @@ impl PassRec {
             target,
             clear_color: None,
             clear_depth: false,
-            draws: Vec::new(),
+            steps: Vec::new(),
         }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    fn draws(&self) -> impl Iterator<Item = &DrawRec> {
+        self.steps.iter().filter_map(|s| match s {
+            Step::Draw(draw) => Some(draw),
+            Step::Fullscreen(_) => None,
+        })
+    }
+
+    fn push_draw(&mut self, draw: DrawRec) {
+        self.steps.push(Step::Draw(draw));
+    }
+
+    fn last_draw(&self) -> Option<&DrawRec> {
+        self.draws().last()
     }
 }
 
@@ -113,7 +261,7 @@ impl PassRec {
 struct PipeKey {
     shader_id: usize,
     flags: StateFlags,
-    format: wgpu::TextureFormat,
+    kind: TargetKind,
 }
 
 // Persistent GPU-resident mirror of World's chunk pool, so chunk meshing can
@@ -162,6 +310,16 @@ struct Ctx {
     uniform_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
+    // Deferred rendering resources. The layouts, the lighting pipeline and
+    // the tone-map module outlive any particular resolution; the targets
+    // themselves live in `deferred` and are rebuilt on resize.
+    deferred_uniform_layout: wgpu::BindGroupLayout,
+    gbuffer_layout: wgpu::BindGroupLayout,
+    hdr_layout: wgpu::BindGroupLayout,
+    lighting_pipeline: Arc<wgpu::RenderPipeline>,
+    tonemap_module: wgpu::ShaderModule,
+    tonemap_layout: wgpu::PipelineLayout,
+    deferred: Option<Deferred>,
     sampler: wgpu::Sampler,
     white_texture: wgpu::BindGroup,
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
@@ -200,23 +358,27 @@ fn with_ctx<R>(f: impl FnOnce(&mut Ctx) -> R) -> R {
     CTX.with(|c| f(c.borrow_mut().as_mut().expect("renderer not initialized")))
 }
 
+fn make_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("depth"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        // TEXTURE_BINDING so the deferred lighting pass can read depth back
+        // to rebuild world position.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
+}
+
 fn make_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
-    device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some("depth"),
-            size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        })
-        .create_view(&wgpu::TextureViewDescriptor::default())
+    make_depth_texture(device, width, height).create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
@@ -332,6 +494,85 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
         ..Default::default()
     });
 
+    // --- Deferred layouts and pipelines -------------------------------
+    let deferred_uniform_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("deferred uniforms"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(DEFERRED_UNIFORM_SIZE),
+                },
+                count: None,
+            }],
+        });
+    // Every G-buffer read is a textureLoad at the fragment's own pixel, so
+    // these are unfilterable and there is no sampler.
+    let color_attachment_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let gbuffer_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("gbuffer"),
+        entries: &[
+            color_attachment_entry(0),
+            color_attachment_entry(1),
+            color_attachment_entry(2),
+            color_attachment_entry(3),
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ],
+    });
+    let hdr_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("hdr scene"),
+        entries: &[color_attachment_entry(0)],
+    });
+
+    let load_shader = |name: &str| -> wgpu::ShaderModule {
+        let path = format!("assets/shaders/{name}");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to load shader {path}: {e}"));
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(name),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        })
+    };
+    let lighting_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("deferred lighting"),
+        bind_group_layouts: &[Some(&deferred_uniform_layout), Some(&gbuffer_layout)],
+        immediate_size: 0,
+    });
+    let tonemap_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("tonemap"),
+        bind_group_layouts: &[Some(&deferred_uniform_layout), Some(&hdr_layout)],
+        immediate_size: 0,
+    });
+    let lighting_pipeline = Arc::new(build_fullscreen_pipeline(
+        &device,
+        &lighting_layout,
+        &load_shader("deferred_lighting.wgsl"),
+        &[HDR_FORMAT],
+        false,
+    ));
+    let tonemap_module = load_shader("tonemap.wgsl");
+
     let ctx = Ctx {
         white_texture: make_texture_bind_group(
             &device,
@@ -354,6 +595,13 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
         uniform_layout,
         texture_layout,
         pipeline_layout,
+        deferred_uniform_layout,
+        gbuffer_layout,
+        hdr_layout,
+        lighting_pipeline,
+        tonemap_module,
+        tonemap_layout,
+        deferred: None,
         sampler,
         pipelines: HashMap::new(),
         ubo: None,
@@ -1197,7 +1445,7 @@ fn gpu_mesh_m3_draw_impl(tinted: bool) {
                     f.blend, f.depth_test, f.depth_write, f.cull, f.polygon_offset
                 )
             };
-            if let Some(prev) = c.passes.last().unwrap().draws.last() {
+            if let Some(prev) = c.passes.last().unwrap().last_draw() {
                 println!(
                     "[M3 debug] prev draw: shader={} {} uoff={} tex={} buf={} count={}",
                     prev.shader.id,
@@ -1218,7 +1466,7 @@ fn gpu_mesh_m3_draw_impl(tinted: bool) {
                 debug_vertex_count
             );
         }
-        c.passes.last_mut().unwrap().draws.push(DrawRec {
+        c.passes.last_mut().unwrap().push_draw(DrawRec {
             shader,
             flags,
             uniform_offset,
@@ -1323,7 +1571,7 @@ pub fn set_polygon_offset(on: bool) {
 pub fn clear(r: f32, g: f32, b: f32, a: f32) {
     with_ctx(|c| {
         let target = c.passes.last().unwrap().target.clone();
-        let pass = if c.passes.last().unwrap().draws.is_empty() {
+        let pass = if c.passes.last().unwrap().is_empty() {
             c.passes.last_mut().unwrap()
         } else {
             c.passes.push(PassRec::new(target));
@@ -1335,24 +1583,40 @@ pub fn clear(r: f32, g: f32, b: f32, a: f32) {
 }
 
 fn switch_target(target: Target) {
-    with_ctx(|c| {
-        let last = c.passes.last().unwrap();
-        if last.target == target {
-            return;
-        }
-        if last.draws.is_empty() && last.clear_color.is_none() {
-            c.passes.last_mut().unwrap().target = target;
-            return;
-        }
-        c.passes.push(PassRec::new(target));
-    });
+    with_ctx(|c| switch_target_inner(c, target));
+}
+
+fn switch_target_inner(c: &mut Ctx, target: Target) {
+    let last = c.passes.last().unwrap();
+    if last.target == target {
+        return;
+    }
+    if last.is_empty() && last.clear_color.is_none() {
+        c.passes.last_mut().unwrap().target = target;
+        return;
+    }
+    c.passes.push(PassRec::new(target));
 }
 
 static SHADER_IDS: AtomicUsize = AtomicUsize::new(0);
 
+// A fresh shader's uniforms are zero except uHdrScale, which is 1.0: the
+// forward path is display-referred and must not be scaled. Only draws
+// aimed at the HDR target raise it.
+fn initial_uniform_staging() -> [u8; UNIFORM_SIZE] {
+    let mut staging = [0u8; UNIFORM_SIZE];
+    let offset = uniform_offset("uHdrScale") as usize;
+    staging[offset..offset + 4].copy_from_slice(&1.0f32.to_le_bytes());
+    staging
+}
+
 struct ShaderInner {
     id: usize,
     module: wgpu::ShaderModule,
+    // How many @location outputs the fragment entry point writes. Targets
+    // past this many are left unwritten rather than validated against a
+    // shader that has nothing to put in them.
+    outputs: usize,
     staging: RefCell<[u8; UNIFORM_SIZE]>,
     // Draws reuse the last uniform slot while no set_* happened this frame.
     dirty: std::cell::Cell<bool>,
@@ -1365,7 +1629,14 @@ pub struct Shader {
 }
 
 impl Shader {
+    /// Compiles a shader whose fragment stage writes one color attachment.
     pub fn new(source: &str) -> Result<Self, String> {
+        Self::with_outputs(source, 1)
+    }
+
+    /// Compiles a shader that writes `outputs` color attachments, for the
+    /// deferred geometry pass.
+    pub fn with_outputs(source: &str, outputs: usize) -> Result<Self, String> {
         with_ctx(|c| {
             let scope = c.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let module = c.device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1378,7 +1649,8 @@ impl Shader {
                     inner: Arc::new(ShaderInner {
                         id: SHADER_IDS.fetch_add(1, Ordering::Relaxed),
                         module,
-                        staging: RefCell::new([0; UNIFORM_SIZE]),
+                        outputs,
+                        staging: RefCell::new(initial_uniform_staging()),
                         dirty: std::cell::Cell::new(true),
                         cached_offset: std::cell::Cell::new(0),
                         cached_frame: std::cell::Cell::new(u64::MAX),
@@ -1576,7 +1848,7 @@ impl Mesh {
                 .clone()
                 .unwrap_or_else(|| (0, c.white_texture.clone()));
             let flags = c.state;
-            c.passes.last_mut().unwrap().draws.push(DrawRec {
+            c.passes.last_mut().unwrap().push_draw(DrawRec {
                 shader,
                 flags,
                 uniform_offset,
@@ -1634,6 +1906,390 @@ impl Drop for Mesh {
     }
 }
 
+// ---------------------------------------------------------------------
+// Deferred rendering (Vibrant Visuals)
+//
+// The frame runs: geometry into the G-buffer, a fullscreen lighting
+// resolve into an HDR target, then tone mapping down to whatever target
+// the UI draws onto. The two fullscreen steps bring their own pipelines
+// and bind groups because they sample several textures at once, which the
+// one-texture immediate-mode path cannot express.
+// ---------------------------------------------------------------------
+
+/// Everything the lighting and tone-map shaders need for one frame.
+/// Laid out to match `Deferred` in the WGSL; keep the two in step.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DeferredUniforms {
+    /// Inverse view-projection, for rebuilding world position from depth.
+    pub inv_view_proj: [f32; 16],
+    /// xyz camera position, w exposure multiplier.
+    pub camera_pos_exposure: [f32; 4],
+    /// xyz direction *towards* the sun, w illuminance in lux.
+    pub sun_direction_illuminance: [f32; 4],
+    /// Linear sun color, w unused.
+    pub sun_color: [f32; 4],
+    /// xyz direction towards the moon, w illuminance in lux.
+    pub moon_direction_illuminance: [f32; 4],
+    pub moon_color: [f32; 4],
+    /// Linear ambient color, w illuminance in lux.
+    pub ambient_color_illuminance: [f32; 4],
+    /// x sky intensity, y emissive desaturation, z block-light lux,
+    /// w unused.
+    pub sky_params: [f32; 4],
+    /// Linear sky colors driving both the sky itself and indirect light.
+    pub zenith_color: [f32; 4],
+    pub horizon_color: [f32; 4],
+    /// Rayleigh strength, sun Mie, moon Mie, sun glare shape.
+    pub atmosphere: [f32; 4],
+    /// horizon_blend_stops: min, start, mie_start, max.
+    pub horizon_stops: [f32; 4],
+    /// Linear color of block light (torches and the like), w unused.
+    pub block_light_color: [f32; 4],
+}
+
+impl Default for DeferredUniforms {
+    fn default() -> Self {
+        Self {
+            inv_view_proj: glam::Mat4::IDENTITY.to_cols_array(),
+            camera_pos_exposure: [0.0, 0.0, 0.0, 1.0],
+            sun_direction_illuminance: [0.0, 1.0, 0.0, 100_000.0],
+            sun_color: [1.0, 1.0, 1.0, 0.0],
+            moon_direction_illuminance: [0.0, -1.0, 0.0, 0.27],
+            moon_color: [1.0, 1.0, 1.0, 0.0],
+            ambient_color_illuminance: [1.0, 1.0, 1.0, 0.02],
+            sky_params: [1.0, 0.1, 0.0, 0.0],
+            zenith_color: [0.0, 0.24, 0.37, 0.0],
+            horizon_color: [0.56, 0.71, 1.0, 0.0],
+            atmosphere: [1.0, 1.0, 0.0, 4.0],
+            horizon_stops: [0.0, 0.25, 0.5, 0.25],
+            block_light_color: [1.0, 0.78, 0.5, 0.0],
+        }
+    }
+}
+
+const DEFERRED_UNIFORM_SIZE: u64 = std::mem::size_of::<DeferredUniforms>() as u64;
+
+/// The G-buffer, the HDR scene target, and the pipelines that resolve
+/// them. Rebuilt whenever the render resolution changes.
+struct Deferred {
+    width: u32,
+    height: u32,
+    albedo: wgpu::TextureView,
+    normal: wgpu::TextureView,
+    mers: wgpu::TextureView,
+    lighting: wgpu::TextureView,
+    // Kept as the texture, not a view: the geometry pass needs a render
+    // view and the lighting pass needs a sampleable one.
+    depth: wgpu::Texture,
+    hdr: wgpu::TextureView,
+    // Sampled by the tone-map pass.
+    #[allow(dead_code)]
+    hdr_texture: wgpu::Texture,
+    uniform_buffer: wgpu::Buffer,
+    uniform_group: wgpu::BindGroup,
+    gbuffer_group: wgpu::BindGroup,
+    hdr_group: wgpu::BindGroup,
+    lighting_pipeline: Arc<wgpu::RenderPipeline>,
+    // One tone-map pipeline per output kind: the game renders to the
+    // low-res offscreen target, but a full-res path would go to the
+    // surface, and the two formats need different pipelines.
+    tonemap_pipelines: HashMap<TargetKind, Arc<wgpu::RenderPipeline>>,
+    tonemap_module: wgpu::ShaderModule,
+    tonemap_layout: wgpu::PipelineLayout,
+}
+
+fn make_attachment(
+    device: &wgpu::Device,
+    label: &str,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
+}
+
+fn view_of(texture: &wgpu::Texture) -> wgpu::TextureView {
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// Sets the render resolution of the deferred targets, building them on
+/// first use and rebuilding them on resize.
+pub fn deferred_resize(width: i32, height: i32) {
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let (width, height) = (width as u32, height as u32);
+    with_ctx(|c| {
+        if c.deferred
+            .as_ref()
+            .is_some_and(|d| d.width == width && d.height == height)
+        {
+            return;
+        }
+        c.deferred = Some(build_deferred(c, width, height));
+    });
+}
+
+fn build_deferred(c: &Ctx, width: u32, height: u32) -> Deferred {
+    let device = &c.device;
+    let albedo = make_attachment(
+        device,
+        "gbuffer albedo",
+        width,
+        height,
+        GBUFFER_ALBEDO_FORMAT,
+    );
+    let normal = make_attachment(
+        device,
+        "gbuffer normal",
+        width,
+        height,
+        GBUFFER_NORMAL_FORMAT,
+    );
+    let mers = make_attachment(device, "gbuffer mers", width, height, GBUFFER_MERS_FORMAT);
+    let lighting = make_attachment(
+        device,
+        "gbuffer lighting",
+        width,
+        height,
+        GBUFFER_LIGHTING_FORMAT,
+    );
+    let hdr_texture = make_attachment(device, "hdr scene", width, height, HDR_FORMAT);
+    let depth = make_depth_texture(device, width, height);
+
+    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("deferred uniforms"),
+        size: DEFERRED_UNIFORM_SIZE,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let uniform_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("deferred uniforms"),
+        layout: &c.deferred_uniform_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        }],
+    });
+
+    let albedo_view = view_of(&albedo);
+    let normal_view = view_of(&normal);
+    let mers_view = view_of(&mers);
+    let lighting_view = view_of(&lighting);
+    let depth_view = view_of(&depth);
+    let hdr_view = view_of(&hdr_texture);
+
+    // Both fullscreen passes read their inputs 1:1 with textureLoad, so
+    // neither needs a sampler.
+    let gbuffer_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("gbuffer"),
+        layout: &c.gbuffer_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&albedo_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&normal_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&mers_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&lighting_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(&depth_view),
+            },
+        ],
+    });
+    let hdr_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("hdr scene"),
+        layout: &c.hdr_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&hdr_view),
+        }],
+    });
+
+    Deferred {
+        width,
+        height,
+        albedo: albedo_view,
+        normal: normal_view,
+        mers: mers_view,
+        lighting: lighting_view,
+        depth,
+        hdr: hdr_view,
+        hdr_texture,
+        uniform_buffer,
+        uniform_group,
+        gbuffer_group,
+        hdr_group,
+        lighting_pipeline: c.lighting_pipeline.clone(),
+        tonemap_pipelines: HashMap::new(),
+        tonemap_module: c.tonemap_module.clone(),
+        tonemap_layout: c.tonemap_layout.clone(),
+    }
+}
+
+/// Directs subsequent draws into the G-buffer. Clears it first: a stale
+/// G-buffer would light last frame's geometry where nothing was drawn.
+pub fn deferred_begin_geometry() {
+    with_ctx(|c| {
+        let Some(d) = c.deferred.as_ref() else {
+            return;
+        };
+        let target = Target::GBuffer {
+            albedo: d.albedo.clone(),
+            normal: d.normal.clone(),
+            mers: d.mers.clone(),
+            lighting: d.lighting.clone(),
+            depth: view_of(&d.depth),
+        };
+        switch_target_inner(c, target);
+        let pass = c.passes.last_mut().unwrap();
+        pass.clear_color = Some([0.0, 0.0, 0.0, 0.0]);
+        pass.clear_depth = true;
+    });
+}
+
+/// Resolves the G-buffer into the HDR target with the given lighting.
+pub fn deferred_resolve(uniforms: &DeferredUniforms) {
+    with_ctx(|c| {
+        let Some(d) = c.deferred.as_ref() else {
+            return;
+        };
+        c.queue
+            .write_buffer(&d.uniform_buffer, 0, cast_slice(&[*uniforms]));
+        let hdr = d.hdr.clone();
+        let depth = view_of(&d.depth);
+        let step = Step::Fullscreen(FullscreenRec {
+            pipeline: d.lighting_pipeline.clone(),
+            bind_groups: vec![d.uniform_group.clone(), d.gbuffer_group.clone()],
+        });
+        switch_target_inner(c, Target::HdrResolve { color: hdr.clone() });
+        // The lighting resolve replaces the HDR target wholesale, so it
+        // does not need a clear of its own.
+        c.passes.last_mut().unwrap().steps.push(step);
+        // Forward draws after the resolve need the geometry depth, which
+        // this pass could not hold while the resolve sampled it.
+        switch_target_inner(c, Target::Hdr { color: hdr, depth });
+    });
+}
+
+/// Tone maps the HDR target onto whatever target is currently bound.
+pub fn deferred_tonemap() {
+    with_ctx(|c| {
+        let Some(d) = c.deferred.as_ref() else {
+            return;
+        };
+        let kind = c.passes.last().unwrap().target.kind();
+        let pipeline = match d.tonemap_pipelines.get(&kind) {
+            Some(pipeline) => pipeline.clone(),
+            None => {
+                let pipeline = Arc::new(build_fullscreen_pipeline(
+                    &c.device,
+                    &d.tonemap_layout,
+                    &d.tonemap_module,
+                    &kind.color_formats(c.config.format),
+                    true,
+                ));
+                c.deferred
+                    .as_mut()
+                    .unwrap()
+                    .tonemap_pipelines
+                    .insert(kind, pipeline.clone());
+                pipeline
+            }
+        };
+        let d = c.deferred.as_ref().unwrap();
+        let step = Step::Fullscreen(FullscreenRec {
+            pipeline,
+            bind_groups: vec![d.uniform_group.clone(), d.hdr_group.clone()],
+        });
+        c.passes.last_mut().unwrap().steps.push(step);
+    });
+}
+
+/// True once the deferred targets exist, so callers can fall back to the
+/// forward path on a device where they could not be built.
+pub fn deferred_ready() -> bool {
+    with_ctx(|c| c.deferred.is_some())
+}
+
+fn build_fullscreen_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    formats: &[wgpu::TextureFormat],
+    depth: bool,
+) -> wgpu::RenderPipeline {
+    let targets: Vec<Option<wgpu::ColorTargetState>> = formats
+        .iter()
+        .enumerate()
+        .map(|(i, format)| {
+            (i == 0).then_some(wgpu::ColorTargetState {
+                format: *format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })
+        })
+        .collect();
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("fullscreen"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &targets,
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        // The lighting resolve has no depth attachment because it *samples*
+        // the G-buffer depth. Tone mapping runs on the offscreen target,
+        // which does have depth, so that pipeline still declares one and
+        // always-passes so it does not fight leftover geometry depth.
+        depth_stencil: depth.then_some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 pub struct RenderTexture2D {
     pub texture: Texture2D,
     depth: wgpu::TextureView,
@@ -1668,7 +2324,8 @@ fn build_pipeline(
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
     flags: StateFlags,
-    format: wgpu::TextureFormat,
+    formats: &[wgpu::TextureFormat],
+    outputs: usize,
 ) -> wgpu::RenderPipeline {
     let vertex_buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: VERTEX_STRIDE as u64,
@@ -1677,6 +2334,21 @@ fn build_pipeline(
             0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Unorm8x4
         ],
     })];
+    // Attachments the shader does not write are declared as None so a
+    // single-output shader stays usable against a multi-attachment pass.
+    // Blending applies only to the first attachment: the G-buffer's normal
+    // and material channels are not colors and must not be mixed.
+    let targets: Vec<Option<wgpu::ColorTargetState>> = formats
+        .iter()
+        .enumerate()
+        .map(|(i, format)| {
+            (i < outputs).then_some(wgpu::ColorTargetState {
+                format: *format,
+                blend: (flags.blend && i == 0).then_some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })
+        })
+        .collect();
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(layout),
@@ -1690,11 +2362,7 @@ fn build_pipeline(
             module,
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: flags.blend.then_some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            targets: &targets,
         }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
@@ -1822,15 +2490,12 @@ pub fn end_frame(width: i32, height: i32) {
 
         // Create any pipelines this frame needs before encoding.
         for pass in &passes {
-            for draw in &pass.draws {
-                let target_format = match pass.target {
-                    Target::Surface => c.config.format,
-                    Target::Offscreen { .. } => OFFSCREEN_FORMAT,
-                };
+            let kind = pass.target.kind();
+            for draw in pass.draws() {
                 let key = PipeKey {
                     shader_id: draw.shader.id,
                     flags: draw.flags,
-                    format: target_format,
+                    kind,
                 };
                 if !c.pipelines.contains_key(&key) {
                     let pipeline = build_pipeline(
@@ -1838,7 +2503,8 @@ pub fn end_frame(width: i32, height: i32) {
                         &c.pipeline_layout,
                         &draw.shader.module,
                         draw.flags,
-                        target_format,
+                        &kind.color_formats(c.config.format),
+                        draw.shader.outputs,
                     );
                     c.pipelines.insert(key, pipeline);
                 }
@@ -1849,38 +2515,53 @@ pub fn end_frame(width: i32, height: i32) {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         for pass in &passes {
-            if pass.draws.is_empty() && pass.clear_color.is_none() {
+            if pass.is_empty() && pass.clear_color.is_none() {
                 continue;
             }
-            let (color_view, depth_view, target_format) = match &pass.target {
-                Target::Surface => (&frame_view, &c.surface_depth, c.config.format),
-                Target::Offscreen { color, depth } => (color, depth, OFFSCREEN_FORMAT),
-            };
+            let kind = pass.target.kind();
+            let color_views = pass.target.color_views(&frame_view);
+            let depth_view = pass.target.depth_view(&c.surface_depth);
+            let color_attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = color_views
+                .iter()
+                .enumerate()
+                .map(|(i, view)| {
+                    Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            // Only the first attachment takes the requested
+                            // clear color; the G-buffer's normal and material
+                            // channels clear to zero, which reads back as
+                            // "nothing was drawn here".
+                            load: match (pass.clear_color, i) {
+                                (Some([r, g, b, a]), 0) => {
+                                    wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a })
+                                }
+                                (Some(_), _) => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                (None, _) => wgpu::LoadOp::Load,
+                            },
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })
+                })
+                .collect();
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: match pass.clear_color {
-                            Some([r, g, b, a]) => wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
-                            None => wgpu::LoadOp::Load,
-                        },
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: if pass.clear_depth {
-                            wgpu::LoadOp::Clear(1.0)
-                        } else {
-                            wgpu::LoadOp::Load
-                        },
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
+                color_attachments: &color_attachments,
+                depth_stencil_attachment: depth_view.map(|view| {
+                    wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: if pass.clear_depth {
+                                wgpu::LoadOp::Clear(1.0)
+                            } else {
+                                wgpu::LoadOp::Load
+                            },
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -1891,11 +2572,32 @@ pub fn end_frame(width: i32, height: i32) {
             let mut last_texture = None;
             let mut last_offset = None;
             let mut last_buffer = None;
-            for draw in &pass.draws {
+            for step in &pass.steps {
+                let draw = match step {
+                    Step::Draw(draw) => draw,
+                    Step::Fullscreen(full) => {
+                        rpass.set_pipeline(&full.pipeline);
+                        for (index, group) in full.bind_groups.iter().enumerate() {
+                            rpass.set_bind_group(index as u32, group, &[]);
+                        }
+                        // One oversized triangle covers the target with no
+                        // vertex buffer; the shader derives UVs from the
+                        // vertex index.
+                        rpass.draw(0..3, 0..1);
+                        // This step replaced the pipeline and both bind
+                        // groups, so nothing cached about the previous draw
+                        // still holds.
+                        last_key = None;
+                        last_texture = None;
+                        last_offset = None;
+                        last_buffer = None;
+                        continue;
+                    }
+                };
                 let key = PipeKey {
                     shader_id: draw.shader.id,
                     flags: draw.flags,
-                    format: target_format,
+                    kind,
                 };
                 if last_key != Some(key) {
                     rpass.set_pipeline(&c.pipelines[&key]);

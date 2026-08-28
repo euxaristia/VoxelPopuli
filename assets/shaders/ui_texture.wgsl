@@ -11,7 +11,7 @@ struct Uniforms {
     time: f32,
     screen_size: vec2<f32>,
     body_type: i32,
-    _pad: f32,
+    hdr_scale: f32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(1) @binding(0) var texture0: texture_2d<f32>;

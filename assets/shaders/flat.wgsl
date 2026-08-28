@@ -11,7 +11,7 @@ struct Uniforms {
     time: f32,
     screen_size: vec2<f32>,
     body_type: i32,
-    _pad: f32,
+    hdr_scale: f32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -61,7 +61,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 color = vec4(color.rgb * 0.65, color.a);
             }
         }
-        return color;
+        // hdr_scale is 1.0 on the forward path and the scene's key
+        // luminance when drawing into the HDR target, so celestial
+        // bodies survive tone mapping instead of being crushed.
+        return vec4(color.rgb * u.hdr_scale, color.a);
     }
-    return in.color;
+    return vec4(in.color.rgb * u.hdr_scale, in.color.a);
 }

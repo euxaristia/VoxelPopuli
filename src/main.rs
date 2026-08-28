@@ -16,6 +16,7 @@ mod player;
 mod profiler;
 mod renderer;
 mod save;
+mod vibrant;
 mod village;
 mod world;
 
@@ -228,7 +229,7 @@ fn draw_screen_quad(shader: &Shader, color: glam::Vec4) {
     renderer::set_depth_test(true);
 }
 
-fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
+fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4, overlay: bool) {
     let dist = 450.0;
     let size = 60.0;
     let angle = (time / 1200.0) * 2.0 * std::f32::consts::PI;
@@ -277,7 +278,9 @@ fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4) {
     shader.bind();
     shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
 
-    renderer::set_depth_test(false);
+    // The forward path draws the sky before the world, so it must not
+    // depth test; the deferred path draws it after the resolve and does.
+    renderer::set_depth_test(!overlay);
     renderer::set_cull(false);
 
     shader.set_int(shader.get_uniform_location("uBodyType"), 1); // 1 = Sun
@@ -411,6 +414,13 @@ fn main() {
         None => println!("No village within 8 regions of spawn for this seed"),
     }
     let shader = Shader::new(&load_shader("ps1.wgsl")).expect("Failed to compile PS1 shader");
+    // Deferred geometry pass: same uniforms as ps1, four color attachments.
+    let gbuffer_shader = Shader::with_outputs(&load_shader("gbuffer.wgsl"), 4)
+        .expect("Failed to compile G-buffer shader");
+    let vibrant_pack = vibrant::VibrantPack::load_default();
+    for warning in &vibrant_pack.warnings {
+        eprintln!("Vibrant Visuals pack: {warning}");
+    }
     let water_shader =
         Shader::new(&load_shader("water.wgsl")).expect("Failed to compile water shader");
     let flat_shader =
@@ -1329,30 +1339,96 @@ fn main() {
             target = RenderTexture2D::new(target_width, target_height);
         }
 
-        target.bind();
-        renderer::clear(sky_c.x, sky_c.y, sky_c.z, 1.0);
         let aspect = target.texture.width as f32 / target.texture.height as f32;
         // perspective_rh maps depth to wgpu's [0, 1] range (GL used [-1, 1]).
         let projection = Mat4::perspective_rh(fov_setting.to_radians(), aspect, 0.1, 1000.0);
         let view = Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
         let mvp = projection * view;
-        world.render_stars(player.position, dusk_time, &flat_shader, &mvp);
-        draw_sun_moon(&flat_shader, player.position, dusk_time, mvp);
+
+        // Vibrant Visuals deferred path. Fancy graphics off keeps the
+        // original forward renderer, which is also the fallback if the
+        // deferred targets could not be built.
+        renderer::deferred_resize(target.texture.width, target.texture.height);
+        let deferred = fancy_gfx_setting && renderer::deferred_ready();
+        let deferred_uniforms = vibrant::frame::build_uniforms(
+            &vibrant_pack,
+            &vibrant::frame::FrameInput {
+                day_fraction: vibrant::frame::day_fraction(dusk_time),
+                camera_pos: eye_pos,
+                view_proj: mvp,
+            },
+        );
+        // Forward draws that land in the HDR target have to be lifted into
+        // the same lux-scaled space the lighting pass writes. Set before
+        // any sky or world draw: leftover staging from a previous deferred
+        // frame would otherwise blow out the forward path, and stars would
+        // miss the scale if they drew first.
+        let hdr_scale = if deferred {
+            vibrant::frame::hdr_scale(&deferred_uniforms)
+        } else {
+            1.0
+        };
+        shader.set_float(shader.get_uniform_location("uHdrScale"), hdr_scale);
+        flat_shader.set_float(flat_shader.get_uniform_location("uHdrScale"), hdr_scale);
+        water_shader.set_float(water_shader.get_uniform_location("uHdrScale"), hdr_scale);
+        // Opaque geometry writes the G-buffer when deferred, and shades
+        // itself when not. Both shaders read the same uniform names.
+        let world_shader = if deferred { &gbuffer_shader } else { &shader };
+
+        if deferred {
+            renderer::deferred_begin_geometry();
+        } else {
+            target.bind();
+            renderer::clear(sky_c.x, sky_c.y, sky_c.z, 1.0);
+            world.render_stars(player.position, dusk_time, &flat_shader, &mvp);
+            draw_sun_moon(&flat_shader, player.position, dusk_time, mvp, true);
+        }
+        world_shader.bind();
+        world_shader.set_mat4(world_shader.get_uniform_location("uMVP"), &mvp);
+        world_shader.set_mat4(world_shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+        world_shader.set_float(
+            world_shader.get_uniform_location("uTime"),
+            current_time as f32,
+        );
+        world_shader.set_vec2(
+            world_shader.get_uniform_location("uResolution"),
+            glam::Vec2::new(target.texture.width as f32, target.texture.height as f32),
+        );
+        world_shader.set_vec3(world_shader.get_uniform_location("sunDir"), sun_dir);
+        world_shader.set_vec4(
+            world_shader.get_uniform_location("colDiffuse"),
+            glam::Vec4::ONE,
+        );
+        world_shader.set_vec3(world_shader.get_uniform_location("viewPos"), eye_pos);
+        world_shader.set_vec4(world_shader.get_uniform_location("skyCol"), sky_c);
+        let frustum = world::Frustum::from_matrix(&mvp);
+        world.compute_visible_chunks(&frustum);
+        world.render_opaque(world_shader, &frustum);
+
+        // Opaque effects belong in the G-buffer alongside the terrain.
+        world.render_explosives(world_shader, &mvp, current_time as f32);
+        world.render_arrows(world_shader);
+        world.render_xp_orbs(world_shader, current_time as f32);
+        world.render_mobs(world_shader, player.position);
+
+        // Resolve the G-buffer, then draw everything that cannot be
+        // deferred -- blended decals, particles and the sky discs --
+        // forward into the lit HDR target.
+        if deferred {
+            renderer::deferred_resolve(&deferred_uniforms);
+            world.render_stars(player.position, dusk_time, &flat_shader, &mvp);
+            // Depth-tested here, unlike the forward path where the sky is
+            // drawn first and painted over by the terrain.
+            draw_sun_moon(&flat_shader, player.position, dusk_time, mvp, false);
+        }
         shader.bind();
         shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
         shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
         shader.set_float(shader.get_uniform_location("uTime"), current_time as f32);
-        shader.set_vec2(
-            shader.get_uniform_location("uResolution"),
-            glam::Vec2::new(target.texture.width as f32, target.texture.height as f32),
-        );
         shader.set_vec3(shader.get_uniform_location("sunDir"), sun_dir);
         shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
         shader.set_vec3(shader.get_uniform_location("viewPos"), eye_pos);
         shader.set_vec4(shader.get_uniform_location("skyCol"), sky_c);
-        let frustum = world::Frustum::from_matrix(&mvp);
-        world.compute_visible_chunks(&frustum);
-        world.render_opaque(&shader, &frustum);
 
         // Render crack overlay on mining target
         if let Some((cx, cy, cz, stage)) = mining_state.crack_stage() {
@@ -1409,12 +1485,7 @@ fn main() {
             renderer::set_blend(false);
         }
 
-        // Render Explosives, Arrows, XP Orbs, Particles, and Village Mobs
-        world.render_explosives(&shader, &mvp, current_time as f32);
         world.render_particles(&shader, &mvp);
-        world.render_arrows(&shader);
-        world.render_xp_orbs(&shader, current_time as f32);
-        world.render_mobs(&shader, player.position);
 
         // Transparency render order depends on whether the camera is above or below
         // the cloud layer, so each transparent layer is drawn back-to-front.
@@ -1440,6 +1511,12 @@ fn main() {
 
         if fancy_gfx_setting && above_clouds {
             world.render_clouds(&flat_shader, &mvp);
+        }
+        if deferred {
+            // Tone map the lit HDR scene down onto the offscreen target the
+            // UI and the final blit already expect.
+            target.bind();
+            renderer::deferred_tonemap();
         }
         RenderTexture2D::unbind();
         renderer::clear(0.0, 0.0, 0.0, 1.0);

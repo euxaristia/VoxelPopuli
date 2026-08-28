@@ -11,7 +11,7 @@ struct Uniforms {
     time: f32,
     screen_size: vec2<f32>,
     body_type: i32,
-    _pad: f32,
+    hdr_scale: f32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(1) @binding(0) var texture0: texture_2d<f32>;
@@ -72,5 +72,5 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Simple shore foam / depth effect simulation
     let color = mix(diffuse, vec3(0.1, 0.4, 0.8), 0.2) + specular;
 
-    return vec4(color, alpha);
+    return vec4(color * u.hdr_scale, alpha);
 }
