@@ -29,6 +29,20 @@ pub fn day_fraction(dusk_time: f32) -> f32 {
     (dusk_time / SECONDS_PER_DAY - 0.25).rem_euclid(1.0)
 }
 
+/// How much a celestial body contributes given the direction towards it.
+///
+/// The window matches the forward sky: full day above sun_y 0.3, night
+/// below -0.2, and a smoothstep between so sunset is a dusk rather than
+/// a frame-long snap when the body crosses y = 0.
+pub fn horizon_fade(dir: Vec3) -> f32 {
+    smoothstep(-0.2, 0.3, dir.y)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Direction towards the sun for a day fraction, matching the world's own
 /// sun angle so shadows agree with the drawn sun.
 pub fn sun_direction(day_fraction: f32, orbital_offset_degrees: f32) -> Vec3 {
@@ -73,9 +87,6 @@ pub fn build_uniforms(pack: &VibrantPack, input: &FrameInput) -> DeferredUniform
     // The sun and moon sit at opposite points of the same orbit.
     let moon_dir = -sun_dir;
 
-    // A body below the horizon contributes nothing, so its illuminance
-    // fades out as it sets rather than lighting the world from underneath.
-    let horizon_fade = |dir: Vec3| dir.y.clamp(0.0, 1.0);
     let sun_lux = lighting.sun.illuminance.sample(time).max(0.0) * horizon_fade(sun_dir);
     let moon_lux = lighting.moon.illuminance.sample(time).max(0.0) * horizon_fade(moon_dir);
     let ambient_lux = lighting.ambient_illuminance_at(time);
@@ -226,6 +237,58 @@ mod tests {
         let noon = build_uniforms(&pack, &noon_input());
         assert!(noon.sun_direction_illuminance[3] > 1000.0);
         assert_eq!(noon.moon_direction_illuminance[3], 0.0);
+    }
+
+    #[test]
+    fn horizon_fade_matches_the_forward_dusk_window() {
+        assert_eq!(horizon_fade(Vec3::Y), 1.0);
+        assert_eq!(horizon_fade(Vec3::new(0.0, 0.3, 0.0)), 1.0);
+        assert_eq!(horizon_fade(Vec3::new(0.0, -0.2, 0.0)), 0.0);
+        assert_eq!(horizon_fade(-Vec3::Y), 0.0);
+        let sunset = horizon_fade(Vec3::new(1.0, 0.0, 0.0));
+        assert!(sunset > 0.2 && sunset < 0.8, "sunset fade {sunset}");
+    }
+
+    fn key_lux(day_fraction: f32) -> f32 {
+        let uniforms = build_uniforms(
+            &VibrantPack::default(),
+            &FrameInput {
+                day_fraction,
+                ..noon_input()
+            },
+        );
+        uniforms.sun_direction_illuminance[3] + uniforms.moon_direction_illuminance[3]
+    }
+
+    #[test]
+    fn twilight_does_not_drop_illuminance_off_a_cliff() {
+        // 0.01 of the day is 12 seconds. Adjacent samples through sunset
+        // should stay within a small factor; the old y.clamp(0) cut sun
+        // lux to zero in a single frame.
+        let samples = [0.22, 0.23, 0.24, 0.25, 0.26, 0.27];
+        let mut prev = key_lux(samples[0]);
+        for &t in &samples[1..] {
+            let lux = key_lux(t);
+            assert!(
+                prev / lux.max(1e-4) < 6.0,
+                "sun+moon lux jumped at {t}: {prev} -> {lux}"
+            );
+            prev = lux;
+        }
+        assert!(key_lux(0.0) > key_lux(0.22));
+        assert!(key_lux(0.28) > 0.0);
+    }
+
+    #[test]
+    fn default_sky_shifts_from_day_blue_to_night() {
+        let pack = VibrantPack::default();
+        let noon = pack.atmospherics.sample(0.0);
+        let midnight = pack.atmospherics.sample(0.5);
+        // Day zenith is the forward path's sky blue; night is near-black.
+        assert!(noon.zenith_color[2] > noon.zenith_color[0]);
+        assert!(midnight.zenith_color.iter().copied().sum::<f32>() < 0.05);
+        let sunset = pack.atmospherics.sample(0.25);
+        assert!(sunset.horizon_color[0] > sunset.horizon_color[2]);
     }
 
     #[test]

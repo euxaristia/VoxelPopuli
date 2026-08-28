@@ -3,6 +3,8 @@ use crate::item;
 use crate::renderer::{Mesh, Shader, Texture2D};
 use glam::{Vec2, Vec4};
 
+const RENDER_DISTANCE_OPTIONS: [i32; 4] = [4, 8, 12, 16];
+
 const VERTICES_PER_QUAD: usize = 6;
 
 struct SolidQuadBatch {
@@ -151,8 +153,7 @@ pub fn pause_click(menu: PauseSubMenu, sw: f32, sh: f32, mx: f32, my: f32) -> Op
         }
         PauseSubMenu::Settings => {
             let (panel_x, panel_y, _, _) = settings_panel(sw, sh);
-            let distances = [4, 6, 8, 12];
-            for (i, d) in distances.iter().enumerate() {
+            for (i, d) in RENDER_DISTANCE_OPTIONS.iter().enumerate() {
                 let bx = panel_x + 340.0 + i as f32 * 75.0;
                 if in_rect(mx, my, bx, panel_y + 82.0, 65.0, 32.0) {
                     return Some(PauseClick::SetRenderDistance(*d));
@@ -756,7 +757,7 @@ mod tests {
                 sx + 340.0 + 2.0 * 75.0 + 4.0,
                 sy + 90.0
             ),
-            Some(PauseClick::SetRenderDistance(8))
+            Some(PauseClick::SetRenderDistance(12))
         );
         assert_eq!(
             pause_click(
@@ -1157,8 +1158,7 @@ pub fn draw_pause_menu(
                 sw,
                 sh,
             );
-            let distances = [4, 6, 8, 12];
-            for (i, d) in distances.iter().enumerate() {
+            for (i, d) in RENDER_DISTANCE_OPTIONS.iter().enumerate() {
                 let bx = panel_x + 340.0 + i as f32 * 75.0;
                 let active = *d == render_dist;
                 let col = if active {

@@ -23,7 +23,7 @@ pub struct GameSettings {
 impl Default for GameSettings {
     fn default() -> Self {
         Self {
-            view_distance: 8,
+            view_distance: crate::world::DEFAULT_VIEW_DISTANCE,
             fov: 80.0,
             fancy_graphics: true,
             selected_skin: 0,
@@ -34,7 +34,7 @@ impl Default for GameSettings {
 impl GameSettings {
     pub fn clamped(self) -> Self {
         Self {
-            view_distance: self.view_distance.clamp(4, 12),
+            view_distance: self.view_distance.clamp(4, crate::world::MAX_VIEW_DISTANCE),
             fov: self.fov.clamp(60.0, 100.0),
             fancy_graphics: self.fancy_graphics,
             selected_skin: self.selected_skin.min(3),
@@ -608,7 +608,7 @@ mod tests {
             selected_skin: 9,
         }
         .clamped();
-        assert_eq!(settings.view_distance, 12);
+        assert_eq!(settings.view_distance, crate::world::MAX_VIEW_DISTANCE);
         assert_eq!(settings.fov, 60.0);
         assert_eq!(settings.selected_skin, 3);
     }
@@ -620,7 +620,10 @@ mod tests {
         save.settings.fov = 12.0;
         save.settings.selected_skin = 9;
         let decoded = GameSave::decode(&save.encode().unwrap()).unwrap();
-        assert_eq!(decoded.settings.view_distance, 12);
+        assert_eq!(
+            decoded.settings.view_distance,
+            crate::world::MAX_VIEW_DISTANCE
+        );
         assert_eq!(decoded.settings.fov, 60.0);
         assert_eq!(decoded.settings.selected_skin, 3);
     }

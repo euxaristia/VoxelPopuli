@@ -3,7 +3,7 @@
 // reference. Field names and value ranges match the published schemas so
 // packs authored for Bedrock load unchanged.
 use super::json::Json;
-use super::keyframe::{Color, Keyframed, keyframed_or};
+use super::keyframe::{Color, Keyframed, keyframed_or, srgb_curve};
 use crate::block::BlockType;
 use crate::java_compat::java_block_name_to_block_type;
 
@@ -58,8 +58,18 @@ impl Default for LightingSettings {
                     (0.5, 1.0),
                     (0.65, 400.0),
                     (0.75, 20_000.0),
+                    (1.0, 100_000.0),
                 ]),
-                color: Keyframed::constant(Color::WHITE),
+                color: srgb_curve(&[
+                    (0.0, [255, 255, 255]),
+                    (0.18, [255, 244, 220]),
+                    (0.25, [255, 140, 80]),
+                    (0.33, [255, 90, 50]),
+                    (0.67, [255, 90, 50]),
+                    (0.75, [255, 140, 80]),
+                    (0.82, [255, 244, 220]),
+                    (1.0, [255, 255, 255]),
+                ]),
             },
             // Full moonlight measures about a quarter of a lux.
             moon: OrbitalLight {

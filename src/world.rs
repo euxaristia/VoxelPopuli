@@ -1,7 +1,8 @@
 use crate::block::BlockType;
 use crate::chunk::{
-    CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, MeshResult, MeshSnapshot, water_decay,
-    water_is_falling, water_is_source, water_level_from_decay,
+    CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, MeshResult, MeshSnapshot, light_factor,
+    pack_light, unpack_light, water_decay, water_is_falling, water_is_source,
+    water_level_from_decay,
 };
 use crate::mob::{Mob, MobKind};
 use crate::renderer;
@@ -86,8 +87,8 @@ fn compare_gpu_mesh_test(cpu: &[GpuMeshTestVertex], gpu: &[GpuMeshTestVertex], c
     }
 }
 
-pub const DEFAULT_VIEW_DISTANCE: i32 = 8;
-pub const MAX_VIEW_DISTANCE: i32 = 12;
+pub const DEFAULT_VIEW_DISTANCE: i32 = 16;
+pub const MAX_VIEW_DISTANCE: i32 = 16;
 pub const VIEW_DISTANCE: i32 = DEFAULT_VIEW_DISTANCE;
 pub const POOL_WIDTH: i32 = MAX_VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
@@ -350,8 +351,27 @@ impl World {
             s_u0, s_v1, s_u0, s_v0, s_u1, s_v0,  s_u0, s_v1, s_u1, s_v0, s_u1, s_v1,
         ];
 
-        let n: Vec<f32> = vec![0.0; v.len()];
-        let c: Vec<u8> = vec![255; v.len() / 3 * 4];
+        let mut n = Vec::with_capacity(v.len());
+        let faces = [
+            [0.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ];
+        for nrm in faces {
+            for _ in 0..6 {
+                n.extend_from_slice(&nrm);
+            }
+        }
+        // Sky 1, block 0, AO 1: the G-buffer reads vertex colour as baked
+        // lighting, so all-white cubes would pick up full torch light.
+        // Entity draws override this per position via uColor.
+        let mut c = Vec::with_capacity(v.len() / 3 * 4);
+        for _ in 0..(v.len() / 3) {
+            c.extend_from_slice(&[255, 0, 255, 255]);
+        }
         renderer::Mesh::new(&v, Some(&t), Some(&n), Some(&c))
     }
 
@@ -364,11 +384,16 @@ impl World {
         let _loc_mvp = shader.get_uniform_location("uMVP");
         let loc_model = shader.get_uniform_location("uModel");
         let loc_diff = shader.get_uniform_location("colDiffuse");
+        let loc_light = shader.get_uniform_location("uColor");
         if let Some(atlas) = &self.atlas {
             atlas.bind(0);
         }
 
         for e in &self.explosives {
+            shader.set_vec4(
+                loc_light,
+                self.entity_lighting(e.position + Vec3::splat(0.5)),
+            );
             let progress = 1.0 - (e.fuse / e.initial_fuse.max(0.001)).clamp(0.0, 1.0);
             let flash_rate = 4.0 + progress * 12.0;
             let flash = (current_time * flash_rate) as i32 % 2 == 0;
@@ -401,6 +426,7 @@ impl World {
             self.spark_mesh.draw();
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
+        shader.set_vec4(loc_light, glam::Vec4::ZERO);
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
     }
 
@@ -432,12 +458,14 @@ impl World {
     pub fn render_arrows(&self, shader: &crate::renderer::Shader) {
         let loc_model = shader.get_uniform_location("uModel");
         let loc_diff = shader.get_uniform_location("colDiffuse");
+        let loc_light = shader.get_uniform_location("uColor");
         if let Some(atlas) = &self.atlas {
             atlas.bind(0);
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
 
         for arrow in &self.arrows {
+            shader.set_vec4(loc_light, self.entity_lighting(arrow.position));
             let rot = if arrow.velocity.length_squared() > 0.01 {
                 let dir = arrow.velocity.normalize();
                 let yaw = dir.x.atan2(dir.z);
@@ -452,17 +480,20 @@ impl World {
             shader.set_mat4(loc_model, &model);
             self.arrow_mesh.draw();
         }
+        shader.set_vec4(loc_light, glam::Vec4::ZERO);
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
     }
 
     pub fn render_xp_orbs(&self, shader: &crate::renderer::Shader, current_time: f32) {
         let loc_model = shader.get_uniform_location("uModel");
         let loc_diff = shader.get_uniform_location("colDiffuse");
+        let loc_light = shader.get_uniform_location("uColor");
         if let Some(atlas) = &self.atlas {
             atlas.bind(0);
         }
 
         for orb in &self.xp_orbs {
+            shader.set_vec4(loc_light, self.entity_lighting(orb.position));
             let bob = (current_time * 5.0 + orb.position.x * 3.0).sin() * 0.08;
             let rot = current_time * 3.0;
             let model = glam::Mat4::from_translation(orb.position + Vec3::new(0.0, bob, 0.0))
@@ -473,6 +504,7 @@ impl World {
             self.xp_orb_mesh.draw();
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
+        shader.set_vec4(loc_light, glam::Vec4::ZERO);
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
     }
 
@@ -761,6 +793,30 @@ impl World {
         }
 
         BlockType::Air
+    }
+
+    /// Sky/block lighting at `pos` for entity draws. `a = 1` tells the
+    /// G-buffer shader to use this instead of the mesh vertex colour.
+    pub fn entity_lighting(&self, pos: Vec3) -> glam::Vec4 {
+        let x = pos.x.floor() as i32;
+        let y = (pos.y + 0.1).floor() as i32;
+        let z = pos.z.floor() as i32;
+        let (sky, block) = unpack_light(self.packed_light(x, y, z));
+        glam::Vec4::new(light_factor(sky), light_factor(block), 1.0, 1.0)
+    }
+
+    fn packed_light(&self, x: i32, y: i32, z: i32) -> u8 {
+        if y < 0 || y >= CHUNK_HEIGHT as i32 {
+            return pack_light(15, 0);
+        }
+        let cx = x.div_euclid(CHUNK_WIDTH as i32);
+        let cz = z.div_euclid(CHUNK_DEPTH as i32);
+        let bx = x.rem_euclid(CHUNK_WIDTH as i32) as usize;
+        let bz = z.rem_euclid(CHUNK_DEPTH as i32) as usize;
+        match self.get_chunk(cx, cz) {
+            Some(chunk) => chunk.light[bx][y as usize][bz],
+            None => pack_light(15, 0),
+        }
     }
 
     pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
@@ -1807,6 +1863,7 @@ impl World {
         }
         let loc_model = shader.get_uniform_location("uModel");
         let loc_diff = shader.get_uniform_location("colDiffuse");
+        let loc_light = shader.get_uniform_location("uColor");
         if let Some(atlas) = &self.atlas {
             atlas.bind(0);
         }
@@ -1822,6 +1879,7 @@ impl World {
             if self.get_chunk(mcx, mcz).is_none() {
                 continue;
             }
+            shader.set_vec4(loc_light, self.entity_lighting(mob.position));
             let base = Mat4::from_translation(mob.position) * Mat4::from_rotation_y(-mob.yaw);
             let part = |mesh: &Mesh, center: Vec3, size: Vec3, tint: glam::Vec4| {
                 shader.set_vec4(loc_diff, tint);
@@ -2187,6 +2245,7 @@ impl World {
             }
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
+        shader.set_vec4(loc_light, glam::Vec4::ZERO);
         // Chunk passes draw with whatever uModel is left bound, so the
         // per-part matrices must not outlive this function.
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
@@ -3048,6 +3107,12 @@ mod tests {
                 body.contains("set_mat4(loc_model, &glam::Mat4::IDENTITY)"),
                 "{name} binds uModel but never restores the identity matrix"
             );
+            if body.contains("loc_light") {
+                assert!(
+                    body.contains("set_vec4(loc_light, glam::Vec4::ZERO)"),
+                    "{name} writes entity lighting but never clears uColor"
+                );
+            }
         }
         assert!(
             checked >= 5,
@@ -3117,9 +3182,9 @@ mod tests {
     #[test]
     fn view_distance_pool_is_bounded_to_settings_max() {
         assert_eq!(VIEW_DISTANCE, DEFAULT_VIEW_DISTANCE);
-        assert_eq!(MAX_VIEW_DISTANCE, 12);
-        assert_eq!(POOL_WIDTH, 25);
-        assert_eq!(CHUNK_POOL_SIZE, 625);
+        assert_eq!(MAX_VIEW_DISTANCE, 16);
+        assert_eq!(POOL_WIDTH, 33);
+        assert_eq!(CHUNK_POOL_SIZE, 1089);
         assert_eq!(GPU_POOL_VIEW_DISTANCE, MAX_VIEW_DISTANCE);
         assert!(CHUNK_POOL_SIZE < 35 * 35);
     }

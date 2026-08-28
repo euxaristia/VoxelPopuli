@@ -389,6 +389,16 @@ fn main() {
     window.set_mouse_button_polling(true);
     window.set_scroll_polling(true);
     window.set_cursor_mode(glfw::CursorMode::Disabled);
+    glfw.with_primary_monitor(|_, monitor| {
+        if let Some(monitor) = monitor
+            && let Some(mode) = monitor.get_video_mode()
+        {
+            println!(
+                "Monitor: {}x{} @ {} Hz",
+                mode.width, mode.height, mode.refresh_rate
+            );
+        }
+    });
     let (init_fb_w, init_fb_h) = window.get_framebuffer_size();
     renderer::init(&*window, init_fb_w, init_fb_h);
     let mut world = World::new(world_seed as u64);
@@ -1401,6 +1411,10 @@ fn main() {
         );
         world_shader.set_vec3(world_shader.get_uniform_location("viewPos"), eye_pos);
         world_shader.set_vec4(world_shader.get_uniform_location("skyCol"), sky_c);
+        world_shader.set_vec4(
+            world_shader.get_uniform_location("uColor"),
+            glam::Vec4::ZERO,
+        );
         let frustum = world::Frustum::from_matrix(&mvp);
         world.compute_visible_chunks(&frustum);
         world.render_opaque(world_shader, &frustum);

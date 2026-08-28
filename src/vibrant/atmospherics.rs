@@ -6,7 +6,7 @@
 // and moon. The sun and moon colors from lighting/global.json feed the
 // same calculation, so they move the sky as well as lit surfaces.
 use super::json::Json;
-use super::keyframe::{Color, Keyframed, keyframed_or};
+use super::keyframe::{Color, Keyframed, keyframed_or, srgb_curve};
 
 /// `horizon_blend_stops`: how the sky is split between horizon and zenith.
 #[derive(Clone, Debug)]
@@ -57,8 +57,31 @@ impl Default for AtmosphereSettings {
             sun_mie_strength: Keyframed::constant(1.0),
             moon_mie_strength: Keyframed::constant(0.0),
             sun_glare_shape: Keyframed::constant(4.0),
-            sky_zenith_color: Keyframed::constant(Color::rgb(0.0, 0.49, 0.64)),
-            sky_horizon_color: Keyframed::constant(Color::rgb(0.77, 0.86, 1.0)),
+            // Same dusk window as the forward sky: day until ~0.20, sunset
+            // through 0.25, night by 0.33. Constant noon-blue here is what
+            // made deferred night look like a light switch.
+            sky_zenith_color: srgb_curve(&[
+                (0.0, [135, 206, 235]),
+                (0.18, [135, 206, 235]),
+                (0.23, [255, 160, 180]),
+                (0.26, [135, 100, 150]),
+                (0.33, [5, 5, 15]),
+                (0.67, [5, 5, 15]),
+                (0.74, [135, 100, 150]),
+                (0.77, [255, 160, 180]),
+                (0.82, [135, 206, 235]),
+            ]),
+            sky_horizon_color: srgb_curve(&[
+                (0.0, [196, 226, 255]),
+                (0.18, [196, 226, 255]),
+                (0.23, [255, 120, 80]),
+                (0.26, [180, 70, 60]),
+                (0.33, [10, 10, 30]),
+                (0.67, [10, 10, 30]),
+                (0.74, [180, 70, 60]),
+                (0.77, [255, 120, 80]),
+                (0.82, [196, 226, 255]),
+            ]),
         }
     }
 }

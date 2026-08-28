@@ -77,6 +77,11 @@ fn fs_main(in: VsOut) -> GBuffer {
     // fully rough. Texture sets and pbr/global.json override this once the
     // MERS atlas is bound.
     out.mers = vec4(0.0, 0.0, 1.0, 0.0);
-    out.lighting = vec4(in.color.r, in.color.g, in.color.b, 1.0);
+    // Entity draws put world sky/block light in u_color (a = 1). Terrain
+    // leaves a = 0 and uses the mesher's per-vertex bake. White cube
+    // vertices used to read as full block-light, which night exposure
+    // turned into glowing animals.
+    let baked = mix(in.color.rgb, u.u_color.rgb, u.u_color.a);
+    out.lighting = vec4(baked, 1.0);
     return out;
 }

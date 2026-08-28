@@ -263,6 +263,18 @@ pub fn unpack_light(val: u8) -> (u8, u8) {
     (val >> 4, val & 0x0F)
 }
 
+/// Converts a 0-15 sky or block light level to the 0-1 factor the mesher
+/// writes into vertex colour. Entities sample the same curve so they match
+/// the terrain they stand on.
+#[inline]
+pub fn light_factor(level: u8) -> f32 {
+    if level == 0 {
+        0.0
+    } else {
+        0.85f32.powf(15.0 - level as f32)
+    }
+}
+
 // Skylight + BFS light propagation over a chunk's own blocks. Shared by the
 // live chunk (generation) and by worker-owned copies (background meshing).
 fn compute_lighting(
@@ -1425,14 +1437,7 @@ impl ChunkData {
             snap.get_light(wx, wy, wz)
         };
 
-        let calc_light_f = |light_val: u8| -> f32 {
-            if light_val == 0 {
-                return 0.0;
-            }
-            let l = light_val as f32;
-            let f = 0.85f32.powf(15.0 - l);
-            f.max(0.0)
-        };
+        let calc_light_f = light_factor;
 
         let calc_vertex_light = |l0: u8, l1: u8, l2: u8, l3: u8| -> (f32, f32) {
             let (s0, b0) = unpack_light(l0);
@@ -2795,5 +2800,13 @@ mod tests {
 
         chunk.set_block(8, 40, 8, BlockType::Air);
         assert_eq!(unpack_light(chunk.light[8][40][8]).1, 0);
+    }
+
+    #[test]
+    fn light_factor_is_full_at_15_and_dark_at_zero() {
+        assert_eq!(light_factor(0), 0.0);
+        assert!((light_factor(15) - 1.0).abs() < 1e-6);
+        assert!(light_factor(7) > light_factor(0));
+        assert!(light_factor(7) < light_factor(15));
     }
 }

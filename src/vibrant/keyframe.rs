@@ -191,6 +191,23 @@ impl<T: Lerp> Keyframed<T> {
     }
 }
 
+/// A day-cycle color curve from sRGB 0-255 stops, matching the way pack
+/// JSON authors sky and sun colors.
+pub fn srgb_curve(stops: &[(f32, [u8; 3])]) -> Keyframed<Color> {
+    let object = Json::Object(
+        stops
+            .iter()
+            .map(|(t, rgb)| {
+                (
+                    t.to_string(),
+                    Json::Array(rgb.iter().map(|c| Json::Number(*c as f64)).collect()),
+                )
+            })
+            .collect(),
+    );
+    Keyframed::parse(&object).expect("srgb curve stops are well formed")
+}
+
 /// Reads an optional key-framed field, falling back to a constant default.
 pub fn keyframed_or<T: Lerp>(parent: &Json, key: &str, default: T) -> Keyframed<T> {
     parent
@@ -277,6 +294,17 @@ mod tests {
         // And time itself wraps.
         assert_eq!(curve.sample(1.25), 0.0);
         assert_eq!(curve.sample(-0.75), 0.0);
+    }
+
+    #[test]
+    fn srgb_curve_decodes_255_stops_into_unit_colors() {
+        let curve = srgb_curve(&[(0.0, [255, 0, 0]), (1.0, [0, 0, 255])]);
+        let noon = curve.sample(0.0);
+        assert!((noon.r - 1.0).abs() < 1e-6);
+        assert!(noon.g.abs() < 1e-6);
+        let mid = curve.sample(0.5);
+        assert!((mid.r - 0.5).abs() < 1e-6);
+        assert!((mid.b - 0.5).abs() < 1e-6);
     }
 
     #[test]

@@ -424,12 +424,15 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
         .copied()
         .find(|f| !f.is_srgb())
         .unwrap_or(caps.formats[0]);
-    // The GL version ran without vsync; prefer the lowest-latency
-    // uncapped mode the surface actually supports.
-    let present_mode = [wgpu::PresentMode::Immediate, wgpu::PresentMode::Mailbox]
-        .into_iter()
-        .find(|m| caps.present_modes.contains(m))
-        .unwrap_or(wgpu::PresentMode::Fifo);
+    // Fifo vsync caps the game loop at the monitor's current refresh rate
+    // (180 Hz on a 180 Hz display, 240 Hz on a 240 Hz display). Immediate
+    // and Mailbox were uncapped and burned frames past that.
+    let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+        wgpu::PresentMode::Fifo
+    } else {
+        caps.present_modes[0]
+    };
+    println!("Present mode: {present_mode:?}");
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
