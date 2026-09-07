@@ -5,6 +5,9 @@ use crate::chunk::{
     water_level_from_decay,
 };
 use crate::mob::{Mob, MobKind};
+use crate::mob_catalog::Motion;
+mod mobs;
+pub const MOB_CAP: usize = 48;
 use crate::renderer;
 use crate::renderer::{Mesh, Shader, Texture2D};
 use glam::{Mat4, Vec3};
@@ -232,6 +235,7 @@ pub struct World {
     pub active_fire: std::collections::HashSet<(i32, i32, i32)>,
     pub water_tick_timer: f32,
     fire_timer: f32,
+    night_spawn_timer: f32,
     burn_timer: f32,
     fire_meshes: [renderer::Mesh; 8],
     pub visible_chunks: Vec<usize>,
@@ -250,8 +254,7 @@ pub struct World {
     spawned_natural_chunks: std::collections::HashSet<(i32, i32)>,
     imported: HashMap<(i32, i32), Box<Chunk>>,
     import_world: Option<PathBuf>,
-    villager_mesh: renderer::Mesh,
-    golem_mesh: renderer::Mesh,
+    mob_visuals: std::cell::OnceCell<crate::mob_visuals::MobVisuals>,
 }
 
 impl World {
@@ -300,6 +303,7 @@ impl World {
             active_fire: std::collections::HashSet::new(),
             water_tick_timer: 0.0,
             fire_timer: 0.0,
+            night_spawn_timer: 0.0,
             burn_timer: 0.0,
             fire_meshes: std::array::from_fn(crate::fire::build_frame_mesh),
             visible_chunks: Vec::new(),
@@ -315,8 +319,7 @@ impl World {
             spawned_natural_chunks: std::collections::HashSet::new(),
             imported: HashMap::new(),
             import_world: None,
-            villager_mesh: Self::create_textured_cube_mesh(BlockType::Wool),
-            golem_mesh: Self::create_textured_cube_mesh(BlockType::IronBlock),
+            mob_visuals: std::cell::OnceCell::new(),
         }
     }
 
@@ -771,7 +774,8 @@ impl World {
         let xp_val = match mob.kind {
             MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper => 5,
             MobKind::Golem => 10,
-            MobKind::Pig | MobKind::Cow | MobKind::Sheep => 1 + (rand::random::<u32>() % 3),
+            _ if mob.is_hostile() => 5,
+            _ if mob.is_animal() => 1 + (rand::random::<u32>() % 3),
             _ => 2,
         };
         self.xp_orbs.push(crate::block::XpOrbEntity {
@@ -1657,7 +1661,7 @@ impl World {
     /// Spawn a village's inhabitants the first time its center chunk
     /// generates. Session-scoped: they don't respawn when the pool cycles.
     fn try_spawn_village_mobs(&mut self, cx: i32, cz: i32) {
-        if self.spawned_villages.contains(&(cx, cz)) {
+        if self.mobs.len() >= MOB_CAP || self.spawned_villages.contains(&(cx, cz)) {
             return;
         }
         let Some(village) = crate::village::village_for_center_chunk(self.seed, cx, cz) else {
@@ -1670,121 +1674,21 @@ impl World {
             village.center_z as f32 + 0.5,
         );
         for (i, pos) in village.villager_spawns().into_iter().enumerate() {
+            if self.mobs.len() >= MOB_CAP {
+                break;
+            }
             self.mobs
                 .push(Mob::new(MobKind::Villager, pos, home, i as u8));
         }
-        self.mobs
-            .push(Mob::new(MobKind::Golem, village.golem_spawn(), home, 0));
-    }
-
-    /// Spawn natural passive (Pig/Cow/Sheep), hostile (Zombie/Skeleton/Creeper),
-    /// and MobSpawner mobs in newly generated chunks.
-    fn try_spawn_natural_mobs(&mut self, cx: i32, cz: i32) {
-        if self.spawned_natural_chunks.contains(&(cx, cz)) {
-            return;
+        if self.mobs.len() < MOB_CAP {
+            self.mobs
+                .push(Mob::new(MobKind::Golem, village.golem_spawn(), home, 0));
         }
-        if self.mobs.len() >= 48 {
-            return;
-        }
-        self.spawned_natural_chunks.insert((cx, cz));
-
-        let mut new_mobs = Vec::new();
-        let mut rng =
-            (self.seed ^ ((cx as u64) << 32) ^ (cz as u64)).wrapping_mul(0x9E3779B97F4A7C15);
-        let chunk_origin_x = cx * CHUNK_WIDTH as i32;
-        let chunk_origin_z = cz * CHUNK_DEPTH as i32;
-
-        // 1. MobSpawner spawns (Zombie / Skeleton / Creeper)
-        if let Some(chunk) = self.get_chunk(cx, cz) {
-            for x in 0..CHUNK_WIDTH {
-                for y in 10..100 {
-                    for z in 0..CHUNK_DEPTH {
-                        if chunk.blocks[x][y][z] == BlockType::MobSpawner {
-                            let wx = chunk_origin_x + x as i32;
-                            let wz = chunk_origin_z + z as i32;
-                            let mob_kind = match rng % 3 {
-                                0 => MobKind::Zombie,
-                                1 => MobKind::Skeleton,
-                                _ => MobKind::Creeper,
-                            };
-                            rng = rng.wrapping_mul(0x9E3779B97F4A7C15);
-                            let pos = Vec3::new(wx as f32 + 1.5, (y + 1) as f32, wz as f32 + 0.5);
-                            new_mobs.push(Mob::new(mob_kind, pos, pos, (rng % 4) as u8));
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Surface passive mobs (Pig / Cow / Sheep)
-        let passive_count = (rng % 3) as usize;
-        rng = rng.wrapping_mul(0x9E3779B97F4A7C15);
-
-        for _ in 0..passive_count {
-            let local_x = (rng % CHUNK_WIDTH as u64) as usize;
-            rng = rng.wrapping_mul(0x9E3779B97F4A7C15);
-            let local_z = (rng % CHUNK_DEPTH as u64) as usize;
-            rng = rng.wrapping_mul(0x9E3779B97F4A7C15);
-
-            let wx = chunk_origin_x + local_x as i32;
-            let wz = chunk_origin_z + local_z as i32;
-
-            if let Some(chunk) = self.get_chunk(cx, cz) {
-                for y in (60..CHUNK_HEIGHT - 2).rev() {
-                    let b = chunk.blocks[local_x][y][local_z];
-                    let above = chunk.blocks[local_x][y + 1][local_z];
-                    if (b == BlockType::Grass || b == BlockType::SnowyGrass || b == BlockType::Dirt)
-                        && above == BlockType::Air
-                    {
-                        let mob_kind = match rng % 3 {
-                            0 => MobKind::Pig,
-                            1 => MobKind::Cow,
-                            _ => MobKind::Sheep,
-                        };
-                        rng = rng.wrapping_mul(0x9E3779B97F4A7C15);
-                        let pos = Vec3::new(wx as f32 + 0.5, (y + 1) as f32, wz as f32 + 0.5);
-                        new_mobs.push(Mob::new(mob_kind, pos, pos, (rng % 4) as u8));
-                        break;
-                    }
-                }
-            }
-        }
-
-        // 3. Underground cave hostile mobs (Zombie / Skeleton / Creeper)
-        let hostile_count = ((rng >> 4) % 2) as usize;
-        rng = rng.wrapping_mul(0x9E3779B97F4A7C15);
-
-        for _ in 0..hostile_count {
-            let local_x = (rng % CHUNK_WIDTH as u64) as usize;
-            rng = rng.wrapping_mul(0x9E3779B97F4A7C15);
-            let local_z = (rng % CHUNK_DEPTH as u64) as usize;
-            rng = rng.wrapping_mul(0x9E3779B97F4A7C15);
-
-            let wx = chunk_origin_x + local_x as i32;
-            let wz = chunk_origin_z + local_z as i32;
-
-            if let Some(chunk) = self.get_chunk(cx, cz) {
-                for y in 10..55 {
-                    let below = chunk.blocks[local_x][y - 1][local_z];
-                    let feet = chunk.blocks[local_x][y][local_z];
-                    let head = chunk.blocks[local_x][y + 1][local_z];
-
-                    if below.is_solid() && feet == BlockType::Air && head == BlockType::Air {
-                        let mob_kind = match rng % 3 {
-                            0 => MobKind::Zombie,
-                            1 => MobKind::Skeleton,
-                            _ => MobKind::Creeper,
-                        };
-                        rng = rng.wrapping_mul(0x9E3779B97F4A7C15);
-                        let pos = Vec3::new(wx as f32 + 0.5, y as f32, wz as f32 + 0.5);
-                        new_mobs.push(Mob::new(mob_kind, pos, pos, (rng % 4) as u8));
-                        break;
-                    }
-                }
-            }
-        }
-
-        self.mobs.extend(new_mobs);
+        let _ = self.spawn_mob(
+            MobKind::Cat,
+            home + Vec3::new(2.0, 0.0, 2.0),
+            (self.seed % 5) as u8,
+        );
     }
 
     fn solid_at(&self, x: f32, y: f32, z: f32) -> bool {
@@ -2052,7 +1956,7 @@ impl World {
     }
 
     pub fn update_mobs(&mut self, player_pos: Vec3, dt: f32, held: BlockType) {
-        let dt = dt.min(0.1);
+        let dt = dt.clamp(0.0, 0.1);
         let mut mobs = std::mem::take(&mut self.mobs);
         let mut despawned_villages = Vec::new();
         let mut despawned_natural = Vec::new();
@@ -2100,6 +2004,8 @@ impl World {
                 continue;
             }
 
+            let previous = mob.position;
+            mob.anger_time = (mob.anger_time - dt).max(0.0);
             if mob.is_animal() {
                 let parent_xz = if mob.is_baby() {
                     parents
@@ -2143,25 +2049,36 @@ impl World {
                 0.0,
                 player_pos.z - mob.position.z,
             );
-            let player_dist = to_player.length();
+            let player_dist = mob.position.distance(player_pos);
+            let attack_origin = mob.position + Vec3::Y * mob.height() * 0.75;
+            let attack_target = player_pos + Vec3::Y * 1.2;
+            let attack_line = attack_target - attack_origin;
+            let can_see_player = mob.is_hostile()
+                && player_dist < 16.0
+                && attack_line.length_squared() > 0.001
+                && !self
+                    .raycast(attack_origin, attack_line, attack_line.length())
+                    .hit;
             if mob.is_hostile() && player_dist < 16.0 && player_dist > 0.05 {
                 mob.yaw = to_player.z.atan2(to_player.x);
                 mob.walk_speed = mob.base_speed();
-                if mob.kind == MobKind::Creeper && player_dist < 2.2 {
+                if mob.kind == MobKind::Creeper && player_dist < 2.2 && can_see_player {
                     mob.walk_speed = 0.0;
                     if mob.attack_cooldown <= 0.0 {
                         self.detonations
                             .push((mob.position, crate::explosion::CREEPER_BLAST_POWER));
                         mob.health = 0.0;
                     }
-                } else if mob.kind == MobKind::Zombie
-                    && player_dist < 1.6
+                } else if !mob.is_ranged()
+                    && player_dist < 1.3 + mob.half_width()
+                    && can_see_player
                     && mob.attack_cooldown <= 0.0
                 {
-                    self.pending_hurt += 3;
+                    self.pending_hurt += mob.kind.species().damage;
                     mob.attack_cooldown = 1.0;
-                } else if mob.kind == MobKind::Skeleton
+                } else if mob.is_ranged()
                     && player_dist < 12.0
+                    && can_see_player
                     && mob.attack_cooldown <= 0.0
                 {
                     let origin = mob.position + Vec3::new(0.0, 1.4, 0.0);
@@ -2182,9 +2099,56 @@ impl World {
                 }
             }
 
+            if mob.kind.species().motion == Motion::Swim {
+                mob.walk_speed = mob.walk_speed.max(mob.base_speed() * 0.6);
+                let hw = mob.half_width();
+                let height = mob.height();
+                let probe = |yaw: f32| {
+                    self.mob_in_water(
+                        mob.position + Vec3::new(yaw.cos(), 0.0, yaw.sin()) * 0.9,
+                        hw,
+                        height,
+                    )
+                };
+                if !probe(mob.yaw) {
+                    for turn in [0.6, -0.6, 1.2, -1.2, 2.0, -2.0, std::f32::consts::PI] {
+                        if probe(mob.yaw + turn) {
+                            mob.yaw += turn * (dt * 4.0).min(1.0);
+                            break;
+                        }
+                    }
+                }
+            }
             mob.velocity.x = mob.yaw.cos() * mob.walk_speed;
             mob.velocity.z = mob.yaw.sin() * mob.walk_speed;
-            mob.velocity.y = (mob.velocity.y - 22.0 * dt).max(-40.0);
+            let motion = mob.kind.species().motion;
+            let swimming =
+                matches!(motion, Motion::Swim | Motion::Amphibious) && self.animal_in_water(mob);
+            if swimming || motion == Motion::Fly {
+                let target_y = if mob.is_hostile() && player_dist < 16.0 {
+                    player_pos.y + if motion == Motion::Fly { 0.8 } else { 0.0 }
+                } else {
+                    mob.home.y
+                        + (self.day_time * 0.8 + mob.variant as f32).sin() * 0.6
+                        + if motion == Motion::Fly { 1.4 } else { 0.0 }
+                };
+                mob.velocity.y =
+                    ((target_y - mob.position.y) * 1.5).clamp(-mob.base_speed(), mob.base_speed());
+            } else {
+                if (motion == Motion::Hop || mob.kind == MobKind::Frog)
+                    && mob.grounded
+                    && mob.walk_speed > 0.0
+                {
+                    mob.velocity.y = 5.0;
+                    mob.grounded = false;
+                }
+                mob.velocity.y = (mob.velocity.y - 22.0 * dt).max(-40.0);
+                if motion == Motion::Swim {
+                    mob.walk_speed = 0.0;
+                    mob.velocity.x = 0.0;
+                    mob.velocity.z = 0.0;
+                }
+            }
 
             let hw = mob.half_width();
             let height = mob.height();
@@ -2204,6 +2168,10 @@ impl World {
                     cand.x += step;
                 } else {
                     cand.z += step;
+                }
+                if motion == Motion::Swim && swimming && !self.mob_in_water(cand, hw, height) {
+                    mob.wander_timer = mob.wander_timer.min(0.5);
+                    continue;
                 }
                 if !self.mob_box_blocked(cand, hw, height) {
                     mob.position = cand;
@@ -2230,7 +2198,9 @@ impl World {
             if cand.y < 1.0 {
                 cand.y = 1.0;
             }
-            if !self.mob_box_blocked(cand, hw, height) {
+            if !self.mob_box_blocked(cand, hw, height)
+                && (motion != Motion::Swim || !swimming || self.mob_in_water(cand, hw, height))
+            {
                 mob.position = cand;
                 mob.grounded = false;
             } else {
@@ -2239,6 +2209,7 @@ impl World {
                 }
                 mob.velocity.y = 0.0;
             }
+            mob.animate_movement(previous, dt);
         }
 
         let mut births = Vec::new();
@@ -2267,6 +2238,7 @@ impl World {
                 break;
             }
         }
+        births.truncate(MOB_CAP.saturating_sub(mobs.len()));
         mobs.extend(births);
         mobs.retain(|mob| mob.health > 0.0);
         self.mobs = mobs;
@@ -2275,6 +2247,17 @@ impl World {
             (player_pos.z / CHUNK_DEPTH as f32).floor() as i32,
         );
         self.try_spawn_natural_mobs(player_chunk.0, player_chunk.1);
+        self.night_spawn_timer -= dt;
+        if self.day_time >= 600.0 && self.night_spawn_timer <= 0.0 {
+            self.night_spawn_timer = 5.0;
+            if self.mobs.len() < MOB_CAP && self.mobs.iter().filter(|m| m.is_hostile()).count() < 16
+            {
+                let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                let x = (player_pos.x + angle.cos() * 28.0).floor() as i32;
+                let z = (player_pos.z + angle.sin() * 28.0).floor() as i32;
+                self.spawn_surface_mob(x, z, rand::random(), true);
+            }
+        }
     }
 
     pub fn render_mobs(&self, shader: &Shader, player_pos: Vec3) {
@@ -2284,393 +2267,26 @@ impl World {
         let loc_model = shader.get_uniform_location("uModel");
         let loc_diff = shader.get_uniform_location("colDiffuse");
         let loc_light = shader.get_uniform_location("uColor");
-        if let Some(atlas) = &self.atlas {
-            atlas.bind(0);
-        }
-
+        let visuals = self
+            .mob_visuals
+            .get_or_init(crate::mob_visuals::MobVisuals::new);
         for mob in &self.mobs {
             if mob.position.distance_squared(player_pos) > 64.0 * 64.0 {
                 continue;
             }
-            // Mobs in unloaded chunks are frozen by update_mobs; skip
-            // drawing them too instead of paying draw calls off-screen.
-            let mcx = (mob.position.x / CHUNK_WIDTH as f32).floor() as i32;
-            let mcz = (mob.position.z / CHUNK_DEPTH as f32).floor() as i32;
-            if self.get_chunk(mcx, mcz).is_none() {
+            let cx = (mob.position.x / CHUNK_WIDTH as f32).floor() as i32;
+            let cz = (mob.position.z / CHUNK_DEPTH as f32).floor() as i32;
+            if self.get_chunk(cx, cz).is_none() {
                 continue;
             }
             shader.set_vec4(loc_light, self.entity_lighting(mob.position));
-            let scale = if mob.is_baby() { 0.5 } else { 1.0 };
-            let base = Mat4::from_translation(mob.position)
-                * Mat4::from_rotation_y(-mob.yaw)
-                * Mat4::from_scale(Vec3::splat(scale));
-            let part = |mesh: &Mesh, center: Vec3, size: Vec3, tint: glam::Vec4| {
-                shader.set_vec4(loc_diff, tint);
-                let model =
-                    base * Mat4::from_translation(center - size * 0.5) * Mat4::from_scale(size);
-                shader.set_mat4(loc_model, &model);
-                mesh.draw();
-            };
-            match mob.kind {
-                MobKind::Villager => {
-                    let robe = match mob.variant % 3 {
-                        0 => glam::Vec4::new(0.45, 0.33, 0.22, 1.0),
-                        1 => glam::Vec4::new(0.34, 0.40, 0.27, 1.0),
-                        _ => glam::Vec4::new(0.42, 0.42, 0.46, 1.0),
-                    };
-                    let dark_robe = glam::Vec4::new(robe.x * 0.8, robe.y * 0.8, robe.z * 0.8, 1.0);
-                    let skin = glam::Vec4::new(0.82, 0.64, 0.47, 1.0);
-                    let nose = glam::Vec4::new(0.72, 0.53, 0.38, 1.0);
-                    // Robe body
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 0.625, 0.0),
-                        Vec3::new(0.5, 1.25, 0.42),
-                        robe,
-                    );
-                    // Folded arms bar across the chest (forward is +x)
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.2, 0.98, 0.0),
-                        Vec3::new(0.2, 0.24, 0.6),
-                        dark_robe,
-                    );
-                    // Head
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 1.53, 0.0),
-                        Vec3::new(0.5, 0.56, 0.5),
-                        skin,
-                    );
-                    // The all-important nose
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.3, 1.4, 0.0),
-                        Vec3::new(0.12, 0.3, 0.12),
-                        nose,
-                    );
-                }
-                MobKind::Golem => {
-                    let tint = glam::Vec4::ONE;
-                    // Legs
-                    part(
-                        &self.golem_mesh,
-                        Vec3::new(0.0, 0.525, -0.24),
-                        Vec3::new(0.34, 1.05, 0.34),
-                        tint,
-                    );
-                    part(
-                        &self.golem_mesh,
-                        Vec3::new(0.0, 0.525, 0.24),
-                        Vec3::new(0.34, 1.05, 0.34),
-                        tint,
-                    );
-                    // Torso, shoulders spanning z
-                    part(
-                        &self.golem_mesh,
-                        Vec3::new(0.0, 1.5, 0.0),
-                        Vec3::new(0.72, 0.95, 1.05),
-                        tint,
-                    );
-                    // Hanging arms
-                    part(
-                        &self.golem_mesh,
-                        Vec3::new(0.0, 1.32, -0.68),
-                        Vec3::new(0.3, 1.3, 0.3),
-                        tint,
-                    );
-                    part(
-                        &self.golem_mesh,
-                        Vec3::new(0.0, 1.32, 0.68),
-                        Vec3::new(0.3, 1.3, 0.3),
-                        tint,
-                    );
-                    // Head
-                    part(
-                        &self.golem_mesh,
-                        Vec3::new(0.0, 2.24, 0.0),
-                        Vec3::new(0.5, 0.55, 0.5),
-                        tint,
-                    );
-                }
-                MobKind::Zombie => {
-                    let skin = glam::Vec4::new(0.2, 0.45, 0.25, 1.0);
-                    let shirt = glam::Vec4::new(0.15, 0.35, 0.45, 1.0);
-                    // Body
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 0.625, 0.0),
-                        Vec3::new(0.5, 1.25, 0.42),
-                        shirt,
-                    );
-                    // Outstretched arms
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.35, 0.98, 0.0),
-                        Vec3::new(0.5, 0.2, 0.2),
-                        skin,
-                    );
-                    // Head
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 1.53, 0.0),
-                        Vec3::new(0.5, 0.5, 0.5),
-                        skin,
-                    );
-                }
-                MobKind::Skeleton => {
-                    let bone = glam::Vec4::new(0.85, 0.85, 0.82, 1.0);
-                    // Slender body & head
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 0.625, 0.0),
-                        Vec3::new(0.3, 1.2, 0.3),
-                        bone,
-                    );
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 1.5, 0.0),
-                        Vec3::new(0.45, 0.45, 0.45),
-                        bone,
-                    );
-                }
-                MobKind::Creeper => {
-                    let green = glam::Vec4::new(0.25, 0.6, 0.25, 1.0);
-                    // Body trunk
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 0.7, 0.0),
-                        Vec3::new(0.45, 1.0, 0.45),
-                        green,
-                    );
-                    // Head
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 1.45, 0.0),
-                        Vec3::new(0.5, 0.5, 0.5),
-                        green,
-                    );
-                    // 4 legs
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(-0.2, 0.15, -0.2),
-                        Vec3::new(0.2, 0.3, 0.2),
-                        green,
-                    );
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.2, 0.15, -0.2),
-                        Vec3::new(0.2, 0.3, 0.2),
-                        green,
-                    );
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(-0.2, 0.15, 0.2),
-                        Vec3::new(0.2, 0.3, 0.2),
-                        green,
-                    );
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.2, 0.15, 0.2),
-                        Vec3::new(0.2, 0.3, 0.2),
-                        green,
-                    );
-                }
-                MobKind::Pig => {
-                    let pink = glam::Vec4::new(0.95, 0.65, 0.70, 1.0);
-                    let dark_pink = glam::Vec4::new(0.85, 0.50, 0.55, 1.0);
-
-                    // 4 Legs
-                    let leg_w = 0.18;
-                    let leg_h = 0.35;
-                    for &(lx, lz) in &[(-0.20, 0.25), (0.20, 0.25), (-0.20, -0.25), (0.20, -0.25)] {
-                        part(
-                            &self.villager_mesh,
-                            Vec3::new(lx, leg_h / 2.0, lz),
-                            Vec3::new(leg_w, leg_h, leg_w),
-                            pink,
-                        );
-                    }
-                    // Torso
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 0.55, 0.0),
-                        Vec3::new(0.65, 0.55, 0.90),
-                        pink,
-                    );
-                    // Head
-                    let head_pos = Vec3::new(0.0, 0.72, 0.48);
-                    part(
-                        &self.villager_mesh,
-                        head_pos,
-                        Vec3::new(0.42, 0.42, 0.42),
-                        pink,
-                    );
-                    // Snout
-                    part(
-                        &self.villager_mesh,
-                        head_pos + Vec3::new(0.0, -0.06, 0.22),
-                        Vec3::new(0.24, 0.16, 0.12),
-                        dark_pink,
-                    );
-                }
-                MobKind::Cow => {
-                    let brown = glam::Vec4::new(0.42, 0.30, 0.20, 1.0);
-                    let white_spot = glam::Vec4::new(0.92, 0.92, 0.90, 1.0);
-                    let horn_color = glam::Vec4::new(0.85, 0.85, 0.78, 1.0);
-                    let hoof_color = glam::Vec4::new(0.25, 0.22, 0.20, 1.0);
-
-                    // 4 Legs with hooves
-                    let leg_w = 0.20;
-                    let leg_h = 0.50;
-                    for &(lx, lz) in &[(-0.24, 0.30), (0.24, 0.30), (-0.24, -0.30), (0.24, -0.30)] {
-                        part(
-                            &self.villager_mesh,
-                            Vec3::new(lx, leg_h / 2.0, lz),
-                            Vec3::new(leg_w, leg_h, leg_w),
-                            brown,
-                        );
-                        part(
-                            &self.villager_mesh,
-                            Vec3::new(lx, 0.06, lz),
-                            Vec3::new(leg_w * 1.05, 0.12, leg_w * 1.05),
-                            hoof_color,
-                        );
-                    }
-                    // Torso & spots
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 0.75, 0.0),
-                        Vec3::new(0.72, 0.65, 1.05),
-                        brown,
-                    );
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, 0.78, 0.08),
-                        Vec3::new(0.74, 0.50, 0.50),
-                        white_spot,
-                    );
-
-                    // Head & Horns
-                    let head_pos = Vec3::new(0.0, 0.95, 0.52);
-                    part(
-                        &self.villager_mesh,
-                        head_pos,
-                        Vec3::new(0.44, 0.44, 0.44),
-                        brown,
-                    );
-                    // Horns
-                    part(
-                        &self.villager_mesh,
-                        head_pos + Vec3::new(-0.26, 0.22, -0.05),
-                        Vec3::new(0.10, 0.18, 0.10),
-                        horn_color,
-                    );
-                    part(
-                        &self.villager_mesh,
-                        head_pos + Vec3::new(0.26, 0.22, -0.05),
-                        Vec3::new(0.10, 0.18, 0.10),
-                        horn_color,
-                    );
-                }
-                MobKind::Sheep => {
-                    let wool_color = match mob.variant % 5 {
-                        0 | 1 | 2 => glam::Vec4::new(0.95, 0.95, 0.95, 1.0), // White (common)
-                        3 => glam::Vec4::new(0.94, 0.62, 0.72, 1.0), // Pink (rare Minecraft sheep!)
-                        _ => glam::Vec4::new(0.60, 0.55, 0.50, 1.0), // Light Gray/Brown
-                    };
-                    let skin_color = glam::Vec4::new(0.88, 0.82, 0.75, 1.0); // Tan skin face & legs
-                    let hoof_color = glam::Vec4::new(0.40, 0.35, 0.30, 1.0); // Dark hooves
-
-                    // 1. 4 Skin legs with hooves sticking out underneath
-                    let leg_w = 0.18;
-                    let leg_h = 0.45;
-                    let leg_d = 0.18;
-                    let leg_y = leg_h / 2.0;
-
-                    for &(lx, lz) in &[(-0.22, 0.28), (0.22, 0.28), (-0.22, -0.28), (0.22, -0.28)] {
-                        part(
-                            &self.villager_mesh,
-                            Vec3::new(lx, leg_y, lz),
-                            Vec3::new(leg_w, leg_h, leg_d),
-                            skin_color,
-                        );
-                        part(
-                            &self.villager_mesh,
-                            Vec3::new(lx, 0.06, lz),
-                            Vec3::new(leg_w * 1.05, 0.12, leg_d * 1.05),
-                            hoof_color,
-                        );
-                    }
-
-                    // 2. Main Fluffy Wool Torso
-                    let body_y = 0.72;
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, body_y, 0.0),
-                        Vec3::new(0.75, 0.65, 1.05),
-                        wool_color,
-                    );
-                    // Puffy side/top wool layer overlays for 3D depth
-                    part(
-                        &self.villager_mesh,
-                        Vec3::new(0.0, body_y + 0.05, 0.0),
-                        Vec3::new(0.79, 0.55, 0.98),
-                        wool_color * 0.98,
-                    );
-
-                    // 3. Head, Face & Ears
-                    let head_pos = Vec3::new(0.0, 0.88, 0.52);
-                    // Face skin block (naked snout)
-                    part(
-                        &self.villager_mesh,
-                        head_pos + Vec3::new(0.0, 0.0, 0.08),
-                        Vec3::new(0.38, 0.38, 0.38),
-                        skin_color,
-                    );
-                    // Wool cap on back/top of head (helmet wool)
-                    part(
-                        &self.villager_mesh,
-                        head_pos + Vec3::new(0.0, 0.08, -0.06),
-                        Vec3::new(0.42, 0.34, 0.32),
-                        wool_color,
-                    );
-
-                    // Ears (tan skin ears extending horizontally)
-                    part(
-                        &self.villager_mesh,
-                        head_pos + Vec3::new(-0.25, 0.06, -0.02),
-                        Vec3::new(0.16, 0.08, 0.10),
-                        skin_color,
-                    );
-                    part(
-                        &self.villager_mesh,
-                        head_pos + Vec3::new(0.25, 0.06, -0.02),
-                        Vec3::new(0.16, 0.08, 0.10),
-                        skin_color,
-                    );
-
-                    // Eyes (small dark eye dots)
-                    let eye_color = glam::Vec4::new(0.1, 0.1, 0.1, 1.0);
-                    part(
-                        &self.villager_mesh,
-                        head_pos + Vec3::new(-0.16, 0.04, 0.24),
-                        Vec3::new(0.06, 0.08, 0.06),
-                        eye_color,
-                    );
-                    part(
-                        &self.villager_mesh,
-                        head_pos + Vec3::new(0.16, 0.04, 0.24),
-                        Vec3::new(0.06, 0.08, 0.06),
-                        eye_color,
-                    );
-                }
-            }
+            visuals.draw(mob, shader, self.day_time, player_pos);
+        }
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
         shader.set_vec4(loc_light, glam::Vec4::ZERO);
-        // Chunk passes draw with whatever uModel is left bound, so the
-        // per-part matrices must not outlive this function.
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
     }
 

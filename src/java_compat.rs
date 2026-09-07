@@ -646,17 +646,14 @@ pub fn build_iron_golem_entity_nbt(x: f64, y: f64, z: f64) -> NbtTag {
 }
 
 pub fn build_mob_entity_nbt(mob: &crate::mob::Mob) -> NbtTag {
-    use crate::mob::MobKind;
-    let entity_id = match mob.kind {
-        MobKind::Villager => "minecraft:villager",
-        MobKind::Golem => "minecraft:iron_golem",
-        MobKind::Zombie => "minecraft:zombie",
-        MobKind::Skeleton => "minecraft:skeleton",
-        MobKind::Creeper => "minecraft:creeper",
-        MobKind::Pig => "minecraft:pig",
-        MobKind::Cow => "minecraft:cow",
-        MobKind::Sheep => "minecraft:sheep",
+    let id = match mob.kind.species().id {
+        "evocation_illager" => "evoker",
+        "tropicalfish" => "tropical_fish",
+        "zombie_villager_v2" => "zombie_villager",
+        "zombie_pigman" => "zombified_piglin",
+        id => id,
     };
+    let entity_id = format!("minecraft:{id}");
     NbtTag::Compound(vec![
         nbt_field("id", NbtTag::String(entity_id.to_owned())),
         nbt_field(

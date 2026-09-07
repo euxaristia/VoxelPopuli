@@ -1,17 +1,8 @@
 use crate::block::BlockType;
 use glam::Vec3;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MobKind {
-    Villager,
-    Golem,
-    Zombie,
-    Skeleton,
-    Creeper,
-    Pig,
-    Cow,
-    Sheep,
-}
+pub use crate::mob_catalog::MobKind;
+use crate::mob_catalog::{Motion, Temper};
 
 /// Minecraft animal goal timers. Hostiles leave this at default.
 #[derive(Clone, Debug, Default)]
@@ -51,6 +42,10 @@ pub struct Mob {
     /// Cosmetic variation (robe tint for villagers)
     pub variant: u8,
     pub animal: AnimalState,
+    pub walk_phase: f32,
+    pub walk_blend: f32,
+    pub anger_time: f32,
+    pub swim_pitch: f32,
 }
 
 impl Mob {
@@ -69,21 +64,22 @@ impl Mob {
             attack_cooldown: 0.0,
             variant,
             animal: AnimalState::default(),
+            walk_phase: 0.0,
+            walk_blend: 0.0,
+            anger_time: 0.0,
+            swim_pitch: 0.0,
         }
     }
 
     fn max_health_for(kind: MobKind) -> f32 {
-        match kind {
-            MobKind::Golem => 100.0,
-            // Java Cow/Pig createAttributes MAX_HEALTH 10, Sheep 8.
-            MobKind::Cow | MobKind::Pig => 10.0,
-            MobKind::Sheep => 8.0,
-            MobKind::Villager | MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper => 20.0,
-        }
+        kind.species().health
     }
 
     pub fn take_damage(&mut self, damage: f32) -> bool {
         self.health = (self.health - damage.max(0.0)).max(0.0);
+        if damage > 0.0 && self.kind.species().temper == Temper::Neutral {
+            self.anger_time = 15.0;
+        }
         if self.is_animal() && self.health > 0.0 {
             // PanicGoal lasts 100 ticks after the last hit.
             self.animal.panic_time = 5.0;
@@ -94,7 +90,22 @@ impl Mob {
     }
 
     pub fn is_animal(&self) -> bool {
-        matches!(self.kind, MobKind::Pig | MobKind::Cow | MobKind::Sheep)
+        self.kind.species().temper != Temper::Hostile
+            && matches!(self.kind.species().motion, Motion::Walk | Motion::Hop)
+            && !matches!(
+                self.kind,
+                MobKind::Villager
+                    | MobKind::Golem
+                    | MobKind::CopperGolem
+                    | MobKind::SnowGolem
+                    | MobKind::WanderingTrader
+                    | MobKind::SulfurCube
+                    | MobKind::ZombieHorse
+                    | MobKind::SkeletonHorse
+                    | MobKind::CamelHusk
+                    | MobKind::Enderman
+                    | MobKind::ZombifiedPiglin
+            )
     }
 
     pub fn is_baby(&self) -> bool {
@@ -107,7 +118,7 @@ impl Mob {
             MobKind::Cow => 0.2,
             MobKind::Sheep => 0.23,
             MobKind::Pig => 0.25,
-            _ => 0.25,
+            _ => self.kind.species().speed / 10.75,
         }
     }
 
@@ -136,52 +147,27 @@ impl Mob {
     /// does not have, so they are not tempted.
     pub fn food_item(&self) -> Option<BlockType> {
         match self.kind {
-            MobKind::Cow | MobKind::Sheep => Some(BlockType::Wheat),
+            MobKind::Cow | MobKind::Sheep | MobKind::Mooshroom | MobKind::Goat => {
+                Some(BlockType::Wheat)
+            }
             _ => None,
         }
     }
 
     pub fn is_hostile(&self) -> bool {
-        matches!(
-            self.kind,
-            MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper
-        )
+        self.kind.species().temper == Temper::Hostile || self.anger_time > 0.0
     }
 
     pub fn height(&self) -> f32 {
-        let h = match self.kind {
-            MobKind::Villager => 1.8,
-            MobKind::Golem => 2.5,
-            MobKind::Zombie => 1.95,
-            MobKind::Skeleton => 1.99,
-            MobKind::Creeper => 1.7,
-            MobKind::Pig => 0.9,
-            MobKind::Cow => 1.4,
-            MobKind::Sheep => 1.3,
-        };
-        if self.is_baby() { h * 0.5 } else { h }
+        self.kind.species().height * if self.is_baby() { 0.5 } else { 1.0 }
     }
 
     pub fn half_width(&self) -> f32 {
-        let w = match self.kind {
-            MobKind::Villager => 0.28,
-            MobKind::Golem => 0.55,
-            MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper => 0.3,
-            // Java collision boxes are 0.9 wide for the three animals.
-            MobKind::Pig | MobKind::Cow | MobKind::Sheep => 0.45,
-        };
-        if self.is_baby() { w * 0.5 } else { w }
+        self.kind.species().width * if self.is_baby() { 0.25 } else { 0.5 }
     }
 
     pub fn base_speed(&self) -> f32 {
-        match self.kind {
-            MobKind::Villager => 1.7,
-            MobKind::Golem => 1.15,
-            MobKind::Zombie => 1.5,
-            MobKind::Skeleton => 1.6,
-            MobKind::Creeper => 1.4,
-            MobKind::Pig | MobKind::Cow | MobKind::Sheep => self.walk_speed_mps(),
-        }
+        self.kind.species().speed
     }
 
     /// How far from home the mob is willing to wander
@@ -189,9 +175,41 @@ impl Mob {
         match self.kind {
             MobKind::Villager => 22.0,
             MobKind::Golem => 30.0,
-            MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper => 25.0,
-            MobKind::Pig | MobKind::Cow | MobKind::Sheep => 20.0,
+            _ if self.is_hostile() => 25.0,
+            _ => 20.0,
         }
+    }
+
+    /// Drive strides from distance traveled, so blocked mobs do not moonwalk.
+    pub fn animate_movement(&mut self, previous: Vec3, dt: f32) {
+        if dt <= 0.0 {
+            return;
+        }
+        let distance = (self.position - previous).with_y(0.0).length();
+        self.walk_phase = (self.walk_phase
+            + distance * 4.0 / if self.is_baby() { 0.5 } else { 1.0 })
+            % std::f32::consts::TAU;
+        let amount = (distance / dt / self.base_speed()).clamp(0.0, 1.0);
+        if matches!(
+            self.kind.species().motion,
+            Motion::Swim | Motion::Amphibious
+        ) {
+            let movement = self.position - previous;
+            let target = -movement.y.atan2(movement.with_y(0.0).length().max(0.01));
+            self.swim_pitch += (target.clamp(-0.6, 0.6) - self.swim_pitch) * (dt * 5.0).min(1.0);
+        }
+        self.walk_blend += (amount - self.walk_blend) * (dt * 12.0).min(1.0);
+    }
+
+    pub fn is_ranged(&self) -> bool {
+        matches!(
+            self.kind,
+            MobKind::Skeleton
+                | MobKind::Stray
+                | MobKind::Bogged
+                | MobKind::Parched
+                | MobKind::Pillager
+        )
     }
 
     /// Returns the loot drop when this mob is defeated
@@ -205,6 +223,9 @@ impl Mob {
             MobKind::Pig => Some((BlockType::RawPorkchop, 1 + (rand::random::<u8>() % 3))),
             MobKind::Cow => Some((BlockType::RawBeef, 1 + (rand::random::<u8>() % 3))),
             MobKind::Sheep => Some((BlockType::Wool, 1)),
+            MobKind::Mooshroom => Some((BlockType::RawBeef, 2)),
+            MobKind::Stray | MobKind::Bogged | MobKind::Parched => Some((BlockType::Stick, 1)),
+            _ => None,
         }
     }
 }
@@ -212,6 +233,34 @@ impl Mob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neutral_mobs_retaliate_but_passive_animals_flee() {
+        let mut wolf = Mob::new(MobKind::Wolf, Vec3::ZERO, Vec3::ZERO, 0);
+        assert!(!wolf.is_hostile());
+        wolf.take_damage(2.0);
+        assert!(wolf.is_hostile());
+        let mut chicken = Mob::new(MobKind::Chicken, Vec3::ZERO, Vec3::ZERO, 0);
+        chicken.take_damage(1.0);
+        assert!(!chicken.is_hostile());
+        assert!(chicken.animal.panic_time > 0.0);
+    }
+
+    #[test]
+    fn strides_follow_distance_and_stop_when_blocked() {
+        let mut mob = Mob::new(MobKind::Cow, Vec3::ZERO, Vec3::ZERO, 0);
+        mob.walk_speed = 2.0;
+        mob.animate_movement(Vec3::ZERO, 0.1);
+        assert_eq!(mob.walk_phase, 0.0);
+        assert_eq!(mob.walk_blend, 0.0);
+        mob.position.x += 0.2;
+        mob.animate_movement(Vec3::ZERO, 0.1);
+        assert!(mob.walk_phase > 0.0 && mob.walk_blend > 0.8);
+        let phase = mob.walk_phase;
+        mob.animate_movement(mob.position, 0.1);
+        assert_eq!(phase, mob.walk_phase);
+        assert_eq!(mob.walk_blend, 0.0);
+    }
 
     #[test]
     fn test_mob_dimensions_and_properties() {

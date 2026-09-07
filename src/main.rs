@@ -6,6 +6,7 @@ mod chunk;
 mod container;
 mod container_ui;
 mod crafting;
+mod creature_ui;
 mod explosion;
 mod fire;
 mod hand;
@@ -15,6 +16,8 @@ mod item;
 mod java_compat;
 mod mining;
 mod mob;
+mod mob_catalog;
+mod mob_visuals;
 mod noise;
 mod player;
 mod profiler;
@@ -328,6 +331,13 @@ fn save_path_from_args(args: &[String]) -> Result<std::path::PathBuf, String> {
 fn main() {
     // Entry point
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--smoke-test-mobs") {
+        if let Err(error) = smoke::mobs() {
+            eprintln!("Creature smoke test failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|arg| arg == "--smoke-test-ui") {
         if let Err(error) = smoke::container_ui() {
             eprintln!("Container UI smoke test failed: {error}");
@@ -556,6 +566,7 @@ fn main() {
     let mut open_container = None;
     let mut craft_table_slots = [None::<ItemStack>; 10]; // 0-8: 3x3 grid, 9: output
     let mut pause_sub_menu = PauseSubMenu::Main;
+    let mut creature_menu: Option<creature_ui::Catalogue> = None;
     let settings = loaded_save
         .as_ref()
         .map(|save| save.settings.clamped())
@@ -775,7 +786,10 @@ fn main() {
                 // Surface size follows the framebuffer in renderer::end_frame.
                 glfw::WindowEvent::Size(..) => {}
                 glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
-                    if game_state == GameState::Paused {
+                    if creature_menu.take().is_some() {
+                        game_state = GameState::Playing;
+                        window.set_cursor_mode(glfw::CursorMode::Disabled);
+                    } else if game_state == GameState::Paused {
                         if pause_sub_menu != PauseSubMenu::Main {
                             pause_sub_menu = PauseSubMenu::Main;
                         } else {
@@ -818,6 +832,21 @@ fn main() {
                         } else {
                             return_cursor(&mut inv_slots, &mut inv_cursor);
                             window.set_cursor_mode(glfw::CursorMode::Disabled);
+                        }
+                    }
+                }
+                glfw::WindowEvent::Key(Key::F6, _, Action::Press, _) => {
+                    if player.sandbox
+                        && !player.inventory_open
+                        && matches!(game_state, GameState::Playing | GameState::Paused)
+                    {
+                        if creature_menu.take().is_some() {
+                            game_state = GameState::Playing;
+                            window.set_cursor_mode(glfw::CursorMode::Disabled);
+                        } else {
+                            creature_menu = Some(creature_ui::Catalogue::default());
+                            game_state = GameState::Paused;
+                            window.set_cursor_mode(glfw::CursorMode::Normal);
                         }
                     }
                 }
@@ -1009,6 +1038,45 @@ fn main() {
                         let sh = inner_win_size.1 as f32;
                         let mx = last_cursor_pos.0 as f32;
                         let my = last_cursor_pos.1 as f32;
+                        if let Some(menu) = creature_menu.as_mut() {
+                            match menu.click(sw, sh, mx, my) {
+                                Some(creature_ui::Click::Spawn(kind)) => {
+                                    let direction =
+                                        Vec3::new(camera_angle.x.sin(), 0.0, camera_angle.x.cos());
+                                    menu.notice =
+                                        match world.summon_near(kind, player.position, direction) {
+                                            Ok(()) => format!(
+                                                "{} spawned. Press Esc to resume.",
+                                                kind.species().name
+                                            ),
+                                            Err(message) => message.to_owned(),
+                                        };
+                                }
+                                Some(creature_ui::Click::Previous) => menu.page -= 1,
+                                Some(creature_ui::Click::Next) => menu.page += 1,
+                                Some(creature_ui::Click::Filter) => {
+                                    menu.natural_only = !menu.natural_only;
+                                    menu.page = 0;
+                                }
+                                Some(creature_ui::Click::ClearNearby) => {
+                                    let before = world.mobs.len();
+                                    world.mobs.retain(|mob| {
+                                        mob.position.distance_squared(player.position) > 32.0 * 32.0
+                                    });
+                                    menu.notice = format!(
+                                        "Cleared {} nearby creatures.",
+                                        before - world.mobs.len()
+                                    );
+                                }
+                                Some(creature_ui::Click::Close) => {
+                                    creature_menu = None;
+                                    game_state = GameState::Playing;
+                                    window.set_cursor_mode(glfw::CursorMode::Disabled);
+                                }
+                                None => {}
+                            }
+                            continue;
+                        }
                         if let Some(click) = pause_click(pause_sub_menu, sw, sh, mx, my) {
                             match click {
                                 PauseClick::Resume => {
@@ -2941,21 +3009,44 @@ fn main() {
 
         if game_state == GameState::Paused {
             let (win_width, win_height) = window.get_size();
-            draw_pause_menu(
-                &ui_shader,
-                &texture_ui_shader,
-                &font_texture,
-                win_width as f32,
-                win_height as f32,
-                pause_sub_menu,
-                world_seed as u64,
-                world.mobs.len(),
-                &export_status_msg,
-                selected_skin,
-                render_dist_setting,
-                fov_setting,
-                fancy_gfx_setting,
-            );
+            if let Some(menu) = &creature_menu {
+                menu.draw(
+                    &ui_shader,
+                    &texture_ui_shader,
+                    &font_texture,
+                    win_width as f32,
+                    win_height as f32,
+                    world.mobs.len(),
+                );
+            } else {
+                draw_pause_menu(
+                    &ui_shader,
+                    &texture_ui_shader,
+                    &font_texture,
+                    win_width as f32,
+                    win_height as f32,
+                    pause_sub_menu,
+                    world_seed as u64,
+                    world.mobs.len(),
+                    &export_status_msg,
+                    selected_skin,
+                    render_dist_setting,
+                    fov_setting,
+                    fancy_gfx_setting,
+                );
+                if player.sandbox {
+                    draw_text(
+                        &font_texture,
+                        "F6: Creature catalogue",
+                        20.0,
+                        win_height as f32 - 32.0,
+                        16.0,
+                        &texture_ui_shader,
+                        win_width as f32,
+                        win_height as f32,
+                    );
+                }
+            }
         }
 
         renderer::set_depth_test(true);

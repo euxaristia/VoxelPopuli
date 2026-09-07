@@ -513,3 +513,420 @@ pub fn container_ui() -> Result<(), String> {
     println!("World container interaction, save, reload, and break passed");
     Ok(())
 }
+
+/// Captures every production model with animated and resting poses.
+pub fn mobs() -> Result<(), String> {
+    use crate::mob::{Mob, MobKind};
+    use glam::{Mat4, Vec3, Vec4};
+    let mut glfw = glfw::init(glfw::log_errors).map_err(|e| e.to_string())?;
+    glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
+    glfw.window_hint(glfw::WindowHint::Visible(false));
+    let (window, _) = glfw
+        .create_window(
+            1600,
+            1100,
+            "Creature rendering smoke test",
+            glfw::WindowMode::Windowed,
+        )
+        .ok_or("Could not create the test window")?;
+    let _renderer = renderer::init(&*window, 1600, 1100);
+    let shader = Shader::new(&crate::load_shader("ps1.wgsl"))?;
+    let ui = Shader::new(&crate::load_shader("ui.wgsl"))?;
+    let text = Shader::new(&crate::load_shader("ui_texture.wgsl"))?;
+    let font = Texture2D::from_file("assets/font.png");
+    let visuals = crate::mob_visuals::MobVisuals::new();
+    let target = RenderTexture2D::new(1600, 1100);
+    std::fs::create_dir_all("target/test-artifacts").map_err(|e| e.to_string())?;
+    for (page, entries) in MobKind::ALL.chunks(20).enumerate() {
+        for pose in 0..2 {
+            target.bind();
+            renderer::clear(0.105, 0.14, 0.155, 1.0);
+            renderer::set_depth_test(true);
+            renderer::set_depth_write(true);
+            renderer::set_cull(true);
+            renderer::set_blend(false);
+            for (i, &kind) in entries.iter().enumerate() {
+                let mut mob = Mob::new(kind, Vec3::ZERO, Vec3::ZERO, 0);
+                mob.yaw = std::f32::consts::FRAC_PI_2;
+                mob.walk_phase = if pose == 0 { 0.0 } else { 1.2 };
+                mob.walk_blend = pose as f32;
+                let size = mob.height().max(kind.species().width * 1.3);
+                let eye = Vec3::new(size * 0.9, size * 0.78, size * 1.75);
+                let view = glam::camera::rh::view::look_at_mat4(
+                    eye,
+                    Vec3::Y * mob.height() * 0.48,
+                    Vec3::Y,
+                );
+                let proj = glam::camera::rh::proj::directx::perspective(
+                    45f32.to_radians(),
+                    1.35,
+                    0.01,
+                    100.0,
+                );
+                let clip = Mat4::from_translation(Vec3::new(
+                    -0.8 + (i % 5) as f32 * 0.4,
+                    0.64 - (i / 5) as f32 * 0.47,
+                    0.0,
+                )) * Mat4::from_scale(Vec3::new(0.19, 0.195, 1.0));
+                shader.bind();
+                shader.set_mat4(shader.get_uniform_location("uMVP"), &(clip * proj * view));
+                shader.set_vec4(
+                    shader.get_uniform_location("uColor"),
+                    Vec4::new(1.0, 0.0, 1.0, 1.0),
+                );
+                shader.set_vec3(shader.get_uniform_location("sunDir"), Vec3::Y);
+                shader.set_vec3(shader.get_uniform_location("viewPos"), eye);
+                shader.set_float(shader.get_uniform_location("uFogDensity"), 0.0);
+                shader.set_float(shader.get_uniform_location("uHdrScale"), 1.0);
+                shader.set_int(shader.get_uniform_location("uHdrOutput"), 0);
+                visuals.draw(&mob, &shader, pose as f32 * 0.22, eye);
+            }
+            renderer::set_depth_test(false);
+            renderer::set_cull(false);
+            renderer::set_blend(true);
+            crate::hud::draw_text(
+                &font,
+                &format!(
+                    "OVERWORLD / {} CREATURES / {}",
+                    MobKind::ALL.len(),
+                    if pose == 0 { "REST" } else { "MOVEMENT" }
+                ),
+                32.0,
+                25.0,
+                24.0,
+                &text,
+                1600.0,
+                1100.0,
+            );
+            for (i, &kind) in entries.iter().enumerate() {
+                crate::hud::draw_text(
+                    &font,
+                    kind.species().name,
+                    22.0 + (i % 5) as f32 * 320.0,
+                    294.0 + (i / 5) as f32 * 258.5,
+                    17.0,
+                    &text,
+                    1600.0,
+                    1100.0,
+                );
+            }
+            RenderTexture2D::unbind();
+            renderer::end_frame(1600, 1100);
+            let path = format!("target/test-artifacts/mobs-{}-{pose}.png", page + 1);
+            target.save_png(std::path::Path::new(&path))?;
+            let capture = image::open(&path).map_err(|e| e.to_string())?.to_rgb8();
+            for (i, kind) in entries.iter().enumerate() {
+                let x = (i % 5) * 320;
+                let y = 85 + (i / 5) * 258;
+                let colors: std::collections::HashSet<_> = (x + 35..x + 285)
+                    .step_by(3)
+                    .flat_map(|px| (y + 10..y + 205).step_by(3).map(move |py| (px, py)))
+                    .map(|(px, py)| capture.get_pixel(px as u32, py as u32).0)
+                    .collect();
+                if colors.len() < 3 {
+                    return Err(format!("Missing model pixels for {kind:?}"));
+                }
+            }
+            println!("Rendered {path}");
+        }
+    }
+    target.bind();
+    renderer::clear(0.1, 0.12, 0.15, 1.0);
+    crate::creature_ui::Catalogue::default().draw(&ui, &text, &font, 1600.0, 1100.0, 12);
+    RenderTexture2D::unbind();
+    renderer::end_frame(1600, 1100);
+    target.save_png(std::path::Path::new(
+        "target/test-artifacts/creature-catalogue.png",
+    ))?;
+    // Consecutive frames, not just disconnected poses, expose wrong joint axes.
+    let sequence = RenderTexture2D::new(800, 450);
+    let mut dolphin = Mob::new(MobKind::Dolphin, Vec3::ZERO, Vec3::ZERO, 0);
+    dolphin.yaw = std::f32::consts::FRAC_PI_2;
+    let eye = Vec3::new(2.3, 1.0, 2.2);
+    let mvp =
+        glam::camera::rh::proj::directx::perspective(42f32.to_radians(), 800.0 / 450.0, 0.05, 30.0)
+            * glam::camera::rh::view::look_at_mat4(eye, Vec3::new(0.0, 0.3, -0.15), Vec3::Y);
+    for frame in 0..64 {
+        sequence.bind();
+        renderer::clear(0.09, 0.19, 0.23, 1.0);
+        renderer::set_depth_test(true);
+        renderer::set_depth_write(true);
+        renderer::set_cull(true);
+        renderer::set_blend(false);
+        shader.bind();
+        shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+        shader.set_vec4(
+            shader.get_uniform_location("uColor"),
+            Vec4::new(1.0, 0.0, 1.0, 1.0),
+        );
+        shader.set_vec3(shader.get_uniform_location("sunDir"), Vec3::Y);
+        visuals.draw(
+            &dolphin,
+            &shader,
+            frame as f32 * std::f32::consts::PI / 64.0,
+            eye,
+        );
+        RenderTexture2D::unbind();
+        renderer::end_frame(1600, 1100);
+        sequence.save_png(std::path::Path::new(&format!(
+            "target/test-artifacts/dolphin-motion-{frame:02}.png"
+        )))?;
+    }
+    verify_mob_simulation();
+    mob_scene()?;
+    Ok(())
+}
+
+fn verify_mob_simulation() {
+    use crate::chunk::Chunk;
+    use crate::mob::{Mob, MobKind};
+    use crate::world::{MOB_CAP, World};
+    use glam::Vec3;
+    let mut world = World::new(42);
+    assert!(
+        world
+            .spawn_mob(MobKind::Pig, Vec3::new(8.0, 120.0, 8.0), 0)
+            .is_err()
+    );
+    let mut chunk = Chunk::new(0, 0, 42);
+    for column in chunk.blocks.iter_mut() {
+        for (y, row) in column.iter_mut().enumerate().take(145).skip(110) {
+            row.fill(if y == 110 {
+                BlockType::Stone
+            } else {
+                BlockType::Air
+            });
+        }
+    }
+    world.insert_chunk(chunk);
+    assert!(
+        world
+            .spawn_mob(MobKind::Cod, Vec3::new(8.0, 120.0, 8.0), 0)
+            .is_err()
+    );
+    for x in 5..11 {
+        for z in 5..11 {
+            for y in 115..125 {
+                world.set_block(x, y, z, BlockType::Water);
+            }
+        }
+    }
+    assert!(
+        world
+            .spawn_mob(MobKind::Cod, Vec3::new(8.0, 120.0, 8.0), 0)
+            .is_ok()
+    );
+    assert!(
+        world
+            .spawn_mob(MobKind::Bee, Vec3::new(3.0, 130.0, 3.0), 0)
+            .is_ok()
+    );
+    for _ in 0..100 {
+        world.update_mobs(Vec3::new(2.0, 120.0, 2.0), 0.1, BlockType::Air);
+    }
+    let cod = world.mobs.iter().find(|m| m.kind == MobKind::Cod).unwrap();
+    assert_eq!(
+        world.get_block(
+            cod.position.x.floor() as i32,
+            cod.position.y.floor() as i32,
+            cod.position.z.floor() as i32
+        ),
+        BlockType::Water,
+        "fish escaped the pond"
+    );
+    assert!(
+        world
+            .mobs
+            .iter()
+            .find(|m| m.kind == MobKind::Bee)
+            .unwrap()
+            .position
+            .y
+            > 128.0,
+        "flying mob fell to the ground"
+    );
+    while world.mobs.len() < MOB_CAP {
+        world
+            .mobs
+            .push(Mob::new(MobKind::Pig, Vec3::ZERO, Vec3::ZERO, 0));
+    }
+    assert_eq!(
+        world.spawn_mob(MobKind::Bat, Vec3::new(3.0, 140.0, 3.0), 0),
+        Err("Creature limit reached (48).")
+    );
+    world.mobs.clear();
+    let player = Vec3::new(4.0, 111.0, 3.0);
+    let zombie = Vec3::new(3.0, 111.0, 3.0);
+    world.mobs.push(Mob::new(MobKind::Husk, zombie, zombie, 0));
+    world.set_block(3, 112, 3, BlockType::Stone);
+    world.pending_hurt = 0;
+    world.update_mobs(player, 0.1, BlockType::Air);
+    assert_eq!(world.pending_hurt, 0, "melee hit through a wall");
+    world.set_block(3, 112, 3, BlockType::Air);
+    world.mobs[0].position = zombie;
+    world.mobs[0].attack_cooldown = 0.0;
+    world.update_mobs(player, 0.1, BlockType::Air);
+    assert!(
+        world.pending_hurt > 0,
+        "unobstructed hostile did not attack"
+    );
+    println!("Creature simulation: collision, water, flight and capacity passed");
+}
+
+fn mob_scene() -> Result<(), String> {
+    use crate::mob::{Mob, MobKind};
+    use glam::Vec3;
+    let mut world = crate::world::World::new(42);
+    let mut chunk = crate::chunk::Chunk::new(0, 0, 42);
+    for x in 0..16 {
+        for z in 0..16 {
+            for y in 100..145 {
+                chunk.blocks[x][y][z] = if y == 110 {
+                    BlockType::Grass
+                } else {
+                    BlockType::Air
+                };
+                chunk.light[x][y][z] = crate::chunk::pack_light(15, 0);
+            }
+        }
+    }
+    world.insert_chunk(chunk);
+    world.atlas = Some(Texture2D::from_data(
+        &crate::atlas::generate_atlas_data(),
+        256,
+        256,
+    ));
+    for (i, kind) in [
+        MobKind::Pig,
+        MobKind::Cow,
+        MobKind::Sheep,
+        MobKind::Zombie,
+        MobKind::Skeleton,
+        MobKind::Creeper,
+        MobKind::Villager,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let pos = Vec3::new(2.0 + i as f32 * 1.85, 111.0, 7.0 + (i % 2) as f32);
+        let mut mob = Mob::new(kind, pos, pos, 0);
+        mob.yaw = std::f32::consts::FRAC_PI_2;
+        mob.walk_blend = 1.0;
+        mob.walk_phase = i as f32;
+        world.mobs.push(mob);
+    }
+    let mut floor_positions = Vec::new();
+    let mut floor_uv = Vec::new();
+    let (tx, ty) = crate::item::atlas_uv_top(BlockType::Grass);
+    let u = tx as f32 / 16.0;
+    let v = ty as f32 / 16.0;
+    let tile = 1.0 / 16.0;
+    for x in 0..16 {
+        for z in 0..16 {
+            let (x, z) = (x as f32, z as f32);
+            floor_positions.extend_from_slice(&[
+                x,
+                111.0,
+                z + 1.0,
+                x + 1.0,
+                111.0,
+                z + 1.0,
+                x + 1.0,
+                111.0,
+                z,
+                x,
+                111.0,
+                z + 1.0,
+                x + 1.0,
+                111.0,
+                z,
+                x,
+                111.0,
+                z,
+            ]);
+            floor_uv.extend_from_slice(&[
+                u,
+                v + tile,
+                u + tile,
+                v + tile,
+                u + tile,
+                v,
+                u,
+                v + tile,
+                u + tile,
+                v,
+                u,
+                v,
+            ]);
+        }
+    }
+    let floor = renderer::Mesh::new(
+        &floor_positions,
+        Some(&floor_uv),
+        Some(&[0.0, 1.0, 0.0].repeat(floor_positions.len() / 3)),
+        Some(&[255, 0, 255, 255].repeat(floor_positions.len() / 3)),
+    );
+    let fancy = Shader::with_outputs(&crate::load_shader("gbuffer.wgsl"), 4)?;
+    let fast = Shader::new(&crate::load_shader("ps1.wgsl"))?;
+    let target = RenderTexture2D::new(1600, 900);
+    renderer::deferred_resize(1600, 900);
+    let eye = Vec3::new(8.0, 114.6, 18.0);
+    let mvp = glam::camera::rh::proj::directx::perspective(
+        52f32.to_radians(),
+        1600.0 / 900.0,
+        0.05,
+        100.0,
+    ) * glam::camera::rh::view::look_at_mat4(eye, Vec3::new(8.0, 111.8, 7.0), Vec3::Y);
+    let pack = crate::vibrant::VibrantPack::load_default();
+    let uniforms = crate::vibrant::frame::build_uniforms(
+        &pack,
+        &crate::vibrant::frame::FrameInput {
+            day_fraction: 0.0,
+            camera_pos: eye,
+            view_proj: mvp,
+        },
+    );
+    for deferred in [false, true] {
+        let shader = if deferred { &fancy } else { &fast };
+        if deferred {
+            renderer::deferred_begin_geometry();
+        } else {
+            target.bind();
+            renderer::clear(0.47, 0.69, 0.79, 1.0);
+        }
+        renderer::set_depth_test(true);
+        renderer::set_depth_write(true);
+        renderer::set_cull(true);
+        renderer::set_blend(false);
+        shader.bind();
+        shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+        shader.set_vec3(shader.get_uniform_location("sunDir"), Vec3::Y);
+        shader.set_vec3(shader.get_uniform_location("viewPos"), eye);
+        shader.set_float(shader.get_uniform_location("uHdrScale"), 1.0);
+        shader.set_int(shader.get_uniform_location("uHdrOutput"), 0);
+        // Draw the ground AFTER mobs to exercise block-atlas restoration.
+        world.render_mobs(shader, eye);
+        floor.draw();
+        if deferred {
+            renderer::deferred_resolve(&uniforms);
+            target.bind();
+            renderer::deferred_tonemap();
+        }
+        RenderTexture2D::unbind();
+        renderer::end_frame(1600, 1100);
+        let path = format!(
+            "target/test-artifacts/mob-scene-{}.png",
+            if deferred { "fancy" } else { "fast" }
+        );
+        target.save_png(std::path::Path::new(&path))?;
+        let capture = image::open(&path).map_err(|e| e.to_string())?.to_rgb8();
+        let [r, g, b] = capture.get_pixel(800, 800).0;
+        if g <= r.saturating_add(15) || g <= b.saturating_add(15) {
+            return Err(format!(
+                "Mob pass did not restore terrain state: {r},{g},{b}"
+            ));
+        }
+        println!("Rendered {path}");
+    }
+    Ok(())
+}

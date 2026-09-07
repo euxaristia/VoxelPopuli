@@ -5,7 +5,7 @@ A lightweight Minecraft-inspired voxel sandbox written in Rust with `wgpu` and G
 ## Highlights ✨
 - **wgpu Renderer**: Modern GPU-accelerated rendering pipeline with WebGPU standard support
 - **Survival Mechanics**: Health, Hunger/Food, Saturation, Armor Defense, Oxygen, and Starvation
-- **Mob System**: Natural spawning & AI for Villagers, Iron Golems, Zombies, Skeletons, Creepers, Pigs, Cows, and Sheep
+- **Mob System**: 77 Overworld creature types with original pixel textures, articulated models, habitat-based spawning, swimming, flight, and a sandbox catalogue. See [creature coverage](docs/creatures.md).
 - **Village Generation**: Procedural villages with core structures, pathways, and mob spawns
 - **Crafting & Smelting**: 3x3 Crafting Table, Furnace smelting, Chests, Farmland farming, and 100+ items/blocks
 - **Explosions & TNT**: Chain-reaction ignition, blast shockwaves, and 3D bounce physics
@@ -109,6 +109,7 @@ The importer reads Anvil `.mca` region files, decompresses NBT chunk data, unpac
 - `1 - 9` / `Scroll`: Select hotbar slot
 - `E`: Open Inventory / Crafting menu
 - `F3`: Toggle debug HUD & performance telemetry overlay
+- `F6`: Open the creature catalogue in sandbox worlds
 - `Esc`: Pause menu / Settings
 
 ## Project Layout 📁
@@ -123,7 +124,11 @@ The importer reads Anvil `.mca` region files, decompresses NBT chunk data, unpac
 - `src/container_ui.rs`: Chest and furnace screens.
 - `src/save.rs`: Versioned saves and atomic replacement of saved progress.
 - `src/crafting.rs`: 3x3 shaped/shapeless crafting database, furnace smelting, and fuel burn times.
-- `src/mob.rs`: Mob entities, dimensions, wander AI, loot drops, and models.
+- `src/mob.rs`: Mob state, dimensions, combat properties, loot, and animation state.
+- `src/mob_catalog.rs`: Overworld species definitions and habitat eligibility.
+- `src/mob_visuals.rs`: Original pixel textures and articulated cuboid models.
+- `src/world/mobs.rs`: Spawn validation, natural encounters, and summoning.
+- `src/creature_ui.rs`: Sandbox creature catalogue.
 - `src/village.rs`: Procedural village layout generation and structure stamping.
 - `src/mining.rs`: Block mining progress and crack stage rendering.
 - `src/explosion.rs`: TNT ignition, blast shockwaves, and chain-reaction physics.
