@@ -12,6 +12,8 @@ struct Uniforms {
     screen_size: vec2<f32>,
     body_type: i32,
     hdr_scale: f32,
+    hdr_output: i32,
+    fog_density: f32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(1) @binding(0) var texture0: texture_2d<f32>;
@@ -59,14 +61,28 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let sun_y = max(0.0, u.sun_dir.y);
     let time_light = 0.15 + sun_y * 0.85; // 0.15 at night, 1.0 at noon
 
-    let sky_light = in.color.r * time_light;
-    let block_light = in.color.g;
+    let baked = mix(in.color.rgb, u.u_color.rgb, u.u_color.a);
+    let sky_light = baked.r * time_light;
+    let block_light = baked.g;
     let light_level = max(sky_light, block_light);
-    let ao = in.color.b;
+    let ao = baked.b;
     let light_factor = max(light_level * ao, 0.12);
 
-    var color = texel.rgb * light_factor * u.col_diffuse.rgb;
+    var albedo = texel.rgb * u.col_diffuse.rgb;
+    if (u.hdr_output != 0) {
+        albedo = srgb_to_linear(texel.rgb) * srgb_to_linear(u.col_diffuse.rgb);
+    }
+    var color = albedo * light_factor;
     color *= mix(vec3(1.0, 0.9, 0.8), vec3(1.0, 1.0, 1.05), sun_y); // slight tinting
 
+    let distance = max(length(in.world_pos - u.view_pos) - 24.0, 0.0);
+    let altitude = max((in.world_pos.y + u.view_pos.y) * 0.5 - 96.0, 0.0);
+    let haze = (1.0 - exp(-distance * u.fog_density * exp(-altitude * 0.008))) * baked.r;
+    color = mix(color, u.sky_col.rgb, haze);
+
     return vec4(color * u.hdr_scale, texel.a * in.color.a * u.col_diffuse.a);
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, c <= vec3(0.04045));
 }

@@ -12,6 +12,7 @@ struct Uniforms {
     screen_size: vec2<f32>,
     body_type: i32,
     hdr_scale: f32,
+    hdr_output: i32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -38,8 +39,11 @@ fn vs_main(in: VsIn) -> VsOut {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    // body_type: 0=flat, 1=sun, 2=moon
-    if (u.body_type > 0) {
+    // body_type: 0=flat/stars, 1=sun, 2=moon, 3=clouds
+    if (u.body_type == 3) {
+        return vec4(scene_color(in.color.rgb) * u.col_diffuse.rgb * u.hdr_scale, in.color.a);
+    }
+    if (u.body_type == 1 || u.body_type == 2) {
         let uv8 = in.uv * 8.0;
         let iuv = vec2<i32>(floor(uv8));
         if (iuv.x < 0 || iuv.x > 7 || iuv.y < 0 || iuv.y > 7) {
@@ -64,7 +68,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // hdr_scale is 1.0 on the forward path and the scene's key
         // luminance when drawing into the HDR target, so celestial
         // bodies survive tone mapping instead of being crushed.
-        return vec4(color.rgb * u.hdr_scale, color.a);
+        return vec4(scene_color(color.rgb) * u.hdr_scale, color.a);
     }
-    return vec4(in.color.rgb * u.hdr_scale, in.color.a);
+    return vec4(scene_color(in.color.rgb) * u.hdr_scale, in.color.a);
+}
+
+fn scene_color(c: vec3<f32>) -> vec3<f32> {
+    if (u.hdr_output != 0) {
+        return select(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, c <= vec3(0.04045));
+    }
+    return c;
 }

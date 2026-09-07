@@ -69,9 +69,10 @@ fn fs_main(in: VsOut) -> GBuffer {
     }
 
     var out: GBuffer;
-    // The albedo attachment is sRGB, so the hardware handles the encode.
-    // col_diffuse stays as the per-draw tint (damage flash, biome color).
-    out.albedo = vec4(texel.rgb * u.col_diffuse.rgb, texel.a);
+    // The shared atlas and authored tints are sRGB values in UNORM storage.
+    // Decode before the sRGB attachment encodes them again; otherwise the
+    // lighting pass receives inflated albedo and washes out every material.
+    out.albedo = vec4(srgb_to_linear(texel.rgb) * srgb_to_linear(u.col_diffuse.rgb), texel.a);
     out.normal = vec4(normalize(in.normal), 0.0);
     // MERS defaults for untextured terrain: dielectric, non-emissive,
     // fully rough. Texture sets and pbr/global.json override this once the
@@ -84,4 +85,8 @@ fn fs_main(in: VsOut) -> GBuffer {
     let baked = mix(in.color.rgb, u.u_color.rgb, u.u_color.a);
     out.lighting = vec4(baked, 1.0);
     return out;
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, c <= vec3(0.04045));
 }

@@ -77,6 +77,8 @@ pub fn exposure_for_illuminance(lux: f32) -> f32 {
 /// How bright block light (torches, lava) reads, in lux. Low enough to
 /// vanish in daylight, high enough to carry a cave at night.
 const BLOCK_LIGHT_LUX: f32 = 1.5;
+/// Gentle aerial perspective shared by opaque geometry and transparent water.
+pub const HAZE_DENSITY: f32 = 0.0018;
 
 pub fn build_uniforms(pack: &VibrantPack, input: &FrameInput) -> DeferredUniforms {
     let time = input.day_fraction;
@@ -121,7 +123,7 @@ pub fn build_uniforms(pack: &VibrantPack, input: &FrameInput) -> DeferredUniform
             lighting.sky_intensity_at(time),
             lighting.emissive_desaturation,
             BLOCK_LIGHT_LUX,
-            0.0,
+            HAZE_DENSITY,
         ],
         zenith_color: rgb4(atmosphere.zenith_color),
         horizon_color: rgb4(atmosphere.horizon_color),
@@ -141,7 +143,7 @@ pub fn build_uniforms(pack: &VibrantPack, input: &FrameInput) -> DeferredUniform
     }
 }
 
-/// Scale that puts a forward-rendered, display-referred color into the
+/// Scale that puts a forward-rendered, linear color into the
 /// same lux-scaled space the deferred pass writes, so transparent
 /// geometry survives tone mapping alongside the opaque scene.
 pub fn hdr_scale(uniforms: &DeferredUniforms) -> f32 {
@@ -149,6 +151,17 @@ pub fn hdr_scale(uniforms: &DeferredUniforms) -> f32 {
         + uniforms.moon_direction_illuminance[3]
         + uniforms.ambient_color_illuminance[3];
     key / std::f32::consts::PI
+}
+
+/// Clouds reflect the current orbital light and sky instead of glowing white.
+pub fn cloud_tint(uniforms: &DeferredUniforms) -> Vec3 {
+    let sun_lux = uniforms.sun_direction_illuminance[3];
+    let moon_lux = uniforms.moon_direction_illuminance[3];
+    let sun_weight = sun_lux / (sun_lux + moon_lux).max(1e-4);
+    let sun = Vec3::from_slice(&uniforms.sun_color);
+    let moon = Vec3::from_slice(&uniforms.moon_color);
+    let horizon = Vec3::from_slice(&uniforms.horizon_color);
+    (sun * sun_weight + moon * (1.0 - sun_weight) * 0.2) * 0.65 + horizon * 0.35
 }
 
 fn rgb4(rgb: [f32; 3]) -> [f32; 4] {
@@ -284,9 +297,13 @@ mod tests {
         let pack = VibrantPack::default();
         let noon = pack.atmospherics.sample(0.0);
         let midnight = pack.atmospherics.sample(0.5);
-        // Day zenith is the forward path's sky blue; night is near-black.
+        // A dark blue night preserves silhouettes without looking like day.
         assert!(noon.zenith_color[2] > noon.zenith_color[0]);
-        assert!(midnight.zenith_color.iter().copied().sum::<f32>() < 0.05);
+        assert!(midnight.zenith_color[2] > midnight.zenith_color[0]);
+        assert!(
+            midnight.zenith_color.iter().sum::<f32>()
+                < noon.zenith_color.iter().sum::<f32>() * 0.12
+        );
         let sunset = pack.atmospherics.sample(0.25);
         assert!(sunset.horizon_color[0] > sunset.horizon_color[2]);
     }
@@ -328,5 +345,25 @@ mod tests {
         ));
         assert!(noon > midnight * 100.0);
         assert!(midnight > 0.0);
+    }
+
+    #[test]
+    fn clouds_take_warm_sunset_and_dim_blue_moonlight() {
+        let pack = VibrantPack::default();
+        let tint_at = |day_fraction| {
+            cloud_tint(&build_uniforms(
+                &pack,
+                &FrameInput {
+                    day_fraction,
+                    ..noon_input()
+                },
+            ))
+        };
+        let day = tint_at(0.0);
+        let sunset = tint_at(0.25);
+        let night = tint_at(0.5);
+        assert!(sunset.x > sunset.z * 1.5);
+        assert!(night.z > night.x);
+        assert!(night.max_element() < day.max_element() * 0.25);
     }
 }

@@ -1,6 +1,6 @@
 // Deferred lighting resolve: G-buffer in, HDR scene radiance out.
 //
-// Implements the Vibrant Visuals lighting model. Illuminance arrives in
+// Inspired by Vibrant Visuals lighting. Illuminance arrives in
 // real lux from lighting/global.json, so this shader works in absolute
 // units and leaves the rebalancing to tone mapping.
 
@@ -15,7 +15,7 @@ struct Deferred {
     moon_color: vec4<f32>,
     // rgb ambient color, w illuminance in lux
     ambient_color_illuminance: vec4<f32>,
-    // x sky intensity, y emissive desaturation, z block-light lux
+    // x sky intensity, y emissive desaturation, z block-light lux, w haze density
     sky_params: vec4<f32>,
     zenith_color: vec4<f32>,
     horizon_color: vec4<f32>,
@@ -142,8 +142,11 @@ fn sky_radiance(dir: vec3<f32>) -> vec3<f32> {
     let sun_cos = max(dot(dir, u.sun_direction_illuminance.xyz), 0.0);
     let moon_cos = max(dot(dir, u.moon_direction_illuminance.xyz), 0.0);
     let mie_fade = smoothstep(stops.z - 0.5, stops.z + 0.5, height + 1.0);
-    color += u.sun_color.rgb * u.atmosphere.y * pow(sun_cos, glare) * mie_fade;
-    color += u.moon_color.rgb * u.atmosphere.z * pow(moon_cos, glare) * mie_fade;
+    let key_lux = max(u.sun_direction_illuminance.w + u.moon_direction_illuminance.w, 1e-4);
+    color += u.sun_color.rgb * u.atmosphere.y * pow(sun_cos, glare) * mie_fade
+        * u.sun_direction_illuminance.w / key_lux;
+    color += u.moon_color.rgb * u.atmosphere.z * pow(moon_cos, glare) * mie_fade
+        * u.moon_direction_illuminance.w / key_lux;
     return color;
 }
 
@@ -213,7 +216,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // hemisphere the surface faces and how exposed to sky it is.
     let sky_intensity = u.sky_params.x;
     let hemisphere = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
-    let sky_color = mix(u.horizon_color.rgb, u.zenith_color.rgb, hemisphere);
+    let sky_sample = mix(u.horizon_color.rgb, u.zenith_color.rgb, hemisphere);
+    // Lux already sets the day/night energy. Use sky chromaticity for fill
+    // rather than dimming moonlit shadows a second time with a dark sky tint.
+    let sky_color = sky_sample / max(max(sky_sample.r, max(sky_sample.g, sky_sample.b)), 0.01);
     let sky_lux = u.sun_direction_illuminance.w + u.moon_direction_illuminance.w;
     let sky_irradiance = sky_color * sky_lux * sky_intensity * sky_visibility * INV_PI;
     let kd_sky = (vec3(1.0) - fresnel_schlick_roughness(max(dot(n, v), 0.0), f0, roughness))
@@ -255,5 +261,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             * subsurface * pow(back, 2.0) * wrap * sky_visibility * INV_PI;
     }
 
+    // Aerial perspective adds depth without flattening nearby block detail.
+    // Only sky-exposed geometry receives haze, so sealed caves stay clear.
+    let distance = max(length(world_pos - u.camera_pos_exposure.xyz) - 24.0, 0.0);
+    let altitude = max((world_pos.y + u.camera_pos_exposure.y) * 0.5 - 96.0, 0.0);
+    let haze = (1.0 - exp(-distance * u.sky_params.w * exp(-altitude * 0.008))) * sky_visibility;
+    radiance = mix(radiance, sky_radiance(view_dir) * sky_lux * INV_PI, haze);
     return vec4(radiance, 1.0);
 }

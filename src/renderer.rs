@@ -13,7 +13,7 @@ const CHUNK_VOXELS: u64 = (CHUNK_WIDTH * CHUNK_HEIGHT * CHUNK_DEPTH) as u64;
 // One uniform layout shared by every shader. Uniform "locations" are byte
 // offsets into this block, so get_uniform_location/set_* keep GL semantics.
 // Field offsets must match the Uniforms struct in assets/shaders/*.wgsl.
-const UNIFORM_SIZE: usize = 224;
+const UNIFORM_SIZE: usize = 240;
 // Dynamic-offset slots must be aligned to the device limit (256 everywhere).
 const UNIFORM_STRIDE: usize = 256;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -51,6 +51,8 @@ fn uniform_offset(name: &str) -> i32 {
         "uScreenSize" => 208,
         "uBodyType" => 216,
         "uHdrScale" => 220,
+        "uHdrOutput" => 224,
+        "uFogDensity" => 228,
         // Unknown names behave like GL's -1 location: sets are ignored.
         _ => -1,
     }
@@ -1954,7 +1956,7 @@ pub struct DeferredUniforms {
     /// Linear ambient color, w illuminance in lux.
     pub ambient_color_illuminance: [f32; 4],
     /// x sky intensity, y emissive desaturation, z block-light lux,
-    /// w unused.
+    /// w aerial haze density.
     pub sky_params: [f32; 4],
     /// Linear sky colors driving both the sky itself and indirect light.
     pub zenith_color: [f32; 4],

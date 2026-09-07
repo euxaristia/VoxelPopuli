@@ -63,10 +63,10 @@ impl Default for LightingSettings {
                 color: srgb_curve(&[
                     (0.0, [255, 255, 255]),
                     (0.18, [255, 244, 220]),
-                    (0.25, [255, 140, 80]),
-                    (0.33, [255, 90, 50]),
-                    (0.67, [255, 90, 50]),
-                    (0.75, [255, 140, 80]),
+                    (0.25, [255, 187, 130]),
+                    (0.33, [255, 150, 100]),
+                    (0.67, [255, 150, 100]),
+                    (0.75, [255, 187, 130]),
                     (0.82, [255, 244, 220]),
                     (1.0, [255, 255, 255]),
                 ]),
@@ -74,7 +74,7 @@ impl Default for LightingSettings {
             // Full moonlight measures about a quarter of a lux.
             moon: OrbitalLight {
                 illuminance: Keyframed::constant(0.27),
-                color: Keyframed::constant(Color::WHITE),
+                color: Keyframed::constant(Color::rgb(195.0 / 255.0, 214.0 / 255.0, 1.0)),
             },
             orbital_offset_degrees: Keyframed::constant(0.0),
             flash: FlashLight {

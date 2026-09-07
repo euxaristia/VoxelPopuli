@@ -36,12 +36,53 @@ const FAR_PLANE: f32 = 1000.0;
 const NEAR_MARGIN: f32 = 0.03;
 
 /// Arm box in local space: square cross-section, hand end toward -Z, elbow
-/// running back toward the camera. Roughly Minecraft's 4x4x12 proportions.
+/// running back toward the camera, with the hidden elbow extending offscreen.
 const ARM_THICKNESS: f32 = 0.155;
 const ARM_FORWARD: f32 = 0.38;
-const ARM_BACK: f32 = 0.145;
+// Keep the entire elbow face below the viewport, even during bob and punches.
+const ARM_BACK: f32 = 0.40;
 /// Half-extent of the held block cube.
 const ITEM_SCALE: f32 = 0.17;
+
+const SWING_DURATION: f32 = 0.30;
+
+pub struct SwingAnimation {
+    elapsed: f32,
+}
+
+impl Default for SwingAnimation {
+    fn default() -> Self {
+        Self {
+            elapsed: SWING_DURATION,
+        }
+    }
+}
+
+impl SwingAnimation {
+    pub fn start(&mut self) {
+        if self.elapsed >= SWING_DURATION {
+            self.elapsed = 0.0;
+        }
+    }
+
+    pub fn update(&mut self, dt: f32, held: bool) {
+        if held {
+            self.start();
+        }
+        self.elapsed = (self.elapsed + dt.max(0.0)).min(SWING_DURATION);
+    }
+
+    pub fn amount(&self) -> f32 {
+        if self.elapsed >= SWING_DURATION {
+            return 0.0;
+        }
+        (std::f32::consts::PI * self.elapsed / SWING_DURATION).sin()
+    }
+
+    pub fn reset(&mut self) {
+        self.elapsed = SWING_DURATION;
+    }
+}
 
 /// Camera height above `player.position`, matching `main`.
 const EYE_HEIGHT: f32 = 1.6;
@@ -397,9 +438,9 @@ pub fn arm_model(swing: f32, bob: f32, aspect: f32) -> Mat4 {
     // `0.247 * aspect` holds the arm the same distance from the right edge
     // on 4:3 through 32:9.
     Mat4::from_translation(Vec3::new(
-        0.46 + 0.247 * aspect + bob * 0.04,
+        0.46 + 0.247 * aspect + bob * 0.04 - punch * 0.20,
         -0.71 + bob * 0.05,
-        -1.24,
+        -1.24 - punch * 0.12,
     )) * Mat4::from_rotation_x(0.52 + punch * 0.55)
         * Mat4::from_rotation_y(0.39)
         * Mat4::from_rotation_z(0.36 - punch * 0.45)
@@ -685,39 +726,47 @@ mod tests {
     }
 
     #[test]
-    fn the_arm_runs_off_the_bottom_edge_on_every_aspect() {
+    fn the_entire_elbow_stays_offscreen_during_punching_and_bobbing() {
         for aspect in ASPECTS {
-            let (_, _, min_y, _) = arm_bounds(aspect);
-            assert!(
-                min_y < -1.0,
-                "at aspect {aspect} the arm stops inside the frame at y={min_y}, so it \
-                 reads as floating rather than attached to the player",
-            );
+            for bob in [-1.0, 0.0, 1.0] {
+                for step in 0..=20 {
+                    let mvp = projection(aspect) * arm_model(step as f32 / 20.0, bob, aspect);
+                    for x in [-ARM_THICKNESS * 0.5, ARM_THICKNESS * 0.5] {
+                        for y in [-ARM_THICKNESS * 0.5, ARM_THICKNESS * 0.5] {
+                            let clip = mvp * Vec3::new(x, y, ARM_BACK).extend(1.0);
+                            assert!(
+                                clip.y / clip.w < -1.02,
+                                "exposed elbow at aspect={aspect}, bob={bob}, swing={step}"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
     #[test]
     fn the_arm_matches_the_minecraft_reference_footprint() {
         // Measured off a Minecraft first-person screenshot: the arm's top
-        // edge sits at NDC y -0.42 and it spans x +0.36..+0.74 at 16:9.
-        let (min_x, max_x, _, max_y) = arm_bounds(16.0 / 9.0);
+        // edge sits at NDC y -0.42 and its inner edge at x +0.36 at 16:9.
+        let (min_x, _, _, max_y) = arm_bounds(16.0 / 9.0);
         assert!(
             (max_y + 0.42).abs() < 0.06,
             "arm top edge at {max_y}, reference has -0.42",
         );
         assert!(
-            (min_x - 0.36).abs() < 0.06 && (max_x - 0.74).abs() < 0.06,
-            "arm spans x {min_x}..{max_x}, reference has +0.36..+0.74",
+            (min_x - 0.36).abs() < 0.06,
+            "hand edge at x {min_x}, reference has +0.36",
         );
     }
 
     #[test]
     fn the_arm_stays_in_the_bottom_right_on_every_aspect() {
         for aspect in ASPECTS {
-            let (min_x, max_x, _, max_y) = arm_bounds(aspect);
+            let (min_x, _, _, max_y) = arm_bounds(aspect);
             assert!(
-                min_x > 0.15 && max_x < 0.95,
-                "arm drifts out of the right-hand corner at aspect {aspect}: x {min_x}..{max_x}",
+                min_x > 0.15 && min_x < 0.55,
+                "hand drifts out of the right-hand corner at aspect {aspect}: x {min_x}",
             );
             assert!(
                 (-0.55..=-0.30).contains(&max_y),
@@ -938,5 +987,31 @@ mod tests {
             aim.x < -0.05,
             "right arm must angle inward to screen centre, got {aim}"
         );
+    }
+
+    #[test]
+    fn one_click_punches_out_and_returns_after_release() {
+        let mut swing = SwingAnimation::default();
+        assert_eq!(swing.amount(), 0.0);
+        swing.start();
+        assert_eq!(swing.amount(), 0.0);
+        swing.update(SWING_DURATION * 0.5, false);
+        assert!((swing.amount() - 1.0).abs() < 1e-6);
+        swing.update(SWING_DURATION * 0.5, false);
+        assert_eq!(swing.amount(), 0.0);
+    }
+
+    #[test]
+    fn holding_attack_repeats_complete_swings_without_freezing() {
+        let mut swing = SwingAnimation::default();
+        for _ in 0..3 {
+            swing.update(SWING_DURATION * 0.5, true);
+            assert!((swing.amount() - 1.0).abs() < 1e-6);
+            swing.start(); // Further clicks or uses must not restart an active punch.
+            swing.update(SWING_DURATION * 0.5, true);
+            assert_eq!(swing.amount(), 0.0);
+        }
+        swing.update(0.1, false);
+        assert_eq!(swing.amount(), 0.0);
     }
 }

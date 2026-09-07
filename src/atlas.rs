@@ -33,7 +33,7 @@ pub fn generate_atlas_data() -> Vec<u8> {
         draw_block(7, 0, 120, 120, 130);
         draw_block(1, 1, 60, 60, 60);
         draw_block(2, 1, 140, 140, 140);
-        draw_block(13, 12, 40, 80, 200);
+        draw_block(13, 12, 45, 105, 130); // Muted blue-green water
         draw_block(8, 0, 240, 245, 250); // Snow
         draw_block(9, 0, 240, 245, 250); // SnowyGrass top (same as snow)
         draw_block(11, 0, 60, 40, 25); // SpruceLog

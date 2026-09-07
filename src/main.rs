@@ -335,7 +335,10 @@ fn main() {
         }
         return;
     }
-    let smoke_world = args.iter().any(|arg| arg == "--smoke-test-world");
+    let smoke_hand = args.iter().any(|arg| arg == "--smoke-test-hand");
+    let smoke_lighting = args.iter().any(|arg| arg == "--smoke-test-lighting");
+    let smoke_world =
+        smoke_hand || smoke_lighting || args.iter().any(|arg| arg == "--smoke-test-world");
     let reset_spawn = args.iter().any(|arg| arg == "--reset-spawn");
     let smoke_saved = smoke_world && args.iter().any(|arg| arg == "--smoke-saved-world");
     let save_path = match save_path_from_args(&args) {
@@ -572,7 +575,7 @@ fn main() {
     let torso_mesh = hand::build_torso_mesh();
     let leg_mesh = hand::build_leg_mesh();
     let mut held_item_mesh: Option<(BlockType, renderer::Mesh)> = None;
-    let mut hand_swing = 0.0f32;
+    let mut hand_swing = hand::SwingAnimation::default();
     world.set_view_distance(render_dist_setting);
     let mut placement_lock: Option<LinearPlacementLock> = None;
     let mut place_repeat_timer = 0.0f32;
@@ -594,7 +597,11 @@ fn main() {
         );
         let frame_start = std::time::Instant::now();
         let current_time = glfw.get_time();
-        let delta_time = ((current_time - last_time) as f32).clamp(0.0, 0.1);
+        let delta_time = if smoke_hand {
+            1.0 / 60.0
+        } else {
+            ((current_time - last_time) as f32).clamp(0.0, 0.1)
+        };
         last_time = current_time;
 
         fps_frames += 1;
@@ -755,10 +762,15 @@ fn main() {
             renderer::end_frame(fb_w, fb_h);
             continue;
         }
-        for (_, event) in glfw::flush_messages(&events) {
-            if smoke_world {
-                continue;
-            }
+        let input_events = glfw::flush_messages(&events)
+            .map(|(_, event)| event)
+            .filter(|_| !smoke_world)
+            .chain(
+                smoke_hand
+                    .then(|| smoke::hand_input(smoke_frames))
+                    .flatten(),
+            );
+        for event in input_events {
             match event {
                 // Surface size follows the framebuffer in renderer::end_frame.
                 glfw::WindowEvent::Size(..) => {}
@@ -1053,6 +1065,9 @@ fn main() {
                     } else if game_state == GameState::Playing && !player.inventory_open {
                         if left {
                             left_mouse_held = action == Action::Press;
+                            if action == Action::Press {
+                                hand_swing.start();
+                            }
                             if action == Action::Press && player.attack_cooldown <= 0.0 {
                                 let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
                                 let look_dir = Vec3::new(
@@ -1068,7 +1083,6 @@ fn main() {
                                     player.attack_cooldown = 0.4;
                                     left_mouse_held = false;
                                     mining_state.reset();
-                                    hand_swing = 1.0;
                                 }
                             }
                             if action == Action::Release {
@@ -1086,7 +1100,7 @@ fn main() {
                                 let held = inv_slots[player.selected_slot]
                                     .map(|s| s.block)
                                     .unwrap_or(BlockType::Air);
-                                hand_swing = 1.0;
+                                hand_swing.start();
                                 if world.try_feed_animal(eye_pos, look_dir, held) {
                                     if let Some(slot) = inv_slots[player.selected_slot].as_mut() {
                                         slot.count -= 1;
@@ -1532,7 +1546,7 @@ fn main() {
                         &player,
                         &mut placement_lock,
                     ) {
-                        hand_swing = 1.0;
+                        hand_swing.start();
                     }
                     place_repeat_timer = 0.20;
                 }
@@ -1543,9 +1557,18 @@ fn main() {
         }
 
         if game_state == GameState::Playing && !player.inventory_open {
-            hand_swing = (hand_swing - delta_time as f32 * 4.0).max(0.0);
+            let attack_held = left_mouse_held
+                || gp_gs
+                    .as_ref()
+                    .is_some_and(|gs| gs.get_axis(GamepadAxis::AxisRightTrigger) > 0.5);
+            hand_swing.update(delta_time, attack_held);
+        } else {
+            hand_swing.reset();
         }
 
+        if smoke_lighting {
+            world.day_time = smoke::lighting_time(smoke_frames);
+        }
         let dusk_time = world.day_time;
         if fancy_gfx_setting {
             world.update_clouds(player.position, dusk_time);
@@ -1625,9 +1648,33 @@ fn main() {
         } else {
             1.0
         };
-        shader.set_float(shader.get_uniform_location("uHdrScale"), hdr_scale);
-        flat_shader.set_float(flat_shader.get_uniform_location("uHdrScale"), hdr_scale);
-        water_shader.set_float(water_shader.get_uniform_location("uHdrScale"), hdr_scale);
+        for forward_shader in [&shader, &flat_shader, &water_shader] {
+            forward_shader.set_float(forward_shader.get_uniform_location("uHdrScale"), hdr_scale);
+            forward_shader.set_int(
+                forward_shader.get_uniform_location("uHdrOutput"),
+                i32::from(deferred),
+            );
+            forward_shader.set_float(
+                forward_shader.get_uniform_location("uFogDensity"),
+                if deferred {
+                    vibrant::frame::HAZE_DENSITY
+                } else {
+                    0.0
+                },
+            );
+        }
+        // Forward HDR draws share the pack's linear horizon color with the
+        // deferred atmosphere. Fast mode still writes display colors directly.
+        let forward_sky = if deferred {
+            glam::Vec4::from_array(deferred_uniforms.horizon_color)
+        } else {
+            sky_c
+        };
+        let cloud_tint = vibrant::frame::cloud_tint(&deferred_uniforms);
+        flat_shader.set_vec4(
+            flat_shader.get_uniform_location("colDiffuse"),
+            cloud_tint.extend(1.0),
+        );
         // Opaque geometry writes the G-buffer when deferred, and shades
         // itself when not. Both shaders read the same uniform names.
         let world_shader = if deferred { &gbuffer_shader } else { &shader };
@@ -1660,7 +1707,7 @@ fn main() {
             glam::Vec4::ONE,
         );
         world_shader.set_vec3(world_shader.get_uniform_location("viewPos"), eye_pos);
-        world_shader.set_vec4(world_shader.get_uniform_location("skyCol"), sky_c);
+        world_shader.set_vec4(world_shader.get_uniform_location("skyCol"), forward_sky);
         world_shader.set_vec4(
             world_shader.get_uniform_location("uColor"),
             glam::Vec4::ZERO,
@@ -1722,7 +1769,7 @@ fn main() {
                     &mvp,
                     selected_skin,
                     aspect,
-                    hand_swing,
+                    hand_swing.amount(),
                     bob,
                     world.entity_lighting(eye_pos),
                 );
@@ -1746,7 +1793,8 @@ fn main() {
         shader.set_vec3(shader.get_uniform_location("sunDir"), sun_dir);
         shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
         shader.set_vec3(shader.get_uniform_location("viewPos"), eye_pos);
-        shader.set_vec4(shader.get_uniform_location("skyCol"), sky_c);
+        shader.set_vec4(shader.get_uniform_location("skyCol"), forward_sky);
+        shader.set_vec4(shader.get_uniform_location("uColor"), glam::Vec4::ZERO);
 
         // Render crack overlay on mining target
         if let Some((cx, cy, cz, stage)) = mining_state.crack_stage() {
@@ -1824,7 +1872,7 @@ fn main() {
         );
         water_shader.set_vec3(water_shader.get_uniform_location("sunDir"), sun_dir);
         water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), eye_pos);
-        water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), sky_c);
+        water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), forward_sky);
         world.render_water(&water_shader, &frustum);
 
         shader.bind();
@@ -2912,7 +2960,19 @@ fn main() {
 
         renderer::set_depth_test(true);
         renderer::set_cull(true);
-        let capture_path = if smoke_world && (smoke_frames == 7 || smoke_frames == 15) {
+        let hand_capture = smoke_hand
+            .then(|| smoke::hand_capture(smoke_frames))
+            .flatten();
+        let lighting_capture = smoke_lighting
+            .then(|| smoke::lighting_capture(smoke_frames))
+            .flatten();
+        let capture_path = if let Some(name) = lighting_capture.as_ref().or(hand_capture.as_ref()) {
+            Some(smoke::frame_capture_path(name).expect("Could not create the capture directory"))
+        } else if !smoke_hand
+            && !smoke_lighting
+            && smoke_world
+            && (smoke_frames == 7 || smoke_frames == 15)
+        {
             let mode = if fancy_gfx_setting { "fancy" } else { "fast" };
             Some(smoke::frame_capture_path(mode).expect("Could not create the capture directory"))
         } else {
@@ -2926,6 +2986,44 @@ fn main() {
 
         if smoke_world {
             assert!(presented, "World smoke test did not present a frame");
+            if smoke_lighting {
+                if let Some(name) = lighting_capture {
+                    smoke::capture_lighting(&target, &name).expect("Lighting capture failed");
+                }
+                smoke_frames += 1;
+                if smoke_frames == 32 {
+                    smoke::verify_lighting_cycle().expect("Lighting cycle smoke test failed");
+                    smoke::shader_lighting(
+                        &gbuffer_shader,
+                        &shader,
+                        &flat_shader,
+                        framebuffer_width,
+                        framebuffer_height,
+                    )
+                    .expect("Shader lighting regression failed");
+                    return;
+                }
+                continue;
+            }
+            if smoke_hand {
+                if let Some(name) = hand_capture {
+                    smoke::verify_hand_frame(smoke_frames, hand_swing.amount());
+                    smoke::capture_world(&target, &name).expect("Hand rendering smoke test failed");
+                }
+                smoke_frames += 1;
+                fancy_gfx_setting = smoke_frames < 72;
+                if smoke_frames == 144 {
+                    smoke::water_lighting(
+                        &water_shader,
+                        world.atlas.as_ref().unwrap(),
+                        framebuffer_width,
+                        framebuffer_height,
+                    )
+                    .expect("Water lighting smoke test failed");
+                    return;
+                }
+                continue;
+            }
             smoke_frames += 1;
             if smoke_frames == 8 || smoke_frames == 16 {
                 let mode = if fancy_gfx_setting { "fancy" } else { "fast" };

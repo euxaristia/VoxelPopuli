@@ -3622,11 +3622,12 @@ impl World {
         if let Some(mesh) = &self.cloud_model {
             shader.bind();
             shader.set_mat4(shader.get_uniform_location("uMVP"), mvp);
-            shader.set_int(shader.get_uniform_location("uIsCircle"), 0);
+            shader.set_int(shader.get_uniform_location("uBodyType"), 3);
             crate::renderer::set_cull(false);
             crate::renderer::set_blend(true);
             crate::renderer::set_depth_write(false);
             mesh.draw();
+            shader.set_int(shader.get_uniform_location("uBodyType"), 0);
             crate::renderer::set_depth_write(true);
             crate::renderer::set_blend(false);
             crate::renderer::set_cull(true);
@@ -3649,9 +3650,12 @@ impl World {
             shader.set_int(shader.get_uniform_location("uIsCircle"), 0);
             let star_mvp = *mvp * Mat4::from_translation(player_pos);
             shader.set_mat4(shader.get_uniform_location("uMVP"), &star_mvp);
-            crate::renderer::set_depth_test(false);
-            mesh.draw();
+            // Stars sit behind the world in both render paths. They must
+            // test opaque depth in deferred mode and never write sky depth.
             crate::renderer::set_depth_test(true);
+            crate::renderer::set_depth_write(false);
+            mesh.draw();
+            crate::renderer::set_depth_write(true);
         }
     }
 }

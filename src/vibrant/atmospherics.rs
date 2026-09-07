@@ -56,30 +56,30 @@ impl Default for AtmosphereSettings {
             rayleigh_strength: Keyframed::constant(1.0),
             sun_mie_strength: Keyframed::constant(1.0),
             moon_mie_strength: Keyframed::constant(0.0),
-            sun_glare_shape: Keyframed::constant(4.0),
+            sun_glare_shape: Keyframed::constant(16.0),
             // Same dusk window as the forward sky: day until ~0.20, sunset
             // through 0.25, night by 0.33. Constant noon-blue here is what
             // made deferred night look like a light switch.
             sky_zenith_color: srgb_curve(&[
                 (0.0, [135, 206, 235]),
                 (0.18, [135, 206, 235]),
-                (0.23, [255, 160, 180]),
-                (0.26, [135, 100, 150]),
-                (0.33, [5, 5, 15]),
-                (0.67, [5, 5, 15]),
-                (0.74, [135, 100, 150]),
-                (0.77, [255, 160, 180]),
+                (0.23, [105, 139, 193]),
+                (0.26, [75, 86, 140]),
+                (0.33, [28, 38, 72]),
+                (0.67, [28, 38, 72]),
+                (0.74, [75, 86, 140]),
+                (0.77, [105, 139, 193]),
                 (0.82, [135, 206, 235]),
             ]),
             sky_horizon_color: srgb_curve(&[
                 (0.0, [196, 226, 255]),
                 (0.18, [196, 226, 255]),
-                (0.23, [255, 120, 80]),
-                (0.26, [180, 70, 60]),
-                (0.33, [10, 10, 30]),
-                (0.67, [10, 10, 30]),
-                (0.74, [180, 70, 60]),
-                (0.77, [255, 120, 80]),
+                (0.23, [250, 164, 112]),
+                (0.26, [180, 105, 110]),
+                (0.33, [52, 65, 99]),
+                (0.67, [52, 65, 99]),
+                (0.74, [180, 105, 110]),
+                (0.77, [250, 164, 112]),
                 (0.82, [196, 226, 255]),
             ]),
         }
@@ -109,7 +109,7 @@ impl AtmosphereSettings {
         out.rayleigh_strength = keyframed_or(settings, "rayleigh_strength", 1.0);
         out.sun_mie_strength = keyframed_or(settings, "sun_mie_strength", 1.0);
         out.moon_mie_strength = keyframed_or(settings, "moon_mie_strength", 0.0);
-        out.sun_glare_shape = keyframed_or(settings, "sun_glare_shape", 4.0);
+        out.sun_glare_shape = keyframed_or(settings, "sun_glare_shape", 16.0);
         if let Some(zenith) = settings.get("sky_zenith_color").and_then(Keyframed::parse) {
             out.sky_zenith_color = zenith;
         }
@@ -194,7 +194,7 @@ mod tests {
         let settings = AtmosphereSettings::parse(&value).unwrap();
         let frame = settings.sample(0.0);
         assert_eq!(frame.rayleigh_strength, 1.0);
-        assert_eq!(frame.sun_glare_shape, 4.0);
+        assert_eq!(frame.sun_glare_shape, 16.0);
         assert_eq!(frame.moon_mie_strength, 0.0);
     }
 

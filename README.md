@@ -147,5 +147,33 @@ in a hidden test window, writes screenshots to `target/test-artifacts/`, and
 exits without opening or changing a world save. See
 [the survival playtest checklist](docs/survival-playtest.md) for interactive checks.
 
+## Lighting and first-person rendering
+
+Fancy graphics uses linear-color lighting, ACES tone mapping, directional sun
+and moon light, and subtle distance haze. Water has a muted blue-green tint,
+view-dependent sky reflection, and animated normals that leave block edges in
+place. Empty clicks punch, holding attack repeats the swing, and the arm extends
+past the bottom of the viewport throughout the animation.
+
+The renderer takes inspiration from Microsoft's
+[Vibrant Visuals lighting](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/lightingcustomization?view=minecraft-bedrock-stable),
+[atmosphere](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/atmosphericscustomization?view=minecraft-bedrock-stable),
+and [water](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/watercustomization?view=minecraft-bedrock-stable)
+documentation. It remains a custom implementation: shadow maps, screen-space
+reflections, volumetric light shafts, and particle-concentration water settings
+are not implemented. Haze is an analytic approximation; water reflection samples
+the sky color rather than nearby geometry.
+
+```bash
+cargo run --release --locked --offline -- --smoke-test-hand
+cargo run --release --locked --offline -- --smoke-test-lighting
+```
+
+These hidden-window tests leave saves unchanged and capture the actual presented
+frames under `target/test-artifacts/`. They exercise press, release, and held
+attack in Fancy and Fast modes; noon, sunset, midnight, and sunrise; and GPU
+probes for color conversion, distance haze, cave visibility, hidden sun glare,
+cloud tint, and stars being occluded by terrain.
+
 ## License 📜
 Released into the **Public Domain** (The Unlicense). See [LICENSE](./LICENSE).
