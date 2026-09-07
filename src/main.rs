@@ -20,6 +20,7 @@ mod mob_catalog;
 mod mob_visuals;
 mod noise;
 mod player;
+mod png_io;
 mod profiler;
 mod renderer;
 mod save;
@@ -583,6 +584,7 @@ fn main() {
     // Built white once: the skin, shirt and trouser colours are applied per
     // draw through colDiffuse, so changing skin needs no rebuild.
     let arm_mesh = hand::build_arm_mesh();
+    let mut crack_overlay = mining::CrackOverlay::default();
     let torso_mesh = hand::build_torso_mesh();
     let leg_mesh = hand::build_leg_mesh();
     let mut held_item_mesh: Option<(BlockType, renderer::Mesh)> = None;
@@ -1831,60 +1833,7 @@ fn main() {
         shader.set_vec4(shader.get_uniform_location("skyCol"), forward_sky);
         shader.set_vec4(shader.get_uniform_location("uColor"), glam::Vec4::ZERO);
 
-        // Render crack overlay on mining target
-        if let Some((cx, cy, cz, stage)) = mining_state.crack_stage() {
-            let ts = 1.0 / 16.0;
-            let u = stage as f32 * ts;
-            let v = 3.0 * ts; // crack textures at row 3
-            let e = 0.002; // slight expansion to avoid z-fighting
-            let x0 = cx as f32 - e;
-            let y0 = cy as f32 - e;
-            let z0 = cz as f32 - e;
-            let x1 = cx as f32 + 1.0 + e;
-            let y1 = cy as f32 + 1.0 + e;
-            let z1 = cz as f32 + 1.0 + e;
-
-            #[rustfmt::skip]
-            let verts: [f32; 108] = [
-                // -Z face
-                x0,y0,z0, x1,y0,z0, x1,y1,z0, x1,y1,z0, x0,y1,z0, x0,y0,z0,
-                // +Z face
-                x0,y0,z1, x1,y0,z1, x1,y1,z1, x1,y1,z1, x0,y1,z1, x0,y0,z1,
-                // -X face
-                x0,y0,z0, x0,y0,z1, x0,y1,z1, x0,y1,z1, x0,y1,z0, x0,y0,z0,
-                // +X face
-                x1,y0,z0, x1,y0,z1, x1,y1,z1, x1,y1,z1, x1,y1,z0, x1,y0,z0,
-                // -Y face
-                x0,y0,z0, x1,y0,z0, x1,y0,z1, x1,y0,z1, x0,y0,z1, x0,y0,z0,
-                // +Y face
-                x0,y1,z0, x1,y1,z0, x1,y1,z1, x1,y1,z1, x0,y1,z1, x0,y1,z0,
-            ];
-            let u1 = u + ts;
-            let v1 = v + ts;
-            #[rustfmt::skip]
-            let uvs: [f32; 72] = [
-                u,v1, u1,v1, u1,v, u1,v, u,v, u,v1,
-                u,v1, u1,v1, u1,v, u1,v, u,v, u,v1,
-                u,v1, u1,v1, u1,v, u1,v, u,v, u,v1,
-                u,v1, u1,v1, u1,v, u1,v, u,v, u,v1,
-                u,v1, u1,v1, u1,v, u1,v, u,v, u,v1,
-                u,v1, u1,v1, u1,v, u1,v, u,v, u,v1,
-            ];
-            // Bind atlas texture so the crack stage tile is sampled
-            if let Some(ref atlas) = world.atlas {
-                atlas.bind(0);
-            }
-            renderer::set_blend(true);
-            renderer::set_depth_write(false);
-            renderer::set_polygon_offset(true);
-            let normals = vec![0.0f32; verts.len()];
-            let colors = vec![255u8; (verts.len() / 3) * 4];
-            let crack_mesh = renderer::Mesh::new(&verts, Some(&uvs), Some(&normals), Some(&colors));
-            crack_mesh.draw();
-            renderer::set_polygon_offset(false);
-            renderer::set_depth_write(true);
-            renderer::set_blend(false);
-        }
+        crack_overlay.draw(&world, eye_pos, mining_state.crack_stage());
 
         world.render_particles(&shader, &mvp);
 

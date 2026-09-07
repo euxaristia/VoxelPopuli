@@ -2022,6 +2022,6 @@ mod atlas_dump_tests {
     fn dump_atlas_png() {
         let data = super::generate_atlas_data();
         let path = std::env::var("ATLAS_DUMP_PATH").unwrap_or_else(|_| "atlas_dump.png".into());
-        image::save_buffer(&path, &data, 256, 256, image::ExtendedColorType::Rgba8).unwrap();
+        crate::png_io::save(&path, &data, 256, 256).unwrap();
     }
 }

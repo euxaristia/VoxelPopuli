@@ -14,8 +14,8 @@ lto = true
 flate2 = "1.1.9"
 glam = "0.33"
 glfw = { version = "0.62.0", default-features = false, features = ["raw-window-handle-v0-6", "wayland", "x11", "native-handles", "src-build"] }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+png = "0.18.1"
 mimalloc = "0.1"
 rand = "0.10"
 rayon = "1.11.0"
-wgpu = "30.0.0"
+wgpu = { version = "30.0.0", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "gles", "vulkan", "wgsl"] }

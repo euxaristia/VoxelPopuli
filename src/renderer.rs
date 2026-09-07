@@ -1770,9 +1770,9 @@ impl Texture2D {
     }
 
     pub fn from_file(path: &str) -> Self {
-        let img = image::open(path).expect("Failed to load image").to_rgba8();
+        let img = crate::png_io::load(path).expect("Failed to load PNG");
         let (width, height) = img.dimensions();
-        Self::from_data(&img, width as i32, height as i32)
+        Self::from_data(&img.data, width as i32, height as i32)
     }
 
     #[allow(dead_code)]
@@ -2388,8 +2388,7 @@ fn save_texture_png(
             pixel.swap(0, 2);
         }
     }
-    image::save_buffer(path, &pixels, width, height, image::ColorType::Rgba8)
-        .map_err(|e| e.to_string())
+    crate::png_io::save(path, &pixels, width, height).map_err(|e| e.to_string())
 }
 
 impl RenderTexture2D {

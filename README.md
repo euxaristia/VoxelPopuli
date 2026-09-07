@@ -154,6 +154,10 @@ exits without opening or changing a world save. See
 
 ## Lighting and first-person rendering
 
+PNG assets and screenshots use `png` directly, with no general-purpose image
+processing dependency. wgpu enables native DirectX 12, Vulkan, Metal and OpenGL
+backends plus WGSL; browser-only WebGPU support is disabled for this GLFW app.
+
 Fancy graphics uses linear-color lighting, ACES tone mapping, directional sun
 and moon light, and subtle distance haze. Water has a muted blue-green tint,
 view-dependent sky reflection, and animated normals that leave block edges in

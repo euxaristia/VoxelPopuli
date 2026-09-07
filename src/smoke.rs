@@ -74,9 +74,9 @@ pub fn hand_occlusion(
             let path = std::path::Path::new("target/test-artifacts")
                 .join(format!("hand-{pose}-wall-{occluded}.png"));
             target.save_png(&path)?;
-            let pixels = image::open(path).map_err(|e| e.to_string())?.to_rgba8();
+            let pixels = crate::png_io::load(path).map_err(|e| e.to_string())?;
             if let Some(baseline) = reference.as_ref() {
-                let baseline: &image::RgbaImage = baseline;
+                let baseline: &crate::png_io::Image = baseline;
                 assert_ne!(
                     baseline.get_pixel(0, 0),
                     pixels.get_pixel(0, 0),
@@ -84,7 +84,7 @@ pub fn hand_occlusion(
                 );
                 let mut arm_pixels = 0;
                 for (before, after) in baseline.pixels().zip(pixels.pixels()) {
-                    if before.0[..3].iter().any(|&v| v > 5) {
+                    if before[..3].iter().any(|&v| v > 5) {
                         assert_eq!(before, after, "nearby surface hid the {pose} viewmodel");
                         arm_pixels += 1;
                     }
@@ -194,8 +194,8 @@ pub fn water_lighting(
         renderer::end_frame(width, height);
         let path = std::path::Path::new("target/test-artifacts").join(format!("water-{name}.png"));
         target.save_png(&path)?;
-        let screenshot = image::open(&path).map_err(|e| e.to_string())?.to_rgba8();
-        let [r, g, b, _] = screenshot.get_pixel(64, 64).0;
+        let screenshot = crate::png_io::load(&path).map_err(|e| e.to_string())?;
+        let [r, g, b, _] = screenshot.get_pixel(64, 64);
         if g as f32 <= r as f32 * 1.3 || (g as f32) < b as f32 * 0.55 {
             return Err(format!(
                 "Water lighting changed its hue in {name}: {r},{g},{b}"
@@ -236,9 +236,8 @@ pub fn capture_lighting(scene: &RenderTexture2D, name: &str) -> Result<(), Strin
 pub fn verify_lighting_cycle() -> Result<(), String> {
     let mut brightness = Vec::new();
     for name in ["noon", "sunset", "midnight", "sunrise"] {
-        let capture = image::open(frame_capture_path(&format!("lighting-{name}"))?)
-            .map_err(|e| e.to_string())?
-            .to_rgb8();
+        let capture = crate::png_io::load(frame_capture_path(&format!("lighting-{name}"))?)
+            .map_err(|e| e.to_string())?;
         // Sample terrain/water away from the sky, arm, and HUD.
         let pixels: Vec<_> = capture
             .enumerate_pixels()
@@ -385,8 +384,8 @@ pub fn shader_lighting(
         renderer::end_frame(width, height);
         let path = std::path::Path::new("target/test-artifacts").join(format!("shader-{name}.png"));
         target.save_png(&path)?;
-        let capture = image::open(&path).map_err(|e| e.to_string())?.to_rgb8();
-        let rgb = capture.get_pixel(64, 64).0;
+        let capture = crate::png_io::load(&path).map_err(|e| e.to_string())?;
+        let rgb = capture.get_pixel(64, 64);
         println!("Shader {name}: {rgb:?}");
         samples.push(rgb);
     }
@@ -450,11 +449,11 @@ pub fn shader_lighting(
         };
         let path = std::path::Path::new("target/test-artifacts").join(format!("shader-{name}.png"));
         target.save_png(&path)?;
-        let capture = image::open(&path).map_err(|e| e.to_string())?.to_rgb8();
-        let covered = capture.get_pixel(32, 64).0;
-        let visible = capture.get_pixel(96, 64).0;
-        if covered != [20, 30, 40]
-            || (!clouds && visible != [255; 3])
+        let capture = crate::png_io::load(&path).map_err(|e| e.to_string())?;
+        let covered = capture.get_pixel(32, 64);
+        let visible = capture.get_pixel(96, 64);
+        if covered[..3] != [20, 30, 40]
+            || (!clouds && visible[..3] != [255; 3])
             || (clouds && !(24..=27).contains(&visible[0]))
         {
             return Err(format!(
@@ -479,7 +478,7 @@ pub fn capture_world(scene: &RenderTexture2D, mode: &str) -> Result<(), String> 
         if name == "scene" {
             scene.save_png(&path)?;
         }
-        let screenshot = image::open(&path).map_err(|e| e.to_string())?.to_rgba8();
+        let screenshot = crate::png_io::load(&path).map_err(|e| e.to_string())?;
         let visible = screenshot
             .pixels()
             .filter(|p| p[0].max(p[1]).max(p[2]) > 12)
@@ -568,8 +567,8 @@ pub fn container_ui() -> Result<(), String> {
         renderer::end_frame(900, 700);
         let path = directory.join(format!("{name}.png"));
         target.save_png(&path)?;
-        let screenshot = image::open(&path).map_err(|e| e.to_string())?.to_rgba8();
-        if screenshot.get_pixel(450, 350).0 == screenshot.get_pixel(0, 0).0 {
+        let screenshot = crate::png_io::load(&path).map_err(|e| e.to_string())?;
+        if screenshot.get_pixel(450, 350) == screenshot.get_pixel(0, 0) {
             return Err(format!("{name} panel was not rendered"));
         }
         println!("Rendered {}", path.display());
@@ -726,14 +725,14 @@ pub fn mobs() -> Result<(), String> {
             renderer::end_frame(1600, 1100);
             let path = format!("target/test-artifacts/mobs-{}-{pose}.png", page + 1);
             target.save_png(std::path::Path::new(&path))?;
-            let capture = image::open(&path).map_err(|e| e.to_string())?.to_rgb8();
+            let capture = crate::png_io::load(&path).map_err(|e| e.to_string())?;
             for (i, kind) in entries.iter().enumerate() {
                 let x = (i % 5) * 320;
                 let y = 85 + (i / 5) * 258;
                 let colors: std::collections::HashSet<_> = (x + 35..x + 285)
                     .step_by(3)
                     .flat_map(|px| (y + 10..y + 205).step_by(3).map(move |py| (px, py)))
-                    .map(|(px, py)| capture.get_pixel(px as u32, py as u32).0)
+                    .map(|(px, py)| capture.get_pixel(px as u32, py as u32))
                     .collect();
                 if colors.len() < 3 {
                     return Err(format!("Missing model pixels for {kind:?}"));
@@ -752,40 +751,133 @@ pub fn mobs() -> Result<(), String> {
     ))?;
     // Consecutive frames, not just disconnected poses, expose wrong joint axes.
     let sequence = RenderTexture2D::new(800, 450);
-    let mut dolphin = Mob::new(MobKind::Dolphin, Vec3::ZERO, Vec3::ZERO, 0);
-    dolphin.yaw = std::f32::consts::FRAC_PI_2;
-    let eye = Vec3::new(2.3, 1.0, 2.2);
-    let mvp =
-        glam::camera::rh::proj::directx::perspective(42f32.to_radians(), 800.0 / 450.0, 0.05, 30.0)
-            * glam::camera::rh::view::look_at_mat4(eye, Vec3::new(0.0, 0.3, -0.15), Vec3::Y);
-    for frame in 0..64 {
-        sequence.bind();
-        renderer::clear(0.09, 0.19, 0.23, 1.0);
-        renderer::set_depth_test(true);
-        renderer::set_depth_write(true);
-        renderer::set_cull(true);
-        renderer::set_blend(false);
-        shader.bind();
-        shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
-        shader.set_vec4(
-            shader.get_uniform_location("uColor"),
-            Vec4::new(1.0, 0.0, 1.0, 1.0),
-        );
-        shader.set_vec3(shader.get_uniform_location("sunDir"), Vec3::Y);
-        visuals.draw(
-            &dolphin,
-            &shader,
-            frame as f32 * std::f32::consts::PI / 64.0,
+    for (kind, name) in [
+        (MobKind::Dolphin, "dolphin"),
+        (MobKind::Nautilus, "nautilus"),
+    ] {
+        let mut dolphin = Mob::new(kind, Vec3::ZERO, Vec3::ZERO, 0);
+        dolphin.yaw = std::f32::consts::FRAC_PI_2;
+        let eye = if kind == MobKind::Nautilus {
+            Vec3::new(3.0, 1.6, 3.0)
+        } else {
+            Vec3::new(2.3, 1.0, 2.2)
+        };
+        let mvp = glam::camera::rh::proj::directx::perspective(
+            42f32.to_radians(),
+            800.0 / 450.0,
+            0.05,
+            30.0,
+        ) * glam::camera::rh::view::look_at_mat4(
             eye,
+            Vec3::new(
+                0.0,
+                if kind == MobKind::Nautilus { 0.65 } else { 0.3 },
+                -0.15,
+            ),
+            Vec3::Y,
         );
-        RenderTexture2D::unbind();
-        renderer::end_frame(1600, 1100);
-        sequence.save_png(std::path::Path::new(&format!(
-            "target/test-artifacts/dolphin-motion-{frame:02}.png"
-        )))?;
+        for frame in 0..64 {
+            sequence.bind();
+            renderer::clear(0.09, 0.19, 0.23, 1.0);
+            renderer::set_depth_test(true);
+            renderer::set_depth_write(true);
+            renderer::set_cull(true);
+            renderer::set_blend(false);
+            shader.bind();
+            shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+            shader.set_vec4(
+                shader.get_uniform_location("uColor"),
+                Vec4::new(1.0, 0.0, 1.0, 1.0),
+            );
+            shader.set_vec3(shader.get_uniform_location("sunDir"), Vec3::Y);
+            visuals.draw(
+                &dolphin,
+                &shader,
+                frame as f32
+                    * if kind == MobKind::Nautilus {
+                        std::f32::consts::TAU / 2.5
+                    } else {
+                        std::f32::consts::PI
+                    }
+                    / 64.0,
+                eye,
+            );
+            RenderTexture2D::unbind();
+            renderer::end_frame(1600, 1100);
+            sequence.save_png(std::path::Path::new(&format!(
+                "target/test-artifacts/{name}-motion-{frame:02}.png"
+            )))?;
+        }
     }
     verify_mob_simulation();
     mob_scene()?;
+    crack_overlay_faces()?;
+    Ok(())
+}
+
+fn crack_overlay_faces() -> Result<(), String> {
+    use glam::{Mat4, Vec3, Vec4};
+    let mut world = crate::world::World::new(42);
+    world.atlas = Some(Texture2D::from_data(
+        &crate::atlas::generate_atlas_data(),
+        256,
+        256,
+    ));
+    let shader = Shader::new(&crate::load_shader("ps1.wgsl"))?;
+    let target = RenderTexture2D::new(256, 256);
+    let mut overlay = crate::mining::CrackOverlay::default();
+    for (side, normal) in [
+        Vec3::NEG_X,
+        Vec3::X,
+        Vec3::NEG_Y,
+        Vec3::Y,
+        Vec3::NEG_Z,
+        Vec3::Z,
+    ]
+    .iter()
+    .enumerate()
+    {
+        let center = Vec3::new(0.5, 100.5, 0.5);
+        let eye = center + normal * 2.0;
+        let up = if normal.y.abs() > 0.5 {
+            Vec3::Z
+        } else {
+            Vec3::Y
+        };
+        let mvp = glam::camera::rh::proj::directx::perspective(60f32.to_radians(), 1.0, 0.1, 10.0)
+            * glam::camera::rh::view::look_at_mat4(eye, center, up);
+        let mut counts = Vec::new();
+        for stage in [0, 9] {
+            target.bind();
+            renderer::clear(1.0, 1.0, 1.0, 1.0);
+            renderer::set_cull(true);
+            shader.bind();
+            shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+            shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+            shader.set_vec4(shader.get_uniform_location("colDiffuse"), Vec4::ONE);
+            shader.set_vec4(
+                shader.get_uniform_location("uColor"),
+                Vec4::new(1., 0., 1., 1.),
+            );
+            shader.set_vec3(shader.get_uniform_location("sunDir"), Vec3::Y);
+            shader.set_float(shader.get_uniform_location("uHdrScale"), 1.0);
+            shader.set_float(shader.get_uniform_location("uFogDensity"), 0.0);
+            overlay.draw(&world, eye, Some((0, 100, 0, stage)));
+            RenderTexture2D::unbind();
+            renderer::end_frame(1600, 1100);
+            let path = format!("target/test-artifacts/cracks-face-{side}-stage-{stage}.png");
+            target.save_png(std::path::Path::new(&path))?;
+            let pixels = crate::png_io::load(&path).map_err(|e| e.to_string())?;
+            let dark = pixels.pixels().filter(|p| p[0] < 150).count();
+            assert!(dark > 10, "cracks missing on face {side}, stage {stage}");
+            counts.push(dark);
+        }
+        assert!(
+            counts[1] > counts[0],
+            "cracks did not progress on face {side}"
+        );
+    }
+    println!("Crack overlays: all six faces visible with culling and progressive stages");
     Ok(())
 }
 
@@ -1052,8 +1144,8 @@ fn mob_scene() -> Result<(), String> {
             if deferred { "fancy" } else { "fast" }
         );
         target.save_png(std::path::Path::new(&path))?;
-        let capture = image::open(&path).map_err(|e| e.to_string())?.to_rgb8();
-        let [r, g, b] = capture.get_pixel(800, 800).0;
+        let capture = crate::png_io::load(&path).map_err(|e| e.to_string())?;
+        let [r, g, b, _] = capture.get_pixel(800, 800);
         if g <= r.saturating_add(15) || g <= b.saturating_add(15) {
             return Err(format!(
                 "Mob pass did not restore terrain state: {r},{g},{b}"
