@@ -82,6 +82,23 @@ pub fn generate_atlas_data() -> Vec<u8> {
             }
         }
 
+        // Beef and steak (4-5, 8).
+        for (tile, base) in [(4, [185u8, 60, 65]), (5, [120u8, 62, 35])] {
+            for x in 3i32..13 {
+                for y in 4i32..12 {
+                    if (x - 8).abs() + (y - 8).abs() > 7 {
+                        continue;
+                    }
+                    let color = if x == 4 || y == 5 {
+                        [235, 180, 145]
+                    } else {
+                        base
+                    };
+                    draw_pixel(tile * 16 + x, 8 * 16 + y, color[0], color[1], color[2], 255);
+                }
+            }
+        }
+
         // Bow (7, 8)
         for i in 2..14 {
             draw_pixel(7 * 16 + 4, 8 * 16 + i, 120, 80, 40, 255);
@@ -1939,6 +1956,22 @@ mod tests {
         assert!(
             pale_label_pixels > 50,
             "TNT tile should have a clear label band"
+        );
+    }
+
+    #[test]
+    fn beef_and_steak_icons_are_visible_with_transparent_edges() {
+        let data = generate_atlas_data();
+        for tile in [4, 5] {
+            assert_eq!(
+                pixel(&data, tile * TILE_SIZE + 8, 8 * TILE_SIZE + 8)[3],
+                255
+            );
+            assert_eq!(pixel(&data, tile * TILE_SIZE, 8 * TILE_SIZE)[3], 0);
+        }
+        assert_ne!(
+            pixel(&data, 4 * TILE_SIZE + 8, 8 * TILE_SIZE + 8),
+            pixel(&data, 5 * TILE_SIZE + 8, 8 * TILE_SIZE + 8)
         );
     }
 

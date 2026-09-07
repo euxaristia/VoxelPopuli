@@ -1478,3 +1478,102 @@ pub fn draw_pause_menu(
         }
     }
 }
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_stack_item(
+    atlas: &Texture2D,
+    tex_shader: &Shader,
+    ui_shader: &Shader,
+    font_texture: &Texture2D,
+    s: &crate::inventory::ItemStack,
+    rx: f32,
+    ry: f32,
+    slot_size: f32,
+    sw: f32,
+    sh: f32,
+) {
+    let icon_size = slot_size - 8.0;
+    draw_item_icon(
+        atlas,
+        tex_shader,
+        s.block,
+        rx + 4.0,
+        ry + 4.0,
+        icon_size,
+        icon_size,
+        sw,
+        sh,
+    );
+
+    // Numeric stack count text (e.g. 64, 16)
+    if s.count > 1 {
+        let count_str = format!("{}", s.count);
+        let font_sz = (slot_size * 0.38).clamp(10.0, 14.0);
+        let tw = text_width(&count_str, font_sz);
+        let tx = rx + slot_size - tw - 2.0;
+        let ty = ry + slot_size - font_sz - 1.0;
+        draw_text_tinted(
+            font_texture,
+            &count_str,
+            tx + 1.0,
+            ty + 1.0,
+            font_sz,
+            tex_shader,
+            sw,
+            sh,
+            TEXT_SHADOW,
+        );
+        draw_text_tinted(
+            font_texture,
+            &count_str,
+            tx,
+            ty,
+            font_sz,
+            tex_shader,
+            sw,
+            sh,
+            TEXT_WHITE,
+        );
+    }
+
+    // Durability bar for tools
+    if let (Some(dur), Some(tool_props)) = (s.durability, item::tool_properties(s.block)) {
+        if tool_props.durability > 0 {
+            let max_dur = tool_props.durability as f32;
+            let pct = (dur as f32 / max_dur).clamp(0.0, 1.0);
+            let bar_max_w = slot_size - 8.0;
+            let bar_w = (bar_max_w * pct).round();
+            let bar_y = ry + slot_size - 6.0;
+            let red = if pct > 0.5 {
+                ((1.0 - pct) * 2.0 * 255.0) as u8
+            } else {
+                255
+            };
+            let green = if pct > 0.5 {
+                255
+            } else {
+                (pct * 2.0 * 255.0) as u8
+            };
+            draw_rect(
+                ui_shader,
+                rx + 4.0,
+                bar_y,
+                bar_max_w,
+                2.0,
+                [0, 0, 0, 255],
+                sw,
+                sh,
+            );
+            draw_rect(
+                ui_shader,
+                rx + 4.0,
+                bar_y,
+                bar_w,
+                2.0,
+                [red, green, 0, 255],
+                sw,
+                sh,
+            );
+        }
+    }
+}

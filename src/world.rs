@@ -196,6 +196,7 @@ impl Frustum {
 
 pub struct World {
     pub seed: u64,
+    pub day_time: f32,
     pub chunks: Vec<Option<Box<Chunk>>>,
     pub atlas: Option<Texture2D>,
     pub cloud_model: Option<Mesh>,
@@ -209,6 +210,10 @@ pub struct World {
     pub dirty_count: i32,
     pub pending_hurt: i32,
     pub pending_drops: Vec<(BlockType, u32)>,
+    pub pending_stacks: Vec<crate::inventory::ItemStack>,
+    pub dropped_items: Vec<crate::inventory::DroppedItem>,
+    dropped_meshes: HashMap<BlockType, renderer::Mesh>,
+    pub containers: HashMap<(i32, i32, i32), crate::container::Container>,
     pub explosives: Vec<crate::block::ActiveExplosive>,
     pub arrows: Vec<crate::block::ArrowEntity>,
     pub xp_orbs: Vec<crate::block::XpOrbEntity>,
@@ -259,6 +264,7 @@ impl World {
         let (gen_result_tx, gen_result_rx) = std::sync::mpsc::channel();
         Self {
             seed,
+            day_time: 120.0,
             chunks,
             atlas: None,
             cloud_model: None,
@@ -272,6 +278,10 @@ impl World {
             dirty_count: 0,
             pending_hurt: 0,
             pending_drops: Vec::new(),
+            pending_stacks: Vec::new(),
+            dropped_items: Vec::new(),
+            dropped_meshes: HashMap::new(),
+            containers: HashMap::new(),
             explosives: Vec::new(),
             arrows: Vec::new(),
             xp_orbs: Vec::new(),
@@ -381,6 +391,38 @@ impl World {
             c.extend_from_slice(&[255, 0, 255, 255]);
         }
         renderer::Mesh::new(&v, Some(&t), Some(&n), Some(&c))
+    }
+
+    pub fn render_dropped_items(&mut self, shader: &Shader, time: f32) {
+        let loc_model = shader.get_uniform_location("uModel");
+        let loc_diff = shader.get_uniform_location("colDiffuse");
+        let loc_light = shader.get_uniform_location("uColor");
+        shader.set_vec4(loc_diff, glam::Vec4::ONE);
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
+        for drop in &self.dropped_items {
+            if self
+                .get_chunk(
+                    (drop.position.x.floor() as i32).div_euclid(16),
+                    (drop.position.z.floor() as i32).div_euclid(16),
+                )
+                .is_none()
+            {
+                continue;
+            }
+            shader.set_vec4(loc_light, self.entity_lighting(drop.position));
+            let model = glam::Mat4::from_translation(
+                drop.position + Vec3::Y * ((time * 2.0).sin() * 0.04 + 0.05),
+            ) * glam::Mat4::from_rotation_y(time);
+            shader.set_mat4(loc_model, &model);
+            self.dropped_meshes
+                .entry(drop.stack.block)
+                .or_insert_with(|| crate::hand::build_item_mesh(drop.stack.block))
+                .draw();
+        }
+        shader.set_vec4(loc_light, glam::Vec4::ZERO);
+        shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
     }
 
     pub fn render_explosives(
@@ -831,10 +873,34 @@ impl World {
         }
     }
 
+    pub fn open_container(&mut self, position: (i32, i32, i32)) -> bool {
+        let block = self.get_block(position.0, position.1, position.2);
+        let Some(container) = crate::container::Container::new(block) else {
+            return false;
+        };
+        self.containers.entry(position).or_insert(container);
+        true
+    }
+
     pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
         if y < 0 || y >= CHUNK_HEIGHT as i32 {
             return;
         }
+
+        let mut contents = Vec::new();
+        crate::container::remove_replaced_container(
+            &mut self.containers,
+            &mut contents,
+            (x, y, z),
+            block,
+        );
+        self.dropped_items.extend(contents.into_iter().map(|stack| {
+            crate::inventory::DroppedItem::new(
+                stack,
+                Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
+                Vec3::Y,
+            )
+        }));
 
         if let Ok(mut edits) = self.edits.write() {
             edits.insert((x, y, z), block);
@@ -1113,6 +1179,7 @@ impl World {
     }
 
     pub fn update(&mut self, player_pos: Vec3, _time: f32, held: BlockType) -> u32 {
+        self.day_time = (self.day_time + _time).rem_euclid(1200.0);
         let pcx = (player_pos.x / CHUNK_WIDTH as f32).floor() as i32;
         let pcz = (player_pos.z / CHUNK_DEPTH as f32).floor() as i32;
 
@@ -1536,6 +1603,31 @@ impl World {
         }
 
         // --- Physics Simulation ---
+        let mut dropped_items = std::mem::take(&mut self.dropped_items);
+        for drop in &mut dropped_items {
+            if self
+                .get_chunk(
+                    (drop.position.x.floor() as i32).div_euclid(16),
+                    (drop.position.z.floor() as i32).div_euclid(16),
+                )
+                .is_some()
+            {
+                drop.tick(_time, |pos| {
+                    self.get_block(
+                        pos.x.floor() as i32,
+                        pos.y.floor() as i32,
+                        pos.z.floor() as i32,
+                    )
+                    .is_solid()
+                });
+            }
+        }
+        self.dropped_items = dropped_items;
+        for container in self.containers.values_mut() {
+            if let crate::container::Container::Furnace(furnace) = container {
+                furnace.tick(_time);
+            }
+        }
         self.update_water(_time);
         self.update_falling_blocks();
         self.update_fire(_time);
@@ -2864,7 +2956,10 @@ impl World {
             if b == BlockType::Air {
                 break;
             }
-            if b == BlockType::Bedrock || b == BlockType::Obsidian {
+            if matches!(
+                b,
+                BlockType::Bedrock | BlockType::Obsidian | BlockType::Chest | BlockType::Furnace
+            ) {
                 return false; // Cannot push immovable blocks
             }
             push_count += 1;
@@ -2916,7 +3011,14 @@ impl World {
             let pulled_y = head_y + dy;
             let pulled_z = head_z + dz;
             let b = self.get_block(pulled_x, pulled_y, pulled_z);
-            if b != BlockType::Air && b != BlockType::Bedrock && b != BlockType::Obsidian {
+            if !matches!(
+                b,
+                BlockType::Air
+                    | BlockType::Bedrock
+                    | BlockType::Obsidian
+                    | BlockType::Chest
+                    | BlockType::Furnace
+            ) {
                 self.set_block(head_x, head_y, head_z, b);
                 self.set_block(pulled_x, pulled_y, pulled_z, BlockType::Air);
             }
@@ -3234,7 +3336,7 @@ impl World {
 
     pub fn update_clouds(&mut self, player_pos: Vec3, time: f32) {
         let dist = self.last_cloud_pos.distance(player_pos);
-        let time_passed = (time - self.last_cloud_update_time) > 30.0;
+        let time_passed = (time - self.last_cloud_update_time).abs() > 30.0;
         if dist < 128.0 && !time_passed && self.cloud_model.is_some() {
             return;
         }
@@ -3557,6 +3659,44 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn breaking_storage_returns_contents_once_with_durability() {
+        let mut containers = HashMap::new();
+        let mut pending = Vec::new();
+        let tool = crate::inventory::ItemStack {
+            durability: Some(9),
+            ..crate::inventory::ItemStack::new_tool(BlockType::IronPickaxe)
+        };
+        let mut slots = [None; crate::container::CHEST_SLOTS];
+        slots[0] = Some(tool);
+        containers.insert(
+            (0, 60, 0),
+            crate::container::Container::Chest(Box::new(slots)),
+        );
+        crate::container::remove_replaced_container(
+            &mut containers,
+            &mut pending,
+            (0, 60, 0),
+            BlockType::Chest,
+        );
+        assert!(pending.is_empty());
+        crate::container::remove_replaced_container(
+            &mut containers,
+            &mut pending,
+            (0, 60, 0),
+            BlockType::Air,
+        );
+        assert_eq!(pending, vec![tool]);
+        assert!(containers.is_empty());
+        crate::container::remove_replaced_container(
+            &mut containers,
+            &mut pending,
+            (0, 60, 0),
+            BlockType::Air,
+        );
+        assert_eq!(pending, vec![tool]);
+    }
 
     /// The chunk passes (`render_opaque`/`render_transparent`/`render_water`)
     /// draw with whatever `uModel` was left bound by the previous pass, so every

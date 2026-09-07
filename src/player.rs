@@ -3,6 +3,83 @@ use crate::item;
 use crate::world::World;
 use glam::Vec3;
 
+fn spawn_clear(block: BlockType) -> bool {
+    matches!(block, BlockType::Air | BlockType::SnowLayer)
+}
+
+/// New worlds start above the terrain, including snow, rather than in a cave.
+pub fn surface_spawn_near(
+    target: Vec3,
+    mut block_at: impl FnMut(i32, i32, i32) -> BlockType,
+) -> Option<Vec3> {
+    let (x, z) = (target.x.floor() as i32, target.z.floor() as i32);
+    let mut water_fallback = None;
+    for radius in 0i32..=32 {
+        for dx in -radius..=radius {
+            for dz in -radius..=radius {
+                if dx.abs().max(dz.abs()) != radius {
+                    continue;
+                }
+                for y in (0..crate::chunk::CHUNK_HEIGHT as i32).rev() {
+                    let floor = block_at(x + dx, y, z + dz);
+                    if spawn_clear(floor) {
+                        continue;
+                    }
+                    let position =
+                        Vec3::new((x + dx) as f32 + 0.5, (y + 1) as f32, (z + dz) as f32 + 0.5);
+                    if floor == BlockType::Water {
+                        water_fallback.get_or_insert(position);
+                    }
+                    if floor.is_solid()
+                        && floor != BlockType::Cactus
+                        && spawn_clear(block_at(x + dx, y + 1, z + dz))
+                        && spawn_clear(block_at(x + dx, y + 2, z + dz))
+                    {
+                        return Some(position);
+                    }
+                    // A blocked or liquid surface must not send us down into a cave.
+                    break;
+                }
+            }
+        }
+    }
+    water_fallback
+}
+
+pub fn safe_spawn_near(
+    target: Vec3,
+    mut block_at: impl FnMut(i32, i32, i32) -> BlockType,
+) -> Option<Vec3> {
+    let (x, z) = (target.x.floor() as i32, target.z.floor() as i32);
+    let preferred_y = (target.y.floor() as i32).clamp(1, crate::chunk::CHUNK_HEIGHT as i32 - 2);
+    let mut heights = (1..crate::chunk::CHUNK_HEIGHT as i32 - 1).collect::<Vec<_>>();
+    heights.sort_unstable_by_key(|y| (y - preferred_y).abs());
+    for radius in 0i32..=4 {
+        for dx in -radius..=radius {
+            for dz in -radius..=radius {
+                if dx.abs().max(dz.abs()) != radius {
+                    continue;
+                }
+                for &y in &heights {
+                    let floor = block_at(x + dx, y - 1, z + dz);
+                    if floor.is_solid()
+                        && floor != BlockType::Cactus
+                        && spawn_clear(block_at(x + dx, y, z + dz))
+                        && spawn_clear(block_at(x + dx, y + 1, z + dz))
+                    {
+                        return Some(Vec3::new(
+                            (x + dx) as f32 + 0.5,
+                            y as f32,
+                            (z + dz) as f32 + 0.5,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 pub struct Player {
     pub position: Vec3,
     pub velocity: Vec3,
@@ -13,6 +90,8 @@ pub struct Player {
     pub health: i32,
     pub hunger: i32,
     pub saturation: f32,
+    pub exhaustion: f32,
+    pub sandbox: bool,
     pub hunger_timer: f32,
     pub equipped_armor: [Option<(BlockType, u16)>; 4],
     pub xp_level: u32,
@@ -40,6 +119,8 @@ impl Player {
             health: 20,
             hunger: 20,
             saturation: 5.0,
+            exhaustion: 0.0,
+            sandbox: false,
             hunger_timer: 0.0,
             equipped_armor: [None, None, None, None],
             xp_level: 0,
@@ -91,12 +172,32 @@ impl Player {
         self.health = 20;
         self.hunger = 20;
         self.saturation = 5.0;
+        self.exhaustion = 0.0;
+        self.hunger_timer = 0.0;
         self.air_seconds = 15.0;
         self.damage_cooldown = 0.0;
         self.drowning_timer = 1.0;
         self.fall_distance = 0.0;
         self.flying = false;
         self.attack_cooldown = 0.0;
+        self.inventory_open = false;
+        self.space_was_pressed = false;
+        self.last_space_release = f64::NEG_INFINITY;
+    }
+
+    pub fn exhaust(&mut self, amount: f32) {
+        if !amount.is_finite() || amount <= 0.0 {
+            return;
+        }
+        self.exhaustion += amount;
+        while self.exhaustion >= 4.0 {
+            self.exhaustion -= 4.0;
+            if self.saturation > 0.0 {
+                self.saturation = (self.saturation - 1.0).max(0.0);
+            } else {
+                self.hunger = (self.hunger - 1).max(0);
+            }
+        }
     }
 
     fn apply_starvation_tick(&mut self) {
@@ -112,15 +213,25 @@ impl Player {
         true
     }
 
-    pub fn equip_armor(&mut self, item: BlockType) -> Option<BlockType> {
-        if let Some(props) = item::armor_properties(item) {
-            let slot_idx = props.slot as usize;
-            let prev = self.equipped_armor[slot_idx].map(|(b, _)| b);
-            self.equipped_armor[slot_idx] = Some((item, props.durability));
-            prev
-        } else {
-            None
-        }
+    pub fn equip_armor(
+        &mut self,
+        stack: crate::inventory::ItemStack,
+    ) -> Option<crate::inventory::ItemStack> {
+        let props = item::armor_properties(stack.block)?;
+        let slot = &mut self.equipped_armor[props.slot as usize];
+        let previous = slot.map(|(block, durability)| crate::inventory::ItemStack {
+            block,
+            count: 1,
+            durability: Some(durability),
+        });
+        *slot = Some((
+            stack.block,
+            stack
+                .durability
+                .unwrap_or(props.durability)
+                .min(props.durability),
+        ));
+        previous
     }
 
     pub fn add_xp(&mut self, amount: u32) {
@@ -198,23 +309,15 @@ impl Player {
             self.hunger_timer -= 4.0;
             if self.hunger >= 18 && self.health < 20 {
                 self.health = (self.health + 1).min(20);
-                if self.saturation > 0.0 {
-                    self.saturation = (self.saturation - 1.5).max(0.0);
-                } else {
-                    self.hunger = (self.hunger - 1).max(0);
-                }
+                self.exhaust(6.0);
             } else if self.hunger == 0 {
                 self.apply_starvation_tick();
             }
         }
 
         let effective_sprint = is_sprinting && self.hunger > 6;
-        if effective_sprint && move_input.length_squared() > 0.01 {
-            if self.saturation > 0.0 {
-                self.saturation = (self.saturation - 0.05 * dt).max(0.0);
-            } else if self.hunger > 0 {
-                self.saturation = 0.0;
-            }
+        if effective_sprint && !self.inventory_open && move_input.length_squared() > 0.01 {
+            self.exhaust(0.5 * dt);
         }
 
         let in_lava = world.get_block(
@@ -247,7 +350,7 @@ impl Player {
         };
 
         let space_just_pressed = is_jumping && !self.space_was_pressed;
-        if space_just_pressed && !self.grounded {
+        if self.sandbox && space_just_pressed && !self.grounded {
             let time_since_last = current_time - self.last_space_release;
             if time_since_last < 0.35 {
                 self.flying = !self.flying;
@@ -408,6 +511,107 @@ mod tests {
     }
 
     #[test]
+    fn exhaustion_consumes_saturation_then_hunger_and_keeps_fractional_work() {
+        let mut player = Player::new(64.0);
+        player.saturation = 1.0;
+        player.exhaust(4.5);
+        assert_eq!(player.saturation, 0.0);
+        assert_eq!(player.hunger, 20);
+        player.exhaust(3.5);
+        assert_eq!(player.hunger, 19);
+        assert_eq!(player.exhaustion, 0.0);
+        assert!(!player.sandbox);
+    }
+
+    #[test]
+    fn swapping_armor_cannot_repair_it() {
+        let mut player = Player::new(64.0);
+        let iron = crate::inventory::ItemStack::new(BlockType::IronHelmet, 1);
+        let gold = crate::inventory::ItemStack::new(BlockType::GoldHelmet, 1);
+        assert!(player.equip_armor(iron).is_none());
+        player.take_damage(2);
+        let worn = player.equipped_armor[0].unwrap().1;
+        let returned = player.equip_armor(gold).unwrap();
+        assert_eq!(returned.durability, Some(worn));
+        player.equip_armor(returned);
+        assert_eq!(
+            player.equipped_armor[0],
+            Some((BlockType::IronHelmet, worn))
+        );
+    }
+
+    #[test]
+    fn respawn_finds_standing_room_when_the_bed_location_is_obstructed() {
+        let spawn = safe_spawn_near(Vec3::new(0.5, 61.0, 0.5), |x, y, z| {
+            if y == 60 || (x == 0 && z == 0 && y >= 61) {
+                BlockType::Stone
+            } else {
+                BlockType::Air
+            }
+        })
+        .unwrap();
+        assert_ne!((spawn.x, spawn.z), (0.5, 0.5));
+        assert_eq!(spawn.y, 61.0);
+        assert!(safe_spawn_near(Vec3::ZERO, |_, _, _| BlockType::Air).is_none());
+    }
+
+    #[test]
+    fn snowy_surface_spawn_does_not_select_the_cave_underneath() {
+        let blocks = |_: i32, y, _: i32| match y {
+            0..=60 | 64..=130 => BlockType::Stone,
+            131 => BlockType::SnowLayer,
+            _ => BlockType::Air,
+        };
+        let target = Vec3::new(0.5, 150.0, 0.5);
+        assert_eq!(safe_spawn_near(target, blocks).unwrap().y, 131.0);
+        assert_eq!(surface_spawn_near(target, blocks).unwrap().y, 131.0);
+    }
+
+    #[test]
+    fn surface_spawn_searches_for_land_instead_of_an_underwater_cave() {
+        let spawn = surface_spawn_near(Vec3::new(0.5, 150.0, 0.5), |x, y, _| {
+            if y <= 60 || (64..=125).contains(&y) {
+                return BlockType::Stone;
+            }
+            if (126..=130).contains(&y) && x <= 0 {
+                return BlockType::Water;
+            }
+            BlockType::Air
+        })
+        .unwrap();
+        assert_eq!(spawn.x, 1.5);
+        assert_eq!(spawn.y, 126.0);
+    }
+
+    #[test]
+    fn ocean_spawn_falls_back_to_the_water_surface() {
+        let spawn = surface_spawn_near(Vec3::new(0.5, 150.0, 0.5), |_, y, _| {
+            if y <= 124 {
+                BlockType::Water
+            } else {
+                BlockType::Air
+            }
+        })
+        .unwrap();
+        assert_eq!(spawn, Vec3::new(0.5, 125.0, 0.5));
+    }
+
+    #[test]
+    fn reported_black_screen_seed_spawns_above_the_ocean() {
+        let mut chunk = crate::chunk::Chunk::new(2, 2, -112651535689168126i64 as u64);
+        chunk.generate();
+        assert_eq!(chunk.get_block(0, 123, 0), BlockType::Water);
+        let spawn = surface_spawn_near(Vec3::new(32.5, 150.0, 32.5), |x, y, z| {
+            if !(32..48).contains(&x) || !(32..48).contains(&z) || !(0..256).contains(&y) {
+                return BlockType::Air;
+            }
+            chunk.get_block((x - 32) as usize, y as usize, (z - 32) as usize)
+        })
+        .unwrap();
+        assert!(spawn.y >= 124.0, "spawned underground at {spawn:?}");
+    }
+
+    #[test]
     fn respawn_uses_bed_and_resets_survival_state() {
         let mut player = Player::new(64.0);
         player.spawn_point = Some(Vec3::new(10.5, 70.0, -4.5));
@@ -415,6 +619,9 @@ mod tests {
         player.hunger = 0;
         player.air_seconds = 0.0;
         player.velocity = Vec3::splat(5.0);
+        player.exhaustion = 3.5;
+        player.hunger_timer = 3.9;
+        player.inventory_open = true;
 
         player.respawn(Vec3::new(32.5, 80.0, 32.5));
 
@@ -422,5 +629,8 @@ mod tests {
         assert_eq!(player.velocity, Vec3::ZERO);
         assert_eq!((player.health, player.hunger), (20, 20));
         assert_eq!(player.air_seconds, 15.0);
+        assert_eq!(player.exhaustion, 0.0);
+        assert_eq!(player.hunger_timer, 0.0);
+        assert!(!player.inventory_open);
     }
 }

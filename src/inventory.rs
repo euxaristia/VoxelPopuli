@@ -8,6 +8,67 @@ use rand::RngExt;
 pub const INVENTORY_SLOT_COUNT: usize = 45;
 pub const CRAFT_TABLE_SLOT_COUNT: usize = 10;
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DroppedItem {
+    pub stack: ItemStack,
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub pickup_delay: f32,
+}
+
+impl DroppedItem {
+    pub fn new(stack: ItemStack, position: Vec3, velocity: Vec3) -> Self {
+        Self {
+            stack,
+            position,
+            velocity,
+            pickup_delay: 0.75,
+        }
+    }
+
+    pub fn tick(&mut self, dt: f32, solid_at: impl Fn(Vec3) -> bool) {
+        self.pickup_delay = (self.pickup_delay - dt).max(0.0);
+        self.velocity.y = (self.velocity.y - 16.0 * dt).max(-20.0);
+        self.velocity.x *= (-3.0 * dt).exp();
+        self.velocity.z *= (-3.0 * dt).exp();
+        let steps = (self.velocity.length() * dt / 0.2).ceil().max(1.0) as usize;
+        for _ in 0..steps {
+            for axis in 0..3 {
+                let mut next = self.position;
+                next[axis] += self.velocity[axis] * dt / steps as f32;
+                if solid_at(next - Vec3::Y * 0.15) {
+                    self.velocity[axis] = 0.0;
+                } else {
+                    self.position = next;
+                }
+            }
+        }
+    }
+
+    pub fn try_pickup(
+        &mut self,
+        player: Vec3,
+        inventory: &mut [Option<ItemStack>; INVENTORY_SLOT_COUNT],
+    ) -> bool {
+        if self.pickup_delay > 0.0 || self.position.distance_squared(player + Vec3::Y * 0.8) > 2.25
+        {
+            return false;
+        }
+        if let Some(remaining) = inv_add_stack(inventory, self.stack) {
+            self.stack = remaining;
+            return false;
+        }
+        true
+    }
+}
+
+pub fn take_drop(slot: &mut Option<ItemStack>, whole_stack: bool) -> Option<ItemStack> {
+    let stack = (*slot)?;
+    let count = if whole_stack { stack.count } else { 1 };
+    *slot = (stack.count > count).then(|| stack.with_count(stack.count - count));
+    Some(stack.with_count(count))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemStack {
     pub block: BlockType,
@@ -38,7 +99,7 @@ impl ItemStack {
         self
     }
 
-    fn can_stack_with(self, other: Self) -> bool {
+    pub fn can_stack_with(self, other: Self) -> bool {
         self.block == other.block && self.durability == other.durability
     }
 }
@@ -47,8 +108,13 @@ pub fn stack_max(b: BlockType) -> u32 {
     item::max_stack_size(b)
 }
 
-/// Create starting inventory with default items for gameplay & testing.
+/// Survival worlds begin with no equipment.
 pub fn create_starting_inventory() -> [Option<ItemStack>; INVENTORY_SLOT_COUNT] {
+    [None; INVENTORY_SLOT_COUNT]
+}
+
+/// Opt-in playground inventory for building and testing.
+pub fn create_sandbox_inventory() -> [Option<ItemStack>; INVENTORY_SLOT_COUNT] {
     let mut slots = [None::<ItemStack>; INVENTORY_SLOT_COUNT];
     slots[0] = Some(ItemStack::new(BlockType::TNT, 64));
     slots[1] = Some(ItemStack::new_tool(BlockType::FlintAndSteel));
@@ -70,14 +136,22 @@ pub fn inv_add(
     inv_add_stack(slots, ItemStack::new(block, amt)).map_or(0, |stack| stack.count)
 }
 
-fn inv_add_stack(
+pub fn inv_add_stack(
     slots: &mut [Option<ItemStack>; INVENTORY_SLOT_COUNT],
+    stack: ItemStack,
+) -> Option<ItemStack> {
+    move_stack(slots, &(0..36).collect::<Vec<_>>(), stack)
+}
+
+pub fn move_stack(
+    slots: &mut [Option<ItemStack>],
+    targets: &[usize],
     stack: ItemStack,
 ) -> Option<ItemStack> {
     let sm = stack_max(stack.block);
     let mut remaining = stack.count;
     for pass in 0..2u8 {
-        for i in (0..9).chain(9..36) {
+        for &i in targets {
             if remaining == 0 {
                 return None;
             }
@@ -96,7 +170,43 @@ fn inv_add_stack(
             }
         }
     }
-    Some(stack.with_count(remaining))
+    (remaining > 0).then(|| stack.with_count(remaining))
+}
+
+/// Move, merge, or split stacks without losing durability metadata.
+pub fn click_stack(slot: &mut Option<ItemStack>, cursor: &mut Option<ItemStack>, right: bool) {
+    if right {
+        if let Some(held) = *cursor {
+            let count = slot.map_or(0, |stack| stack.count);
+            if slot.is_none_or(|stack| stack.can_stack_with(held)) && count < stack_max(held.block)
+            {
+                *slot = Some(held.with_count(count + 1));
+                *cursor = (held.count > 1).then(|| held.with_count(held.count - 1));
+            }
+        } else if let Some(stack) = *slot {
+            let half = stack.count.div_ceil(2);
+            *cursor = Some(stack.with_count(half));
+            *slot = (stack.count > half).then(|| stack.with_count(stack.count - half));
+        }
+        return;
+    }
+    match (*cursor, *slot) {
+        (Some(held), Some(stack)) if held.can_stack_with(stack) => {
+            let count = (stack_max(stack.block) - stack.count).min(held.count);
+            *slot = Some(stack.with_count(stack.count + count));
+            *cursor = (held.count > count).then(|| held.with_count(held.count - count));
+        }
+        _ => std::mem::swap(slot, cursor),
+    }
+}
+
+pub fn return_cursor(
+    slots: &mut [Option<ItemStack>; INVENTORY_SLOT_COUNT],
+    cursor: &mut Option<ItemStack>,
+) {
+    if let Some(stack) = cursor.take() {
+        *cursor = inv_add_stack(slots, stack);
+    }
 }
 
 /// Add a tool item to inventory (preserves durability).
@@ -441,63 +551,7 @@ pub fn inv_click(
         }
         return;
     }
-    if right {
-        if cursor.is_none() {
-            if let Some(s) = slots[slot] {
-                let half = s.count.div_ceil(2);
-                *cursor = Some(s.with_count(half));
-                let left = s.count - half;
-                slots[slot] = if left > 0 {
-                    Some(s.with_count(left))
-                } else {
-                    None
-                };
-            }
-        } else {
-            let held = cursor.unwrap();
-            let sm = stack_max(held.block);
-            let ok = match slots[slot] {
-                None => true,
-                Some(d) => d.can_stack_with(held) && d.count < sm,
-            };
-            if ok {
-                match slots[slot] {
-                    None => {
-                        slots[slot] = Some(held.with_count(1));
-                    }
-                    Some(d) => {
-                        slots[slot] = Some(d.with_count(d.count + 1));
-                    }
-                }
-                let nc = held.count - 1;
-                *cursor = if nc > 0 {
-                    Some(held.with_count(nc))
-                } else {
-                    None
-                };
-            }
-        }
-    } else {
-        match (*cursor, slots[slot]) {
-            (None, _) => {
-                *cursor = slots[slot].take();
-            }
-            (Some(h), None) => {
-                slots[slot] = Some(h);
-                *cursor = None;
-            }
-            (Some(h), Some(d)) if h.can_stack_with(d) => {
-                let sm = stack_max(d.block);
-                let add = (sm - d.count).min(h.count);
-                slots[slot] = Some(d.with_count(d.count + add));
-                let nc = h.count - add;
-                *cursor = if nc > 0 { Some(h.with_count(nc)) } else { None };
-            }
-            _ => {
-                std::mem::swap(&mut slots[slot], cursor);
-            }
-        }
-    }
+    click_stack(&mut slots[slot], cursor, right);
     // Update crafting output if we touched crafting slots
     if (40..44).contains(&slot) {
         update_craft_output_2x2(slots);
@@ -667,59 +721,7 @@ pub fn ct_click(
         return;
     };
 
-    if right {
-        if cursor.is_none() {
-            if let Some(s) = *slot_ref {
-                let half = s.count.div_ceil(2);
-                *cursor = Some(s.with_count(half));
-                let left = s.count - half;
-                *slot_ref = if left > 0 {
-                    Some(s.with_count(left))
-                } else {
-                    None
-                };
-            }
-        } else {
-            let held = cursor.unwrap();
-            let sm = stack_max(held.block);
-            let ok = match *slot_ref {
-                None => true,
-                Some(d) => d.can_stack_with(held) && d.count < sm,
-            };
-            if ok {
-                match *slot_ref {
-                    None => *slot_ref = Some(held.with_count(1)),
-                    Some(d) => *slot_ref = Some(d.with_count(d.count + 1)),
-                }
-                let nc = held.count - 1;
-                *cursor = if nc > 0 {
-                    Some(held.with_count(nc))
-                } else {
-                    None
-                };
-            }
-        }
-    } else {
-        match (*cursor, *slot_ref) {
-            (None, _) => {
-                *cursor = slot_ref.take();
-            }
-            (Some(h), None) => {
-                *slot_ref = Some(h);
-                *cursor = None;
-            }
-            (Some(h), Some(d)) if h.can_stack_with(d) => {
-                let sm = stack_max(d.block);
-                let add = (sm - d.count).min(h.count);
-                *slot_ref = Some(d.with_count(d.count + add));
-                let nc = h.count - add;
-                *cursor = if nc > 0 { Some(h.with_count(nc)) } else { None };
-            }
-            _ => {
-                std::mem::swap(slot_ref, cursor);
-            }
-        }
-    }
+    click_stack(slot_ref, cursor, right);
 
     if ct_slot <= 8 {
         update_craft_output_3x3(ct_slots);
@@ -736,6 +738,7 @@ pub fn ct_close(
             *slot = inv_add_stack(inv_slots, s);
         }
     }
+    update_craft_output_3x3(ct_slots);
 }
 
 #[cfg(test)]
@@ -743,8 +746,84 @@ mod tests {
     use super::*;
 
     #[test]
+    fn closing_crafting_table_cannot_duplicate_the_preview() {
+        let mut inv = [None; INVENTORY_SLOT_COUNT];
+        let mut ct = [None; CRAFT_TABLE_SLOT_COUNT];
+        ct[0] = Some(ItemStack::new(BlockType::OakLog, 1));
+        update_craft_output_3x3(&mut ct);
+        assert!(ct[9].is_some());
+        ct_close(&mut ct, &mut inv);
+        let mut cursor = None;
+        ct_click(&mut ct, &mut inv, &mut cursor, 9, false);
+        assert_eq!(cursor, None);
+        assert_eq!(inv[0], Some(ItemStack::new(BlockType::OakLog, 1)));
+    }
+
+    #[test]
+    fn dropping_one_or_a_stack_preserves_item_counts_and_tool_wear() {
+        let mut slot = Some(ItemStack::new(BlockType::Stone, 12));
+        assert_eq!(take_drop(&mut slot, false).unwrap().count, 1);
+        assert_eq!(slot.unwrap().count, 11);
+        assert_eq!(take_drop(&mut slot, true).unwrap().count, 11);
+        assert!(slot.is_none());
+        let tool = ItemStack {
+            durability: Some(5),
+            ..ItemStack::new_tool(BlockType::IronPickaxe)
+        };
+        let mut slot = Some(tool);
+        assert_eq!(take_drop(&mut slot, false), Some(tool));
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn dropped_items_wait_for_pickup_and_keep_the_remainder_when_full() {
+        let mut drop = DroppedItem::new(ItemStack::new(BlockType::Stone, 5), Vec3::Y, Vec3::ZERO);
+        let mut inv = [Some(ItemStack::new(BlockType::Stone, 64)); INVENTORY_SLOT_COUNT];
+        inv[0].as_mut().unwrap().count = 62;
+        assert!(!drop.try_pickup(Vec3::ZERO, &mut inv));
+        drop.pickup_delay = 0.0;
+        assert!(!drop.try_pickup(Vec3::new(20.0, 0.0, 0.0), &mut inv));
+        assert!(!drop.try_pickup(Vec3::ZERO, &mut inv));
+        assert_eq!(drop.stack.count, 3);
+        inv[35] = None;
+        assert!(drop.try_pickup(Vec3::ZERO, &mut inv));
+        assert_eq!(inv[35].unwrap().count, 3);
+    }
+
+    #[test]
+    fn dropped_items_land_without_tunneling_through_ground() {
+        let mut drop = DroppedItem::new(
+            ItemStack::new(BlockType::Stone, 1),
+            Vec3::Y * 4.0,
+            Vec3::ZERO,
+        );
+        for _ in 0..100 {
+            drop.tick(0.1, |pos| pos.y < 1.0);
+        }
+        assert!((1.15..1.4).contains(&drop.position.y));
+        assert_eq!(drop.velocity.y, 0.0);
+    }
+
+    #[test]
+    fn closing_inventory_preserves_cursor_tool_wear_and_overflow() {
+        let tool = ItemStack {
+            durability: Some(3),
+            ..ItemStack::new_tool(BlockType::IronPickaxe)
+        };
+        let mut inv = [Some(ItemStack::new(BlockType::Stone, 64)); INVENTORY_SLOT_COUNT];
+        let mut cursor = Some(tool);
+        return_cursor(&mut inv, &mut cursor);
+        assert_eq!(cursor, Some(tool));
+        inv[0] = None;
+        return_cursor(&mut inv, &mut cursor);
+        assert_eq!(cursor, None);
+        assert_eq!(inv[0], Some(tool));
+    }
+
+    #[test]
     fn test_starting_inventory_initialization() {
-        let inv = create_starting_inventory();
+        assert!(create_starting_inventory().iter().all(Option::is_none));
+        let inv = create_sandbox_inventory();
         assert_eq!(inv[0].unwrap().block, BlockType::TNT);
         assert_eq!(inv[1].unwrap().block, BlockType::FlintAndSteel);
         assert_eq!(inv[2].unwrap().block, BlockType::Torch);

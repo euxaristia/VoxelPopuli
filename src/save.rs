@@ -1,14 +1,17 @@
 use crate::block::BlockType;
+use crate::container::{CHEST_SLOTS, Container, Furnace, SMELT_SECONDS};
 use crate::inventory::{INVENTORY_SLOT_COUNT, ItemStack};
 use crate::player::Player;
 use crate::world::World;
 use glam::{Vec2, Vec3};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 8] = b"VPOPSAV\0";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const MAX_EDITS: usize = 10_000_000;
+const MAX_CONTAINERS: usize = 100_000;
+const MAX_PENDING_STACKS: usize = 1_000_000;
 const MAX_PATH_BYTES: usize = 32 * 1024;
 pub const SAVE_FILE: &str = "world.vps";
 
@@ -52,6 +55,8 @@ struct PlayerState {
     health: i32,
     hunger: i32,
     saturation: f32,
+    exhaustion: f32,
+    sandbox: bool,
     hunger_timer: f32,
     equipped_armor: [Option<(BlockType, u16)>; 4],
     xp_level: u32,
@@ -75,6 +80,8 @@ impl PlayerState {
             health: player.health,
             hunger: player.hunger,
             saturation: player.saturation,
+            exhaustion: player.exhaustion,
+            sandbox: player.sandbox,
             hunger_timer: player.hunger_timer,
             equipped_armor: player.equipped_armor,
             xp_level: player.xp_level,
@@ -98,12 +105,14 @@ impl PlayerState {
         player.health = self.health.clamp(0, 20);
         player.hunger = self.hunger.clamp(0, 20);
         player.saturation = self.saturation.clamp(0.0, player.hunger as f32);
+        player.exhaustion = self.exhaustion;
+        player.sandbox = self.sandbox;
         player.hunger_timer = self.hunger_timer.max(0.0);
         player.equipped_armor = self.equipped_armor;
         player.xp_level = self.xp_level;
         player.xp_progress = self.xp_progress.clamp(0.0, 1.0);
         player.total_xp = self.total_xp;
-        player.flying = self.flying;
+        player.flying = self.flying && self.sandbox;
         player.damage_cooldown = self.damage_cooldown.max(0.0);
         player.drowning_timer = self.drowning_timer.max(0.0);
         player.fall_distance = self.fall_distance.max(0.0);
@@ -115,12 +124,18 @@ impl PlayerState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameSave {
     pub seed: u64,
+    pub day_time: f32,
     player: PlayerState,
     pub inventory: [Option<ItemStack>; INVENTORY_SLOT_COUNT],
     pub camera_angle: Vec2,
     pub settings: GameSettings,
     pub import_world: Option<PathBuf>,
     pub edits: Vec<((i32, i32, i32), BlockType)>,
+    pub containers: Vec<((i32, i32, i32), Container)>,
+    pub cursor: Option<ItemStack>,
+    pub crafting: [Option<ItemStack>; 9],
+    pub pending_stacks: Vec<ItemStack>,
+    pub dropped_items: Vec<crate::inventory::DroppedItem>,
 }
 
 impl GameSave {
@@ -132,6 +147,8 @@ impl GameSave {
         camera_angle: Vec2,
         settings: GameSettings,
         import_world: Option<&Path>,
+        cursor: Option<ItemStack>,
+        crafting: &[Option<ItemStack>; crate::inventory::CRAFT_TABLE_SLOT_COUNT],
     ) -> io::Result<Self> {
         let mut edits = world
             .edits
@@ -141,14 +158,36 @@ impl GameSave {
             .map(|(position, block)| (*position, *block))
             .collect::<Vec<_>>();
         edits.sort_unstable_by_key(|(position, _)| *position);
+        let mut containers = world
+            .containers
+            .iter()
+            .map(|(pos, c)| (*pos, c.clone()))
+            .collect::<Vec<_>>();
+        containers.sort_unstable_by_key(|(position, _)| *position);
         Ok(Self {
             seed: world.seed,
+            day_time: world.day_time,
             player: PlayerState::capture(player),
             inventory: *inventory,
             camera_angle,
             settings,
             import_world: import_world.map(Path::to_path_buf),
             edits,
+            containers,
+            cursor,
+            crafting: std::array::from_fn(|i| crafting[i]),
+            dropped_items: world.dropped_items.clone(),
+            pending_stacks: world
+                .pending_stacks
+                .iter()
+                .copied()
+                .chain(
+                    world
+                        .pending_drops
+                        .iter()
+                        .map(|&(block, count)| ItemStack::new(block, count)),
+                )
+                .collect(),
         })
     }
 
@@ -158,23 +197,21 @@ impl GameSave {
 
     pub fn write_to(&self, path: &Path) -> io::Result<()> {
         let bytes = self.encode()?;
-        let temporary = path.with_extension("tmp");
-        std::fs::write(&temporary, bytes)?;
-        match std::fs::rename(&temporary, path) {
-            Ok(()) => Ok(()),
-            Err(rename_error) if path.exists() => {
-                std::fs::remove_file(path)?;
-                std::fs::rename(&temporary, path).map_err(|retry_error| {
-                    io::Error::new(
-                        retry_error.kind(),
-                        format!(
-                            "failed to replace save after rename error ({rename_error}): {retry_error}"
-                        ),
-                    )
-                })
-            }
-            Err(error) => Err(error),
+        static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temporary = path.with_extension(format!("vps.{}.{id}.tmp", std::process::id()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let result = file.write_all(&bytes).and_then(|()| file.sync_all());
+        drop(file);
+        // Rename replaces the destination atomically. Never delete a good save to retry.
+        let result = result.and_then(|()| std::fs::rename(&temporary, path));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
         }
+        result
     }
 
     pub fn read_from(path: &Path) -> io::Result<Self> {
@@ -234,6 +271,50 @@ impl GameSave {
             put_i32(&mut out, *z);
             out.push(*block as u8);
         }
+        put_stack(&mut out, self.cursor)?;
+        for stack in self.crafting {
+            put_stack(&mut out, stack)?;
+        }
+        if self.containers.len() > MAX_CONTAINERS || self.pending_stacks.len() > MAX_PENDING_STACKS
+        {
+            return Err(invalid("too many containers or pending items"));
+        }
+        put_u32(&mut out, self.containers.len() as u32);
+        for ((x, y, z), container) in &self.containers {
+            put_i32(&mut out, *x);
+            put_i32(&mut out, *y);
+            put_i32(&mut out, *z);
+            out.push(container.block() as u8);
+            for &stack in container.slots() {
+                put_stack(&mut out, stack)?;
+            }
+            if let Container::Furnace(furnace) = container {
+                put_f32(&mut out, furnace.burn_remaining);
+                put_f32(&mut out, furnace.burn_total);
+                put_f32(&mut out, furnace.progress);
+                put_bool(&mut out, furnace.cooking.is_some());
+                if let Some(input) = furnace.cooking {
+                    out.push(input as u8);
+                }
+            }
+        }
+        put_u32(&mut out, self.pending_stacks.len() as u32);
+        for &stack in &self.pending_stacks {
+            put_stack(&mut out, Some(stack))?;
+        }
+        put_f32(&mut out, self.player.exhaustion);
+        put_bool(&mut out, self.player.sandbox);
+        put_f32(&mut out, self.day_time);
+        if self.dropped_items.len() > MAX_PENDING_STACKS {
+            return Err(invalid("too many dropped items"));
+        }
+        put_u32(&mut out, self.dropped_items.len() as u32);
+        for drop in &self.dropped_items {
+            put_stack(&mut out, Some(drop.stack))?;
+            put_vec3(&mut out, drop.position);
+            put_vec3(&mut out, drop.velocity);
+            put_f32(&mut out, drop.pickup_delay);
+        }
         Ok(out)
     }
 
@@ -242,7 +323,8 @@ impl GameSave {
         if reader.take(MAGIC.len())? != MAGIC {
             return Err(invalid("not a VoxelPopuli save file"));
         }
-        if reader.u32()? != VERSION {
+        let version = reader.u32()?;
+        if !(1..=VERSION).contains(&version) {
             return Err(invalid("unsupported save version"));
         }
         let seed = reader.u64()?;
@@ -293,11 +375,111 @@ impl GameSave {
             let position = (reader.i32()?, reader.i32()?, reader.i32()?);
             edits.push((position, reader.block()?));
         }
+        let mut cursor = None;
+        let mut crafting = [None; 9];
+        let mut containers = Vec::new();
+        let mut pending_stacks = Vec::new();
+        let mut exhaustion = 0.0;
+        let mut sandbox = true; // Preserve the flight controls of version 1 worlds.
+        let mut day_time = 570.0;
+        let mut dropped_items = Vec::new();
+        if version >= 2 {
+            cursor = reader.stack()?;
+            for stack in &mut crafting {
+                *stack = reader.stack()?;
+            }
+            let count = reader.u32()? as usize;
+            if count > MAX_CONTAINERS || count > reader.remaining() / 13 {
+                return Err(invalid("invalid container count"));
+            }
+            let mut positions = std::collections::HashSet::new();
+            for _ in 0..count {
+                let position = (reader.i32()?, reader.i32()?, reader.i32()?);
+                if !(0..crate::chunk::CHUNK_HEIGHT as i32).contains(&position.1)
+                    || !positions.insert(position)
+                {
+                    return Err(invalid("invalid or duplicate container position"));
+                }
+                let container = match reader.block()? {
+                    BlockType::Chest => {
+                        let mut slots = [None; CHEST_SLOTS];
+                        for stack in &mut slots {
+                            *stack = reader.stack()?;
+                        }
+                        Container::Chest(Box::new(slots))
+                    }
+                    BlockType::Furnace => {
+                        let mut slots = [None; 3];
+                        for stack in &mut slots {
+                            *stack = reader.stack()?;
+                        }
+                        let burn_remaining = reader.f32()?;
+                        let burn_total = reader.f32()?;
+                        let progress = reader.f32()?;
+                        let cooking = reader.bool()?.then(|| reader.block()).transpose()?;
+                        if !(0.0..=80.0).contains(&burn_total)
+                            || !(0.0..=burn_total).contains(&burn_remaining)
+                            || !(0.0..SMELT_SECONDS).contains(&progress)
+                        {
+                            return Err(invalid("invalid furnace timers"));
+                        }
+                        Container::Furnace(Furnace {
+                            slots,
+                            burn_remaining,
+                            burn_total,
+                            progress,
+                            cooking,
+                        })
+                    }
+                    _ => return Err(invalid("invalid container type")),
+                };
+                containers.push((position, container));
+            }
+            let count = reader.u32()? as usize;
+            if count > MAX_PENDING_STACKS || count > reader.remaining() / 7 {
+                return Err(invalid("invalid pending item count"));
+            }
+            for _ in 0..count {
+                pending_stacks.push(
+                    reader
+                        .stack()?
+                        .ok_or_else(|| invalid("empty pending item"))?,
+                );
+            }
+            exhaustion = reader.f32()?;
+            sandbox = reader.bool()?;
+            day_time = reader.f32()?;
+            if !(0.0..4.0).contains(&exhaustion) || !(0.0..1200.0).contains(&day_time) {
+                return Err(invalid("invalid survival clock or exhaustion"));
+            }
+            let count = reader.u32()? as usize;
+            if count > MAX_PENDING_STACKS || count > reader.remaining() / 35 {
+                return Err(invalid("invalid dropped item count"));
+            }
+            for _ in 0..count {
+                let stack = reader
+                    .stack()?
+                    .ok_or_else(|| invalid("empty dropped item"))?;
+                let position = reader.vec3()?;
+                let velocity = reader.vec3()?;
+                let pickup_delay = reader.f32()?;
+                if !(0.0..=0.75).contains(&pickup_delay) {
+                    return Err(invalid("invalid pickup delay"));
+                }
+                dropped_items.push(crate::inventory::DroppedItem {
+                    stack,
+                    position,
+                    velocity,
+                    pickup_delay,
+                });
+            }
+        }
         if reader.remaining() != 0 {
             return Err(invalid("trailing data in save file"));
         }
         Ok(Self {
             seed,
+            day_time,
             player: PlayerState {
                 position,
                 velocity,
@@ -307,6 +489,8 @@ impl GameSave {
                 health,
                 hunger,
                 saturation,
+                exhaustion,
+                sandbox,
                 hunger_timer,
                 equipped_armor,
                 xp_level,
@@ -323,6 +507,11 @@ impl GameSave {
             settings,
             import_world,
             edits,
+            containers,
+            cursor,
+            crafting,
+            pending_stacks,
+            dropped_items,
         })
     }
 }
@@ -536,6 +725,7 @@ mod tests {
         });
         GameSave {
             seed: 42,
+            day_time: 570.0,
             player: PlayerState {
                 position: Vec3::new(-2.5, 70.0, 18.25),
                 velocity: Vec3::new(1.0, -2.0, 3.0),
@@ -545,6 +735,8 @@ mod tests {
                 health: 17,
                 hunger: 12,
                 saturation: 2.5,
+                exhaustion: 0.0,
+                sandbox: true,
                 hunger_timer: 1.25,
                 equipped_armor: [Some((BlockType::IronHelmet, 99)), None, None, None],
                 xp_level: 4,
@@ -566,6 +758,11 @@ mod tests {
             },
             import_world: Some(PathBuf::from("example-world")),
             edits: vec![((1, 2, 3), BlockType::Torch), ((-4, 60, 8), BlockType::Air)],
+            containers: Vec::new(),
+            cursor: None,
+            crafting: [None; 9],
+            pending_stacks: Vec::new(),
+            dropped_items: Vec::new(),
         }
     }
 
@@ -573,6 +770,84 @@ mod tests {
     fn save_round_trip_preserves_progress_and_durability() {
         let save = sample_save();
         assert_eq!(GameSave::decode(&save.encode().unwrap()).unwrap(), save);
+    }
+
+    #[test]
+    fn save_preserves_containers_open_crafting_cursor_and_overflow() {
+        let mut save = sample_save();
+        let mut furnace = Furnace {
+            slots: [
+                Some(ItemStack::new(BlockType::IronOre, 8)),
+                Some(ItemStack::new(BlockType::Coal, 1)),
+                None,
+            ],
+            ..Furnace::default()
+        };
+        furnace.tick(14.0);
+        let mut chest = [None; CHEST_SLOTS];
+        chest[17] = save.inventory[0];
+        save.containers = vec![
+            ((0, 60, 0), Container::Chest(Box::new(chest))),
+            ((1, 60, 0), Container::Furnace(furnace)),
+        ];
+        save.cursor = save.inventory[0];
+        save.crafting[8] = Some(ItemStack::new(BlockType::Diamond, 2));
+        save.pending_stacks = vec![save.inventory[0].unwrap()];
+        save.dropped_items.push(crate::inventory::DroppedItem::new(
+            save.inventory[0].unwrap(),
+            Vec3::new(1.0, 65.0, 2.0),
+            Vec3::Y,
+        ));
+        let mut restored = GameSave::decode(&save.encode().unwrap()).unwrap();
+        assert_eq!(restored, save);
+        let Container::Furnace(furnace) = &mut restored.containers[1].1 else {
+            panic!("missing furnace")
+        };
+        furnace.tick(6.0);
+        assert_eq!(
+            furnace.slots[2],
+            Some(ItemStack::new(BlockType::IronIngot, 2))
+        );
+        assert_eq!(furnace.burn_remaining, 60.0);
+    }
+
+    #[test]
+    fn version_one_saves_still_load() {
+        let save = sample_save();
+        let mut bytes = save.encode().unwrap();
+        // Empty version 2 extension: cursor, crafting, counts, and survival state.
+        bytes.truncate(bytes.len() - 31);
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(GameSave::decode(&bytes).unwrap(), save);
+    }
+
+    #[test]
+    fn corrupt_furnace_timers_and_duplicate_containers_are_rejected() {
+        let mut save = sample_save();
+        save.containers.push((
+            (0, 60, 0),
+            Container::Furnace(Furnace {
+                progress: 10.0,
+                ..Furnace::default()
+            }),
+        ));
+        assert!(GameSave::decode(&save.encode().unwrap()).is_err());
+        save.containers[0].1 = Container::new(BlockType::Chest).unwrap();
+        save.containers.push(save.containers[0].clone());
+        assert!(GameSave::decode(&save.encode().unwrap()).is_err());
+    }
+
+    #[test]
+    fn failed_replacement_preserves_the_existing_destination() {
+        let directory =
+            std::env::temp_dir().join(format!("voxelpopuli-save-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let sentinel = directory.join("keep.txt");
+        std::fs::write(&sentinel, b"existing data").unwrap();
+        assert!(sample_save().write_to(&directory).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"existing data");
+        std::fs::remove_file(sentinel).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]
@@ -595,6 +870,10 @@ mod tests {
         let save = sample_save();
         save.write_to(&path).unwrap();
         assert_eq!(GameSave::read_from(&path).unwrap(), save);
+        let mut changed = save;
+        changed.player.health = 4;
+        changed.write_to(&path).unwrap();
+        assert_eq!(GameSave::read_from(&path).unwrap(), changed);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
     }

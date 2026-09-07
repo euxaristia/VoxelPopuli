@@ -39,6 +39,46 @@ Always run in release mode for maximum chunk-streaming and meshing performance:
 cargo run --release
 ```
 
+New worlds start in survival with an empty inventory. Gather logs, craft planks
+and a crafting table, make wooden tools, mine cobblestone, then build a furnace
+to turn ore into ingots and raw meat into cooked food.
+
+The game resumes `world.vps` automatically and saves on exit. To keep a separate
+survival world, use the same save path each time:
+
+```bash
+cargo run --release -- --save survival.vps
+```
+
+If an older build placed you in a dark cave at startup, add `--reset-spawn` once
+to move to the surface above your saved location. This keeps inventory and world
+edits; the new position is saved on exit:
+
+```bash
+cargo run --release -- --save survival.vps --reset-spawn
+```
+
+For the original starter kit and double-tap flight controls in a separate world:
+
+```bash
+cargo run --release -- --sandbox --save sandbox.vps
+```
+
+Existing saves retain their inventory and original flight controls. Save version
+2 also stores chest contents, furnace fuel/progress, dropped items, cursor and
+crafting-table items, hunger exhaustion, and time of day. Version 1 saves remain
+readable; older game binaries cannot read version 2 saves. An unreadable save
+stops startup rather than being replaced with a new world. `--seed` starts a new
+world, so use a different `--save` path to keep your current world.
+
+Chests hold 27 stacks. Furnaces have input, fuel, and output slots; one item takes
+10 seconds to smelt, and one coal burns for 80 seconds. They continue cooking
+while closed during play; pausing freezes the simulation. Shift-click transfers
+stacks and right-click splits them. Broken containers release their contents.
+Items that do not fit in your inventory remain on the ground and are saved.
+Beds set your respawn point and advance night to morning. Death currently keeps
+your inventory and reloads terrain around your spawn before resuming.
+
 ## Export Minecraft Java World 🌍
 
 Export generated terrain to a classic Java Anvil world folder (`16x16x256` chunks, Y `0..255`):
@@ -60,11 +100,12 @@ The importer reads Anvil `.mca` region files, decompresses NBT chunk data, unpac
 ## Controls 🎮
 - `W A S D`: Move
 - `Mouse`: Look
-- `Space`: Jump / Swim up (Double-tap in creative for Flight)
+- `Space`: Jump / Swim up (Double-tap in sandbox worlds for Flight)
 - `Left Ctrl`: Sprint (requires Hunger > 6)
 - `Shift`: Sneak / Swim down
 - `Left Click`: Break block / Mine / Attack
-- `Right Click`: Place block / Eat food / Equip armor / Interact with Crafting Table & TNT
+- `Right Click`: Place block / Eat food / Equip armor / Open crafting tables, chests, and furnaces / Use beds & TNT
+- `Q` / `Ctrl+Q`: Drop one item / Drop the selected stack (or cursor item in an open inventory)
 - `1 - 9` / `Scroll`: Select hotbar slot
 - `E`: Open Inventory / Crafting menu
 - `F3`: Toggle debug HUD & performance telemetry overlay
@@ -78,6 +119,9 @@ The importer reads Anvil `.mca` region files, decompresses NBT chunk data, unpac
 - `src/block.rs`: 100+ `BlockType` variants (blocks, materials, tools, food, armor, combat).
 - `src/item.rs`: Centralized block properties, tool stats, food properties, armor defense, and atlas UV mappings.
 - `src/inventory.rs`: Inventory grid, hotbar management, stack counts, durability tracking, and Bedrock-style linear placement lock.
+- `src/container.rs`: Persistent chest slots, furnace simulation, and container transfers.
+- `src/container_ui.rs`: Chest and furnace screens.
+- `src/save.rs`: Versioned saves and atomic replacement of saved progress.
 - `src/crafting.rs`: 3x3 shaped/shapeless crafting database, furnace smelting, and fuel burn times.
 - `src/mob.rs`: Mob entities, dimensions, wander AI, loot drops, and models.
 - `src/village.rs`: Procedural village layout generation and structure stamping.
@@ -89,6 +133,19 @@ The importer reads Anvil `.mca` region files, decompresses NBT chunk data, unpac
 - `src/player.rs`: Player physics, collision detection, and movement.
 - `src/noise.rs`: Perlin noise implementation for terrain generation.
 - `src/profiler.rs`: Real-time frame profiler & performance telemetry.
+
+## Survival verification
+
+```bash
+cargo test --locked --offline
+cargo build --release --locked --offline
+cargo run --release --locked --offline -- --smoke-test-ui
+```
+
+The smoke test renders the production chest and furnace screens through wgpu
+in a hidden test window, writes screenshots to `target/test-artifacts/`, and
+exits without opening or changing a world save. See
+[the survival playtest checklist](docs/survival-playtest.md) for interactive checks.
 
 ## License 📜
 Released into the **Public Domain** (The Unlicense). See [LICENSE](./LICENSE).

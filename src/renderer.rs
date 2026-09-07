@@ -381,11 +381,24 @@ fn make_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureVi
     make_depth_texture(device, width, height).create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+#[must_use = "keep the renderer guard alive until rendering resources are dropped"]
+pub struct RendererGuard;
+
+impl Drop for RendererGuard {
+    fn drop(&mut self) {
+        let context = CTX.with(|c| c.borrow_mut().take());
+        if let Some(context) = context {
+            let _ = context.device.poll(wgpu::PollType::wait_indefinitely());
+            drop(context);
+        }
+    }
+}
+
 pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
     window: &W,
     width: i32,
     height: i32,
-) {
+) -> RendererGuard {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let raw_display_handle = window.display_handle().expect("display handle").as_raw();
     let raw_window_handle = window.window_handle().expect("window handle").as_raw();
@@ -432,9 +445,10 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
     } else {
         caps.present_modes[0]
     };
-    println!("Present mode: {present_mode:?}");
+    println!("Present mode: {present_mode:?}, format: {format:?}");
     let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | (caps.usages & wgpu::TextureUsages::COPY_SRC),
         format,
         color_space: wgpu::SurfaceColorSpace::Auto,
         width: width.max(1) as u32,
@@ -628,6 +642,7 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
         gpu_mesh_m3_tinted: None,
     };
     CTX.with(|c| *c.borrow_mut() = Some(ctx));
+    RendererGuard
 }
 
 /// Allocates the persistent GPU voxel pool sized for `pool_size` chunk slots.
@@ -1512,6 +1527,7 @@ fn make_texture_bind_group(
         format: OFFSCREEN_FORMAT,
         usage: wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
@@ -2298,7 +2314,76 @@ pub struct RenderTexture2D {
     depth: wgpu::TextureView,
 }
 
+fn save_texture_png(
+    c: &Ctx,
+    texture: &wgpu::Texture,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let bgra = match texture.format() {
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => false,
+        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => true,
+        format => return Err(format!("Screenshot format is unsupported: {format:?}")),
+    };
+    if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+        return Err("This surface does not support screenshot readback".to_owned());
+    }
+    let (width, height) = (texture.width(), texture.height());
+    let stride = (width * 4).div_ceil(256) * 256;
+    let buffer = c.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("screenshot"),
+        size: (stride * height) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = c.device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    c.queue.submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    c.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| e.to_string())?;
+    let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
+    let mut pixels = data
+        .chunks(stride as usize)
+        .flat_map(|row| row[..width as usize * 4].iter().copied())
+        .collect::<Vec<_>>();
+    drop(data);
+    buffer.unmap();
+    if bgra {
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+    }
+    image::save_buffer(path, &pixels, width, height, image::ColorType::Rgba8)
+        .map_err(|e| e.to_string())
+}
+
 impl RenderTexture2D {
+    pub fn save_png(&self, path: &std::path::Path) -> Result<(), String> {
+        with_ctx(|c| save_texture_png(c, &self.texture.texture, path))
+    }
+
     pub fn new(width: i32, height: i32) -> Self {
         let texture =
             Texture2D::from_data(&vec![0u8; (width * height * 4) as usize], width, height);
@@ -2404,6 +2489,12 @@ fn build_pipeline(
 /// Replaces window.swap_buffers(); takes the current framebuffer size so
 /// the surface can follow resizes.
 pub fn end_frame(width: i32, height: i32) {
+    end_frame_capture(width, height, None);
+}
+
+/// Capture the actual swapchain image after drawing and before presentation.
+/// Returns false if the surface could not provide a frame.
+pub fn end_frame_capture(width: i32, height: i32, path: Option<&std::path::Path>) -> bool {
     with_ctx(|c| {
         let passes = std::mem::replace(&mut c.passes, vec![PassRec::new(Target::Surface)]);
         let arena = std::mem::take(&mut c.uniform_arena);
@@ -2411,7 +2502,7 @@ pub fn end_frame(width: i32, height: i32) {
         if width <= 0 || height <= 0 {
             drop(passes);
             recycle_retired_buffers(c);
-            return; // minimized: drop the frame
+            return false; // minimized: drop the frame
         }
         if c.config.width != width as u32 || c.config.height != height as u32 {
             c.config.width = width as u32;
@@ -2457,7 +2548,7 @@ pub fn end_frame(width: i32, height: i32) {
         let Some(frame) = frame else {
             drop(passes);
             recycle_retired_buffers(c);
-            return;
+            return false;
         };
         let frame_view = frame
             .texture
@@ -2625,9 +2716,14 @@ pub fn end_frame(width: i32, height: i32) {
             }
         }
         c.queue.submit([encoder.finish()]);
+        if let Some(path) = path {
+            save_texture_png(c, &frame.texture, path)
+                .expect("Could not capture the presented frame");
+        }
         c.queue.present(frame);
         drop(passes);
         // The frame is submitted; retired mesh buffers are safe to reuse.
         recycle_retired_buffers(c);
-    });
+        true
+    })
 }

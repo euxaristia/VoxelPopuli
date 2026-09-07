@@ -990,6 +990,8 @@ pub fn smelt_item(input: BlockType) -> Option<(BlockType, u8)> {
     match input {
         RawIron | IronOre => Some((IronIngot, 1)),
         GoldOre => Some((GoldIngot, 1)),
+        RawPorkchop => Some((CookedPorkchop, 1)),
+        RawBeef => Some((Steak, 1)),
         Cobblestone => Some((Stone, 1)),
         Sand => Some((Glass, 1)),
         Clay => Some((Brick, 1)),

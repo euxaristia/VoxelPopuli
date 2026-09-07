@@ -3,6 +3,8 @@ mod atlas;
 mod atlas_table;
 mod block;
 mod chunk;
+mod container;
+mod container_ui;
 mod crafting;
 mod explosion;
 mod fire;
@@ -18,6 +20,7 @@ mod player;
 mod profiler;
 mod renderer;
 mod save;
+mod smoke;
 mod vibrant;
 mod village;
 mod world;
@@ -305,18 +308,69 @@ fn args_force_new_world(args: &[String]) -> bool {
     })
 }
 
+fn save_path_from_args(args: &[String]) -> Result<std::path::PathBuf, String> {
+    for (index, argument) in args.iter().enumerate() {
+        let path = if argument == "--save" {
+            args.get(index + 1).map(String::as_str)
+        } else if let Some(path) = argument.strip_prefix("--save=") {
+            Some(path)
+        } else {
+            continue;
+        };
+        return path
+            .filter(|path| !path.is_empty() && !path.starts_with("--"))
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| "--save requires a file path".to_owned());
+    }
+    Ok(std::path::PathBuf::from(SAVE_FILE))
+}
+
 fn main() {
     // Entry point
     let args: Vec<String> = std::env::args().collect();
-    let mut loaded_save = if args_force_new_world(&args) {
-        None
-    } else {
-        GameSave::read_from(std::path::Path::new(SAVE_FILE)).ok()
+    if args.iter().any(|arg| arg == "--smoke-test-ui") {
+        if let Err(error) = smoke::container_ui() {
+            eprintln!("Container UI smoke test failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let smoke_world = args.iter().any(|arg| arg == "--smoke-test-world");
+    let reset_spawn = args.iter().any(|arg| arg == "--reset-spawn");
+    let smoke_saved = smoke_world && args.iter().any(|arg| arg == "--smoke-saved-world");
+    let save_path = match save_path_from_args(&args) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
     };
+    let mut loaded_save =
+        if (smoke_world && !reset_spawn && !smoke_saved) || args_force_new_world(&args) {
+            None
+        } else {
+            match GameSave::read_from(&save_path) {
+                Ok(save) => Some(save),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    eprintln!(
+                        "Could not load {}: {error}. The existing save has been preserved.",
+                        save_path.display()
+                    );
+                    return;
+                }
+            }
+        };
     let world_seed = loaded_save
         .as_ref()
         .map(|save| save.seed as i64)
-        .unwrap_or_else(resolve_world_seed);
+        .unwrap_or_else(|| {
+            if smoke_world {
+                -112651535689168126
+            } else {
+                resolve_world_seed()
+            }
+        });
     if let Some(config) = java_compat::ExportConfig::from_args() {
         match java_compat::export_classic_java_world(world_seed as u64, &config) {
             Ok(summary) => {
@@ -364,7 +418,17 @@ fn main() {
         }
     }
 
-    let state = WindowState::load();
+    let state = if smoke_world {
+        WindowState {
+            width: 2560,
+            height: 1351,
+            x: 0,
+            y: 0,
+            maximized: false,
+        }
+    } else {
+        WindowState::load()
+    };
     let window_title = format!("VoxelPopuli Rust - Seed {world_seed}");
     let mut glfw = glfw::init(glfw::log_errors).unwrap();
     // Add DualSense mappings for Linux
@@ -373,6 +437,9 @@ fn main() {
     // wgpu owns the GPU; tell GLFW not to create a GL context.
     glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
     glfw.window_hint(glfw::WindowHint::AutoIconify(false));
+    if smoke_world {
+        glfw.window_hint(glfw::WindowHint::Visible(false));
+    }
     let (mut window, events) = glfw
         .create_window(
             state.width,
@@ -390,7 +457,9 @@ fn main() {
     window.set_size_polling(true);
     window.set_mouse_button_polling(true);
     window.set_scroll_polling(true);
-    window.set_cursor_mode(glfw::CursorMode::Disabled);
+    if !smoke_world {
+        window.set_cursor_mode(glfw::CursorMode::Disabled);
+    }
     glfw.with_primary_monitor(|_, monitor| {
         if let Some(monitor) = monitor
             && let Some(mode) = monitor.get_video_mode()
@@ -402,13 +471,17 @@ fn main() {
         }
     });
     let (init_fb_w, init_fb_h) = window.get_framebuffer_size();
-    renderer::init(&*window, init_fb_w, init_fb_h);
+    let _renderer = renderer::init(&*window, init_fb_w, init_fb_h);
     let mut world = World::new(world_seed as u64);
     if let Some(path) = import_world_path.clone() {
         world.set_import_world(path);
     }
     if let Some(save) = &loaded_save {
         world.install_edits(&save.edits);
+        world.day_time = save.day_time;
+        world.containers = save.containers.iter().cloned().collect();
+        world.pending_stacks = save.pending_stacks.clone();
+        world.dropped_items = save.dropped_items.clone();
     }
     world.generate_atlas();
     world.init_celestial();
@@ -448,6 +521,7 @@ fn main() {
     let (target_width, target_height) =
         render_target_size_for_framebuffer(initial_fb_width, initial_fb_height);
     let mut target = RenderTexture2D::new(target_width, target_height);
+    let mut smoke_frames = 0;
     let font_texture = Texture2D::from_file("assets/font.png");
 
     let mut is_fullscreen = false;
@@ -456,10 +530,19 @@ fn main() {
     let mut show_debug_overlay = false;
 
     let mut game_state = GameState::Loading;
-    let mut spawn_y = 150.0;
+    let spawn_y = 150.0;
+    let mut load_position = loaded_save
+        .as_ref()
+        .map_or(Vec3::new(32.5, spawn_y, 32.5), |save| {
+            save.restore_player().position
+        });
     let mut inv_slots = create_starting_inventory();
     let mut inv_cursor: Option<ItemStack> = None;
     let mut player = Player::new(spawn_y);
+    if args.iter().any(|arg| arg == "--sandbox") {
+        player.sandbox = true;
+        inv_slots = create_sandbox_inventory();
+    }
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
     let mut last_cursor_pos = window.get_cursor_pos();
     let mut mining_state = mining::MiningState::new();
@@ -467,15 +550,20 @@ fn main() {
     let mut right_mouse_held = false;
     let mut bow_charge = 0.0f32;
     let mut crafting_table_open = false;
+    let mut open_container = None;
     let mut craft_table_slots = [None::<ItemStack>; 10]; // 0-8: 3x3 grid, 9: output
     let mut pause_sub_menu = PauseSubMenu::Main;
     let settings = loaded_save
         .as_ref()
         .map(|save| save.settings.clamped())
         .unwrap_or_default();
-    let mut render_dist_setting = settings.view_distance;
+    let mut render_dist_setting = if smoke_world {
+        4
+    } else {
+        settings.view_distance
+    };
     let mut fov_setting = settings.fov;
-    let mut fancy_gfx_setting = settings.fancy_graphics;
+    let mut fancy_gfx_setting = smoke_world || settings.fancy_graphics;
     let mut export_status_msg = String::new();
     let mut selected_skin = settings.selected_skin;
     // Built white once: the skin, shirt and trouser colours are applied per
@@ -498,10 +586,15 @@ fn main() {
     let mut fps_frames: u32 = 0;
     let mut current_fps: f32 = 0.0;
     let mut profiler = FrameProfiler::new();
+    let smoke_started = std::time::Instant::now();
     while !window.should_close() {
+        assert!(
+            !smoke_world || smoke_started.elapsed().as_secs() < 120,
+            "World smoke test timed out"
+        );
         let frame_start = std::time::Instant::now();
         let current_time = glfw.get_time();
-        let delta_time = (current_time - last_time) as f32;
+        let delta_time = ((current_time - last_time) as f32).clamp(0.0, 0.1);
         last_time = current_time;
 
         fps_frames += 1;
@@ -519,25 +612,34 @@ fn main() {
 
         if game_state == GameState::Loading {
             // Update world incrementally
-            world.update(
-                Vec3::new(32.5, 0.0, 32.5),
-                current_time as f32,
-                BlockType::Air,
-            );
+            world.update(load_position, 0.0, BlockType::Air);
             if !world.is_loading {
                 if let Some(save) = loaded_save.take() {
                     player = save.restore_player();
                     inv_slots = save.inventory;
+                    inv_cursor = save.cursor;
+                    craft_table_slots[..9].copy_from_slice(&save.crafting);
+                    update_craft_output_2x2(&mut inv_slots);
+                    update_craft_output_3x3(&mut craft_table_slots);
                     camera_angle = save.camera_angle;
-                    spawn_y = player.position.y;
-                } else {
-                    for y in (0..255).rev() {
-                        if world.get_block(32, y, 32) != BlockType::Air {
-                            spawn_y = y as f32 + 2.0;
-                            break;
-                        }
+                    if reset_spawn {
+                        player.position = player::surface_spawn_near(player.position, |x, y, z| {
+                            world.get_block(x, y, z)
+                        })
+                        .unwrap_or(player.position);
+                        player.velocity = Vec3::ZERO;
+                        player.fall_distance = 0.0;
+                        camera_angle.y = 0.0;
                     }
-                    player.position = Vec3::new(32.5, spawn_y, 32.5);
+                } else {
+                    player.position = if player.spawn_point.is_some() {
+                        player::safe_spawn_near(load_position, |x, y, z| world.get_block(x, y, z))
+                    } else {
+                        player::surface_spawn_near(load_position, |x, y, z| {
+                            world.get_block(x, y, z)
+                        })
+                    }
+                    .unwrap_or(load_position);
                 }
                 game_state = GameState::Playing;
             }
@@ -654,6 +756,9 @@ fn main() {
             continue;
         }
         for (_, event) in glfw::flush_messages(&events) {
+            if smoke_world {
+                continue;
+            }
             match event {
                 // Surface size follows the framebuffer in renderer::end_frame.
                 glfw::WindowEvent::Size(..) => {}
@@ -666,21 +771,16 @@ fn main() {
                             window.set_cursor_mode(glfw::CursorMode::Disabled);
                         }
                     } else if game_state == GameState::Playing {
+                        open_container = None;
                         if crafting_table_open {
                             ct_close(&mut craft_table_slots, &mut inv_slots);
                             crafting_table_open = false;
                             player.inventory_open = false;
-                            if let Some(c) = inv_cursor {
-                                let remaining = inv_add(&mut inv_slots, c.block, c.count);
-                                inv_cursor = (remaining > 0).then(|| c.with_count(remaining));
-                            }
+                            return_cursor(&mut inv_slots, &mut inv_cursor);
                             window.set_cursor_mode(glfw::CursorMode::Disabled);
                         } else if player.inventory_open {
                             player.inventory_open = false;
-                            if let Some(c) = inv_cursor {
-                                let remaining = inv_add(&mut inv_slots, c.block, c.count);
-                                inv_cursor = (remaining > 0).then(|| c.with_count(remaining));
-                            }
+                            return_cursor(&mut inv_slots, &mut inv_cursor);
                             window.set_cursor_mode(glfw::CursorMode::Disabled);
                         } else {
                             game_state = GameState::Paused;
@@ -692,24 +792,19 @@ fn main() {
                     if game_state != GameState::Playing {
                         continue;
                     }
+                    open_container = None;
                     if crafting_table_open {
                         ct_close(&mut craft_table_slots, &mut inv_slots);
                         crafting_table_open = false;
                         player.inventory_open = false;
-                        if let Some(c) = inv_cursor {
-                            let remaining = inv_add(&mut inv_slots, c.block, c.count);
-                            inv_cursor = (remaining > 0).then(|| c.with_count(remaining));
-                        }
+                        return_cursor(&mut inv_slots, &mut inv_cursor);
                         window.set_cursor_mode(glfw::CursorMode::Disabled);
                     } else {
                         player.inventory_open = !player.inventory_open;
                         if player.inventory_open {
                             window.set_cursor_mode(glfw::CursorMode::Normal);
                         } else {
-                            if let Some(c) = inv_cursor {
-                                let remaining = inv_add(&mut inv_slots, c.block, c.count);
-                                inv_cursor = (remaining > 0).then(|| c.with_count(remaining));
-                            }
+                            return_cursor(&mut inv_slots, &mut inv_cursor);
                             window.set_cursor_mode(glfw::CursorMode::Disabled);
                         }
                     }
@@ -794,12 +889,25 @@ fn main() {
                 glfw::WindowEvent::Key(Key::Num9, _, Action::Press, _) => {
                     player.selected_slot = 8;
                 }
-                // Q: drop cursor item (inv open) or selected hotbar item (inv closed)
-                glfw::WindowEvent::Key(Key::Q, _, Action::Press, _) => {
-                    if player.inventory_open {
-                        inv_cursor = None;
+                glfw::WindowEvent::Key(Key::Q, _, Action::Press, mods)
+                    if game_state == GameState::Playing =>
+                {
+                    let slot = if player.inventory_open {
+                        &mut inv_cursor
                     } else {
-                        inv_slots[player.selected_slot] = None;
+                        &mut inv_slots[player.selected_slot]
+                    };
+                    if let Some(stack) = take_drop(slot, mods.contains(glfw::Modifiers::Control)) {
+                        let direction = Vec3::new(
+                            camera_angle.y.cos() * camera_angle.x.sin(),
+                            camera_angle.y.sin(),
+                            camera_angle.y.cos() * camera_angle.x.cos(),
+                        );
+                        world.dropped_items.push(DroppedItem::new(
+                            stack,
+                            player.position + Vec3::Y * 1.3,
+                            direction * 4.0 + Vec3::Y,
+                        ));
                     }
                 }
 
@@ -826,11 +934,42 @@ fn main() {
                     let right = button == glfw::MouseButtonRight;
                     let shift = mods.contains(glfw::Modifiers::Shift);
 
-                    if crafting_table_open && action == Action::Press {
+                    if !left && !right {
+                        continue;
+                    }
+                    if action == Action::Release {
+                        if left {
+                            left_mouse_held = false;
+                        }
+                        if right && player.inventory_open {
+                            right_mouse_held = false;
+                        }
+                    }
+                    if let Some(position) = open_container
+                        && player.inventory_open
+                        && action == Action::Press
+                    {
+                        let (win_w, win_h) = window.get_framebuffer_size();
+                        let (px, py) = (win_w as f32 / 2.0 - 190.0, win_h as f32 / 2.0 - 170.0);
+                        let (mx, my) = inventory_cursor(
+                            last_cursor_pos,
+                            window.get_size(),
+                            window.get_framebuffer_size(),
+                        );
+                        if let Some(container) = world.containers.get_mut(&position)
+                            && let Some(slot) = container.slot_at_pos(mx, my, px, py)
+                        {
+                            container.click(&mut inv_slots, &mut inv_cursor, slot, right, shift);
+                        }
+                    } else if crafting_table_open && action == Action::Press {
                         let (win_w, win_h) = window.get_framebuffer_size();
                         let (sw, sh) = (win_w as f32, win_h as f32);
                         let (px, py) = (sw / 2.0 - 190.0, sh / 2.0 - 170.0);
-                        let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
+                        let (mx, my) = inventory_cursor(
+                            last_cursor_pos,
+                            window.get_size(),
+                            window.get_framebuffer_size(),
+                        );
                         if let Some(ct_slot) = ct_slot_at_pos(mx, my, px, py) {
                             ct_click(
                                 &mut craft_table_slots,
@@ -844,7 +983,11 @@ fn main() {
                         let (win_w, win_h) = window.get_framebuffer_size();
                         let (sw, sh) = (win_w as f32, win_h as f32);
                         let (px, py) = (sw / 2.0 - 190.0, sh / 2.0 - 170.0);
-                        let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
+                        let (mx, my) = inventory_cursor(
+                            last_cursor_pos,
+                            window.get_size(),
+                            window.get_framebuffer_size(),
+                        );
                         if let Some(slot) = slot_at_pos(mx, my, px, py) {
                             inv_click(&mut inv_slots, &mut inv_cursor, slot, right && !left, shift);
                         }
@@ -997,30 +1140,6 @@ fn main() {
                         }
 
                         if right && action == Action::Press {
-                            if let Some(s) = &mut inv_slots[player.selected_slot] {
-                                if let Some(food_props) = item::food_properties(s.block)
-                                    && player.eat_food(food_props)
-                                {
-                                    s.count -= 1;
-                                    if s.count == 0 {
-                                        inv_slots[player.selected_slot] = None;
-                                    }
-                                    continue;
-                                }
-                                if item::armor_properties(s.block).is_some() {
-                                    let armor_item = s.block;
-                                    s.count -= 1;
-                                    if s.count == 0 {
-                                        inv_slots[player.selected_slot] = None;
-                                    }
-                                    if let Some(old_armor) = player.equip_armor(armor_item) {
-                                        inv_slots[player.selected_slot] =
-                                            Some(ItemStack::new(old_armor, 1));
-                                    }
-                                    continue;
-                                }
-                            }
-
                             let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
                             let look_dir = Vec3::new(
                                 camera_angle.y.cos() * camera_angle.x.sin(),
@@ -1032,8 +1151,18 @@ fn main() {
                                 // Right-click CraftingTable block → open 3x3 crafting UI
                                 let target_block = world.get_block(res.x, res.y, res.z);
                                 if target_block == BlockType::CraftingTable {
+                                    right_mouse_held = false;
                                     crafting_table_open = true;
                                     player.inventory_open = true;
+                                    window.set_cursor_mode(glfw::CursorMode::Normal);
+                                    continue;
+                                }
+                                let position = (res.x, res.y, res.z);
+                                if world.open_container(position) {
+                                    open_container = Some(position);
+                                    player.inventory_open = true;
+                                    right_mouse_held = false;
+                                    left_mouse_held = false;
                                     window.set_cursor_mode(glfw::CursorMode::Normal);
                                     continue;
                                 }
@@ -1043,9 +1172,36 @@ fn main() {
                                         (res.y + 1) as f32,
                                         res.z as f32,
                                     ));
+                                    if world.day_time >= 600.0 {
+                                        world.day_time = 60.0;
+                                    }
+                                    right_mouse_held = false;
                                     continue;
                                 }
                             }
+                            if let Some(s) = &mut inv_slots[player.selected_slot] {
+                                if let Some(food_props) = item::food_properties(s.block)
+                                    && player.eat_food(food_props)
+                                {
+                                    s.count -= 1;
+                                    if s.count == 0 {
+                                        inv_slots[player.selected_slot] = None;
+                                    }
+                                    continue;
+                                }
+                                if item::armor_properties(s.block).is_some() {
+                                    let armor_item = *s;
+                                    s.count -= 1;
+                                    if s.count == 0 {
+                                        inv_slots[player.selected_slot] = None;
+                                    }
+                                    if let Some(old_armor) = player.equip_armor(armor_item) {
+                                        inv_slots[player.selected_slot] = Some(old_armor);
+                                    }
+                                    continue;
+                                }
+                            }
+
                             if res.hit {
                                 if try_place_block_with_lock(
                                     &mut world,
@@ -1073,6 +1229,9 @@ fn main() {
         let mut gp_ly = 0.0f32;
         let mut gp_gs: Option<glfw::GamepadState> = None;
         for i in 0..16 {
+            if smoke_world {
+                break;
+            }
             let jid = match i {
                 0 => JoystickId::Joystick1,
                 1 => JoystickId::Joystick2,
@@ -1246,7 +1405,32 @@ fn main() {
                 player.add_xp(earned_xp);
             }
             for (block, count) in world.pending_drops.drain(..) {
-                inv_add(&mut inv_slots, block, count);
+                world.pending_stacks.push(ItemStack::new(block, count));
+            }
+            for stack in world.pending_stacks.drain(..) {
+                if let Some(remaining) = inv_add_stack(&mut inv_slots, stack) {
+                    world.dropped_items.push(DroppedItem::new(
+                        remaining,
+                        player.position + Vec3::Y * 0.5,
+                        Vec3::Y,
+                    ));
+                }
+            }
+            world
+                .dropped_items
+                .retain_mut(|drop| !drop.try_pickup(player.position, &mut inv_slots));
+            if open_container.is_some_and(|pos: (i32, i32, i32)| {
+                !world.containers.contains_key(&pos)
+                    || player.position.distance(Vec3::new(
+                        pos.0 as f32 + 0.5,
+                        pos.1 as f32 + 0.5,
+                        pos.2 as f32 + 0.5,
+                    )) > 8.0
+            }) {
+                open_container = None;
+                player.inventory_open = false;
+                return_cursor(&mut inv_slots, &mut inv_cursor);
+                window.set_cursor_mode(glfw::CursorMode::Disabled);
             }
             if world.pending_hurt > 0 {
                 player.take_damage(world.pending_hurt);
@@ -1254,6 +1438,19 @@ fn main() {
             }
             if player.health <= 0 {
                 player.respawn(Vec3::new(32.5, spawn_y, 32.5));
+                ct_close(&mut craft_table_slots, &mut inv_slots);
+                return_cursor(&mut inv_slots, &mut inv_cursor);
+                crafting_table_open = false;
+                open_container = None;
+                left_mouse_held = false;
+                right_mouse_held = false;
+                bow_charge = 0.0;
+                mining_state.reset();
+                load_position = player.position;
+                world.is_loading = true;
+                game_state = GameState::Loading;
+                window.set_cursor_mode(glfw::CursorMode::Disabled);
+                continue;
             }
 
             // Per-frame mining update
@@ -1270,7 +1467,13 @@ fn main() {
                 {
                     // Block broken — apply drop
                     if mined.drop != BlockType::Air && mined.drop_count > 0 {
-                        inv_add(&mut inv_slots, mined.drop, mined.drop_count as u32);
+                        let remaining =
+                            inv_add(&mut inv_slots, mined.drop, mined.drop_count as u32);
+                        if remaining > 0 {
+                            world
+                                .pending_stacks
+                                .push(ItemStack::new(mined.drop, remaining));
+                        }
                     }
                     let target_b = world.get_block(mined.x, mined.y, mined.z);
                     let xp_val = match target_b {
@@ -1343,7 +1546,7 @@ fn main() {
             hand_swing = (hand_swing - delta_time as f32 * 4.0).max(0.0);
         }
 
-        let dusk_time = current_time as f32 + 570.0;
+        let dusk_time = world.day_time;
         if fancy_gfx_setting {
             world.update_clouds(player.position, dusk_time);
         }
@@ -1429,6 +1632,9 @@ fn main() {
         // itself when not. Both shaders read the same uniform names.
         let world_shader = if deferred { &gbuffer_shader } else { &shader };
 
+        if let Some(atlas) = &world.atlas {
+            atlas.bind(0);
+        }
         if deferred {
             renderer::deferred_begin_geometry();
         } else {
@@ -1465,6 +1671,7 @@ fn main() {
 
         // Opaque effects belong in the G-buffer alongside the terrain.
         world.render_explosives(world_shader, &mvp, current_time as f32);
+        world.render_dropped_items(world_shader, current_time as f32);
         world.render_arrows(world_shader);
         world.render_xp_orbs(world_shader, current_time as f32);
         world.render_mobs(world_shader, player.position);
@@ -1661,101 +1868,6 @@ fn main() {
         renderer::set_blend(true);
         renderer::set_cull(false);
 
-        let draw_stack_item = |atlas: &Texture2D,
-                               tex_shader: &Shader,
-                               ui_shader: &Shader,
-                               font_texture: &Texture2D,
-                               s: &ItemStack,
-                               rx: f32,
-                               ry: f32,
-                               slot_size: f32,
-                               sw: f32,
-                               sh: f32| {
-            let icon_size = slot_size - 8.0;
-            draw_item_icon(
-                atlas,
-                tex_shader,
-                s.block,
-                rx + 4.0,
-                ry + 4.0,
-                icon_size,
-                icon_size,
-                sw,
-                sh,
-            );
-
-            // Numeric stack count text (e.g. 64, 16)
-            if s.count > 1 {
-                let count_str = format!("{}", s.count);
-                let font_sz = (slot_size * 0.38).clamp(10.0, 14.0);
-                let tw = text_width(&count_str, font_sz);
-                let tx = rx + slot_size - tw - 2.0;
-                let ty = ry + slot_size - font_sz - 1.0;
-                draw_text_tinted(
-                    font_texture,
-                    &count_str,
-                    tx + 1.0,
-                    ty + 1.0,
-                    font_sz,
-                    tex_shader,
-                    sw,
-                    sh,
-                    TEXT_SHADOW,
-                );
-                draw_text_tinted(
-                    font_texture,
-                    &count_str,
-                    tx,
-                    ty,
-                    font_sz,
-                    tex_shader,
-                    sw,
-                    sh,
-                    TEXT_WHITE,
-                );
-            }
-
-            // Durability bar for tools
-            if let (Some(dur), Some(tool_props)) = (s.durability, item::tool_properties(s.block)) {
-                if tool_props.durability > 0 {
-                    let max_dur = tool_props.durability as f32;
-                    let pct = (dur as f32 / max_dur).clamp(0.0, 1.0);
-                    let bar_max_w = slot_size - 8.0;
-                    let bar_w = (bar_max_w * pct).round();
-                    let bar_y = ry + slot_size - 6.0;
-                    let red = if pct > 0.5 {
-                        ((1.0 - pct) * 2.0 * 255.0) as u8
-                    } else {
-                        255
-                    };
-                    let green = if pct > 0.5 {
-                        255
-                    } else {
-                        (pct * 2.0 * 255.0) as u8
-                    };
-                    draw_rect(
-                        ui_shader,
-                        rx + 4.0,
-                        bar_y,
-                        bar_max_w,
-                        2.0,
-                        [0, 0, 0, 255],
-                        sw,
-                        sh,
-                    );
-                    draw_rect(
-                        ui_shader,
-                        rx + 4.0,
-                        bar_y,
-                        bar_w,
-                        2.0,
-                        [red, green, 0, 255],
-                        sw,
-                        sh,
-                    );
-                }
-            }
-        };
         ui_shader.bind();
         ui_shader.set_vec2(
             ui_shader.get_uniform_location("uScreenSize"),
@@ -1914,7 +2026,25 @@ fn main() {
         }
 
         // ── Crafting Table overlay (3x3) ─────────────────────────────────────
-        if crafting_table_open {
+        if let Some(container) = open_container.and_then(|pos| world.containers.get(&pos)) {
+            draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.0, 0.0, 0.6));
+            container_ui::draw_container(
+                container,
+                &inv_slots,
+                inv_cursor,
+                inventory_cursor(
+                    last_cursor_pos,
+                    window.get_size(),
+                    window.get_framebuffer_size(),
+                ),
+                world.atlas.as_ref().unwrap(),
+                &ui_shader,
+                &texture_ui_shader,
+                &font_texture,
+                sw,
+                sh,
+            );
+        } else if crafting_table_open {
             draw_screen_quad(&color_shader, glam::Vec4::new(0.0, 0.0, 0.0, 0.6));
             renderer::set_depth_test(false);
             renderer::set_blend(true);
@@ -2116,7 +2246,11 @@ fn main() {
             }
 
             // Cursor item
-            let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
+            let (mx, my) = inventory_cursor(
+                last_cursor_pos,
+                window.get_size(),
+                window.get_framebuffer_size(),
+            );
             if let Some(c) = inv_cursor {
                 draw_item_icon(
                     world.atlas.as_ref().unwrap(),
@@ -2323,7 +2457,11 @@ fn main() {
             for (i, inv_slot) in inv_slots.iter().enumerate().take(44).skip(40) {
                 let (sx, sy, sw2, sh2) = slot_rect(i, px, py);
                 let hov = {
-                    let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
+                    let (mx, my) = inventory_cursor(
+                        last_cursor_pos,
+                        window.get_size(),
+                        window.get_framebuffer_size(),
+                    );
                     mx >= sx && mx < sx + sw2 && my >= sy && my < sy + sh2
                 };
                 let bg = if hov {
@@ -2381,7 +2519,11 @@ fn main() {
             {
                 let (sx, sy, sw2, sh2) = slot_rect(44, px, py);
                 let hov = {
-                    let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
+                    let (mx, my) = inventory_cursor(
+                        last_cursor_pos,
+                        window.get_size(),
+                        window.get_framebuffer_size(),
+                    );
                     mx >= sx && mx < sx + sw2 && my >= sy && my < sy + sh2
                 };
                 let bg = if hov {
@@ -2416,7 +2558,11 @@ fn main() {
             }
 
             // ── Helper closure to draw a slot
-            let (mx, my) = (last_cursor_pos.0 as f32, last_cursor_pos.1 as f32);
+            let (mx, my) = inventory_cursor(
+                last_cursor_pos,
+                window.get_size(),
+                window.get_framebuffer_size(),
+            );
             let draw_slot = |shader: &Shader,
                              tex_shader: &Shader,
                              atlas: &Texture2D,
@@ -2766,7 +2912,41 @@ fn main() {
 
         renderer::set_depth_test(true);
         renderer::set_cull(true);
-        renderer::end_frame(framebuffer_width, framebuffer_height);
+        let capture_path = if smoke_world && (smoke_frames == 7 || smoke_frames == 15) {
+            let mode = if fancy_gfx_setting { "fancy" } else { "fast" };
+            Some(smoke::frame_capture_path(mode).expect("Could not create the capture directory"))
+        } else {
+            None
+        };
+        let presented = renderer::end_frame_capture(
+            framebuffer_width,
+            framebuffer_height,
+            capture_path.as_deref(),
+        );
+
+        if smoke_world {
+            assert!(presented, "World smoke test did not present a frame");
+            smoke_frames += 1;
+            if smoke_frames == 8 || smoke_frames == 16 {
+                let mode = if fancy_gfx_setting { "fancy" } else { "fast" };
+                smoke::capture_world(&target, mode).expect("World rendering smoke test failed");
+                println!(
+                    "World smoke: {mode}, player={:?}, camera={camera_angle:?}, eye={eye_pos:?}, block={:?}, day_time={}, visible_chunks={}",
+                    player.position,
+                    world.get_block(
+                        eye_pos.x.floor() as i32,
+                        eye_pos.y.floor() as i32,
+                        eye_pos.z.floor() as i32
+                    ),
+                    world.day_time,
+                    world.visible_chunks.len()
+                );
+                fancy_gfx_setting = false;
+            }
+            if smoke_frames == 16 {
+                return;
+            }
+        }
 
         profiler.record_frame(frame_start.elapsed());
         profiler.log_telemetry_if_needed(
@@ -2787,6 +2967,9 @@ fn main() {
         maximized,
     };
     state.save();
+    if game_state == GameState::Loading {
+        return;
+    }
     let settings = GameSettings {
         view_distance: render_dist_setting,
         fov: fov_setting,
@@ -2794,16 +2977,55 @@ fn main() {
         selected_skin,
     }
     .clamped();
-    if let Ok(save) = GameSave::capture(
+    let result = GameSave::capture(
         &world,
         &player,
         &inv_slots,
         camera_angle,
         settings,
         import_world_path.as_deref(),
-    ) {
-        if let Err(err) = save.write_to(std::path::Path::new(SAVE_FILE)) {
-            eprintln!("Failed to save world: {err}");
+        inv_cursor,
+        &craft_table_slots,
+    )
+    .and_then(|save| save.write_to(&save_path));
+    if let Err(err) = result {
+        eprintln!("Failed to save world: {err}");
+    }
+}
+
+fn inventory_cursor(cursor: (f64, f64), window: (i32, i32), framebuffer: (i32, i32)) -> (f32, f32) {
+    (
+        cursor.0 as f32 * framebuffer.0 as f32 / window.0.max(1) as f32,
+        cursor.1 as f32 * framebuffer.1 as f32 / window.1.max(1) as f32,
+    )
+}
+
+#[cfg(test)]
+mod survival_tests {
+    use super::*;
+
+    #[test]
+    fn inventory_cursor_matches_framebuffer_at_high_dpi() {
+        assert_eq!(
+            inventory_cursor((400.0, 300.0), (800, 600), (1600, 1200)),
+            (800.0, 600.0)
+        );
+    }
+
+    #[test]
+    fn save_path_supports_separate_worlds_and_rejects_missing_values() {
+        let args = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            save_path_from_args(&args(&[])).unwrap(),
+            std::path::PathBuf::from(SAVE_FILE)
+        );
+        for values in [vec!["--save", "survival.vps"], vec!["--save=survival.vps"]] {
+            assert_eq!(
+                save_path_from_args(&args(&values)).unwrap(),
+                std::path::PathBuf::from("survival.vps")
+            );
         }
+        assert!(save_path_from_args(&args(&["--save", "--seed", "42"])).is_err());
+        assert!(save_path_from_args(&args(&["--save="])).is_err());
     }
 }
