@@ -1,6 +1,111 @@
 use super::*;
 use crate::mob_catalog::{Temper, can_spawn};
 
+/// Sweep the moving box against another creature, including fast crossings.
+fn crosses_mob(mob: &Mob, start: Vec3, end: Vec3, other: &Mob) -> bool {
+    if other.health <= 0.0 {
+        return false;
+    }
+    let radius = mob.half_width() + other.half_width() - 0.001;
+    let min = other.position - Vec3::new(radius, mob.height() - 0.001, radius);
+    let max = other.position + Vec3::new(radius, other.height() - 0.001, radius);
+    let delta = end - start;
+    let mut enter: f32 = 0.0;
+    let mut leave: f32 = 1.0;
+    for axis in 0..3 {
+        if delta[axis].abs() < 1e-7 {
+            if start[axis] <= min[axis] || start[axis] >= max[axis] {
+                return false;
+            }
+            continue;
+        }
+        let a = (min[axis] - start[axis]) / delta[axis];
+        let b = (max[axis] - start[axis]) / delta[axis];
+        enter = enter.max(a.min(b));
+        leave = leave.min(a.max(b));
+    }
+    enter < leave && leave > 0.0 && enter < 1.0
+}
+
+fn resolve_mob_overlaps(mobs: &mut [Mob], allowed: impl Fn(&Mob, Vec3) -> bool) {
+    for _ in 0..8 {
+        let mut changed = false;
+        for i in 0..mobs.len() {
+            for j in i + 1..mobs.len() {
+                let (left, right) = mobs.split_at_mut(j);
+                let (a, b) = (&mut left[i], &mut right[0]);
+                if a.health <= 0.0
+                    || b.health <= 0.0
+                    || a.position.y >= b.position.y + b.height()
+                    || b.position.y >= a.position.y + a.height()
+                {
+                    continue;
+                }
+                let delta = b.position - a.position;
+                let radius = a.half_width() + b.half_width();
+                let ox = radius - delta.x.abs();
+                let oz = radius - delta.z.abs();
+                if ox <= 0.001 || oz <= 0.001 {
+                    continue;
+                }
+                for axis in if ox < oz { [0, 2] } else { [2, 0] } {
+                    let amount = radius - delta[axis].abs() + 0.002;
+                    let mut push = Vec3::ZERO;
+                    push[axis] = if delta[axis] < 0.0 { -amount } else { amount };
+                    let pa = a.position - push * 0.5;
+                    let pb = b.position + push * 0.5;
+                    if allowed(a, pa) && allowed(b, pb) {
+                        a.position = pa;
+                        b.position = pb;
+                    } else if allowed(a, a.position - push) {
+                        a.position -= push;
+                    } else if allowed(b, b.position + push) {
+                        b.position += push;
+                    } else {
+                        continue;
+                    }
+                    a.velocity[axis] = 0.0;
+                    b.velocity[axis] = 0.0;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+impl World {
+    pub(super) fn mob_path_occupied<'a>(
+        &self,
+        mob: &Mob,
+        end: Vec3,
+        others: impl Iterator<Item = &'a Mob>,
+    ) -> bool {
+        others
+            .into_iter()
+            .any(|other| crosses_mob(mob, mob.position, end, other))
+    }
+
+    /// Resolve saved overlaps and newborns without pushing creatures into terrain.
+    pub(super) fn separate_mobs(&self, mobs: &mut [Mob]) {
+        let allowed = |m: &Mob, p: Vec3| {
+            let steps = ((p - m.position).length() / 0.1).ceil().max(1.0) as usize;
+            (1..=steps).all(|step| {
+                !self.mob_box_blocked(
+                    m.position.lerp(p, step as f32 / steps as f32),
+                    m.half_width(),
+                    m.height(),
+                )
+            }) && (m.kind.species().motion != Motion::Swim
+                || self.mob_in_water(p, m.half_width(), m.height()))
+        };
+        resolve_mob_overlaps(mobs, allowed);
+    }
+}
+
 impl World {
     pub(super) fn mob_in_water(&self, pos: Vec3, hw: f32, height: f32) -> bool {
         for x in [pos.x - hw * 0.8, pos.x, pos.x + hw * 0.8] {
@@ -34,10 +139,7 @@ impl World {
         {
             return Err("This creature needs deeper water.");
         }
-        if self.mobs.iter().any(|m| {
-            (m.position.y - pos.y).abs() < m.height().max(mob.height())
-                && (m.position - pos).with_y(0.0).length() < m.half_width() + mob.half_width()
-        }) {
+        if self.mobs.iter().any(|m| crosses_mob(&mob, pos, pos, m)) {
             return Err("Another creature is in the way.");
         }
         self.mobs.push(mob);
@@ -212,6 +314,64 @@ impl World {
         for pos in spawners {
             let kind = [MobKind::Zombie, MobKind::Skeleton, MobKind::Spider][next() as usize % 3];
             let _ = self.spawn_mob(kind, pos, next() as u8);
+        }
+    }
+}
+
+#[cfg(test)]
+mod collision_tests {
+    use super::*;
+    fn cow(p: Vec3) -> Mob {
+        Mob::new(MobKind::Cow, p, p, 0)
+    }
+
+    #[test]
+    fn movement_cannot_cross_another_mob_even_in_one_fast_step() {
+        let a = cow(Vec3::new(0., 200., 0.));
+        let b = cow(Vec3::new(2., 200., 0.));
+        assert!(crosses_mob(&a, a.position, Vec3::new(4., 200., 0.), &b));
+        assert!(!crosses_mob(&a, a.position, Vec3::new(-2., 200., 0.), &b));
+        assert!(!crosses_mob(&a, a.position, Vec3::new(4., 200., 4.), &b));
+    }
+
+    #[test]
+    fn collision_respects_vertical_clearance_babies_and_dead_mobs() {
+        let a = cow(Vec3::new(0., 200., 0.));
+        let mut b = cow(Vec3::new(2., 202., 0.));
+        assert!(!crosses_mob(&a, a.position, Vec3::new(4., 200., 0.), &b));
+        b.position = Vec3::new(0.7, 200., 0.);
+        assert!(crosses_mob(&a, a.position, a.position, &b));
+        b.animal.growth = 1200.;
+        assert!(!crosses_mob(&a, a.position, a.position, &b));
+        b.position.x = 0.1;
+        b.health = 0.;
+        assert!(!crosses_mob(&a, a.position, a.position, &b));
+    }
+
+    #[test]
+    fn touching_mobs_can_move_apart_or_slide() {
+        let a = cow(Vec3::new(0., 200., 0.));
+        let b = cow(Vec3::new(a.half_width() * 2., 200., 0.));
+        assert!(!crosses_mob(&a, a.position, a.position - Vec3::X, &b));
+        assert!(!crosses_mob(&a, a.position, a.position + Vec3::Z, &b));
+        assert!(crosses_mob(&a, a.position, a.position + Vec3::X, &b));
+    }
+
+    #[test]
+    fn overlapping_mobs_separate_without_being_pushed_through_a_wall() {
+        let mut mobs = vec![
+            cow(Vec3::new(3.5, 200., 3.5)),
+            cow(Vec3::new(3.5, 200., 3.5)),
+        ];
+        resolve_mob_overlaps(&mut mobs, |mob, p| p.z + mob.half_width() < 4.0);
+        assert!(!crosses_mob(
+            &mobs[0],
+            mobs[0].position,
+            mobs[0].position,
+            &mobs[1]
+        ));
+        for mob in &mobs {
+            assert!(mob.position.z + mob.half_width() < 4.);
         }
     }
 }

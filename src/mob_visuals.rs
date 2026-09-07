@@ -303,24 +303,71 @@ fn design(kind: MobKind) -> Design {
         Shape::Grazer => {
             let pig = kind == Pig;
             let wool = kind == Sheep;
-            let leg = if pig { 5.0 } else { 7.0 };
+            let cow = matches!(kind, Cow | Mooshroom);
+            let leg = if cow || wool {
+                12.0
+            } else if pig {
+                5.0
+            } else {
+                7.0
+            };
+            let width = if cow {
+                12.0
+            } else if wool {
+                11.5
+            } else {
+                10.0
+            };
+            let length = if cow {
+                18.0
+            } else if wool {
+                19.5
+            } else {
+                16.0
+            };
             for (x, z, s) in [
                 (-3.0, -5.0, 1.0),
                 (3.0, -5.0, -1.0),
                 (-3.0, 5.0, -1.0),
                 (3.0, 5.0, 1.0),
             ] {
-                d.leg(x, z, leg, 3.0, s, true);
+                d.leg(x, z, leg, if cow || wool { 4.0 } else { 3.0 }, s, true);
             }
             d.cube(
                 0,
-                [-5.0, leg, -8.0],
-                [10.0, if pig { 8.0 } else { 10.0 }, 16.0],
+                [-width * 0.5, leg, -length * 0.5],
+                [
+                    width,
+                    if wool {
+                        11.5
+                    } else if pig {
+                        8.0
+                    } else {
+                        10.0
+                    },
+                    length,
+                ],
                 if wool { Wool } else { Body },
             );
-            let hy = leg + if pig { 4.0 } else { 6.0 };
+            let hy = if cow || wool {
+                16.0
+            } else {
+                leg + if pig { 4.0 } else { 6.0 }
+            };
             let h = d.joint([0.0, hy, 7.0], Action::Head);
-            d.cube(h, [-3.5, hy, 6.0], [7.0, 7.0, 7.0], Head);
+            let head = if cow {
+                8.0
+            } else if wool {
+                6.0
+            } else {
+                7.0
+            };
+            d.cube(
+                h,
+                [-head * 0.5, hy, 6.0],
+                [head, head, if wool { 8.0 } else { 7.0 }],
+                Head,
+            );
             d.cube(h, [-2.5, hy + 0.5, 12.5], [5.0, 3.0, 2.0], Muzzle);
             for sign in [-1.0, 1.0] {
                 d.cube(h, [sign * 4.0 - 1.0, hy + 4.0, 7.0], [2.0, 2.0, 3.0], Limb);
@@ -341,8 +388,8 @@ fn design(kind: MobKind) -> Design {
             }
             if kind == Mooshroom {
                 for (x, z) in [(-2.0, -4.0), (2.0, 1.0)] {
-                    d.cube(0, [x, 17.0, z], [1.0, 3.0, 1.0], Accent);
-                    d.cube(0, [x - 2.0, 20.0, z - 2.0], [5.0, 2.0, 5.0], Head);
+                    d.cube(0, [x, 22.0, z], [1.0, 3.0, 1.0], Accent);
+                    d.cube(0, [x - 2.0, 25.0, z - 2.0], [5.0, 2.0, 5.0], Head);
                 }
             }
             let t = d.joint([0.0, leg + 4.0, -8.0], Action::Tail);
@@ -1304,6 +1351,10 @@ pub fn facing(yaw: f32) -> Mat4 {
 pub fn render_height(mob: &Mob) -> f32 {
     let adult_height = match mob.kind {
         MobKind::Horse | MobKind::SkeletonHorse | MobKind::ZombieHorse => 2.2,
+        // Preserve 16 model units per block rather than fitting horns/wool to the hitbox.
+        MobKind::Cow => 25.5 / 16.0,
+        MobKind::Mooshroom => 27.0 / 16.0,
+        MobKind::Sheep => 23.5 / 16.0,
         _ => mob.kind.species().height,
     };
     adult_height * mob.height() / mob.kind.species().height
@@ -1465,6 +1516,44 @@ fn variant_tint(mob: &Mob) -> Vec4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cattle_and_sheep_keep_block_scale_and_half_size_babies() {
+        for kind in [MobKind::Cow, MobKind::Mooshroom, MobKind::Sheep] {
+            let mut mob = Mob::new(kind, Vec3::ZERO, Vec3::ZERO, 0);
+            let d = design(kind);
+            let height = d
+                .cubes
+                .iter()
+                .map(|c| c.min.y + c.size.y)
+                .fold(0., f32::max);
+            let scale = render_height(&mob) / height;
+            assert!((scale - 1.0 / 16.0).abs() < 1e-6);
+            let body = d
+                .cubes
+                .iter()
+                .find(|c| c.joint == 0 && matches!(c.surface, Surface::Body | Surface::Wool))
+                .unwrap();
+            assert!(body.size.x * scale >= 0.71, "adult torso is too narrow");
+            assert!(
+                (body.min.y + body.size.y) * scale >= 1.37,
+                "adult back is too low"
+            );
+            for joint in d
+                .joints
+                .iter()
+                .filter(|j| matches!(j.action, Action::Stride(_)))
+            {
+                assert!(
+                    (joint.pivot.y * scale - 0.75).abs() < 1e-6,
+                    "adult legs should be three quarters of a block"
+                );
+            }
+            let adult = render_height(&mob);
+            mob.animal.growth = 1200.0;
+            assert!((render_height(&mob) - adult * 0.5).abs() < 1e-6);
+        }
+    }
+
     #[test]
     fn horses_have_sloping_faces_and_side_eyes_instead_of_a_cow_face() {
         for kind in [MobKind::Horse, MobKind::SkeletonHorse, MobKind::ZombieHorse] {

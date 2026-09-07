@@ -882,7 +882,28 @@ fn verify_mob_simulation() {
         world.pending_hurt > 0,
         "unobstructed hostile did not attack"
     );
-    println!("Creature simulation: collision, water, flight and capacity passed");
+    world.mobs.clear();
+    for kind in [MobKind::Cow, MobKind::Sheep, MobKind::Cow] {
+        let p = Vec3::new(3.5, 111.0, 3.5);
+        world.mobs.push(Mob::new(kind, p, p, 0));
+    }
+    for _ in 0..100 {
+        world.update_mobs(Vec3::new(8.0, 111.0, 3.5), 0.1, BlockType::Wheat);
+        for (i, a) in world.mobs.iter().enumerate() {
+            for b in &world.mobs[i + 1..] {
+                let d = (a.position - b.position).abs();
+                let width = a.half_width() + b.half_width() - 0.01;
+                assert!(
+                    d.x >= width
+                        || d.z >= width
+                        || a.position.y >= b.position.y + b.height()
+                        || b.position.y >= a.position.y + a.height(),
+                    "herd walked through itself"
+                );
+            }
+        }
+    }
+    println!("Creature simulation: herd separation, collision, water, flight and capacity passed");
 }
 
 fn mob_scene() -> Result<(), String> {

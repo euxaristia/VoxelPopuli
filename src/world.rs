@@ -1995,7 +1995,10 @@ impl World {
             .filter(|m| m.is_animal() && !m.is_baby())
             .map(|m| (m.kind, m.position.x, m.position.z))
             .collect();
-        for mob in &mut mobs {
+        self.separate_mobs(&mut mobs);
+        for index in 0..mobs.len() {
+            let (before, rest) = mobs.split_at_mut(index);
+            let (mob, after) = rest.split_first_mut().unwrap();
             // Freeze mobs whose chunk is unloaded so they don't fall
             // through ungenerated terrain.
             let mcx = (mob.position.x / CHUNK_WIDTH as f32).floor() as i32;
@@ -2173,12 +2176,20 @@ impl World {
                     mob.wander_timer = mob.wander_timer.min(0.5);
                     continue;
                 }
+                if self.mob_path_occupied(mob, cand, before.iter().chain(after.iter())) {
+                    mob.velocity[if axis == 0 { 0 } else { 2 }] = 0.0;
+                    mob.animal.dest = None;
+                    mob.wander_timer = mob.wander_timer.min(0.2);
+                    continue;
+                }
                 if !self.mob_box_blocked(cand, hw, height) {
                     mob.position = cand;
                 } else if mob.grounded {
                     let mut up = cand;
                     up.y += 1.0;
-                    if !self.mob_box_blocked(up, hw, height) {
+                    if !self.mob_box_blocked(up, hw, height)
+                        && !self.mob_path_occupied(mob, up, before.iter().chain(after.iter()))
+                    {
                         mob.position = up;
                     } else if mob.is_animal() {
                         mob.animal.dest = None;
@@ -2199,6 +2210,7 @@ impl World {
                 cand.y = 1.0;
             }
             if !self.mob_box_blocked(cand, hw, height)
+                && !self.mob_path_occupied(mob, cand, before.iter().chain(after.iter()))
                 && (motion != Motion::Swim || !swimming || self.mob_in_water(cand, hw, height))
             {
                 mob.position = cand;
@@ -2241,6 +2253,7 @@ impl World {
         births.truncate(MOB_CAP.saturating_sub(mobs.len()));
         mobs.extend(births);
         mobs.retain(|mob| mob.health > 0.0);
+        self.separate_mobs(&mut mobs);
         self.mobs = mobs;
         let player_chunk = (
             (player_pos.x / CHUNK_WIDTH as f32).floor() as i32,
