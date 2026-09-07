@@ -22,14 +22,7 @@ use glam::{Mat4, Vec3};
 /// (`src/hud.rs` offers 60..100). Sharing the world FOV made the arm scale
 /// with the slider, roughly twice as large at 60 as at 100.
 const HAND_FOV_Y: f32 = 70.0;
-/// Near and far planes. These MUST match the world projection in `main`.
-///
-/// The arm is rasterised into the shared G-buffer, so its fragments compete
-/// in the same depth buffer as the terrain. Depth is non-linear in near/far,
-/// so giving the arm its own tighter planes made identical true distances
-/// encode to larger depths than the world used -- every arm fragment read as
-/// further away than it was, and nearby terrain punched a hole through the
-/// arm. Only the FOV may differ; it does not affect depth.
+/// Viewmodel projection. World depth is cleared before drawing this pass.
 const NEAR_PLANE: f32 = 0.1;
 const FAR_PLANE: f32 = 1000.0;
 /// How far in front of the near plane the arm must stay.
@@ -37,7 +30,7 @@ const NEAR_MARGIN: f32 = 0.03;
 
 /// Arm box in local space: square cross-section, hand end toward -Z, elbow
 /// running back toward the camera, with the hidden elbow extending offscreen.
-const ARM_THICKNESS: f32 = 0.155;
+const ARM_THICKNESS: f32 = 0.25;
 const ARM_FORWARD: f32 = 0.38;
 // Keep the entire elbow face below the viewport, even during bob and punches.
 const ARM_BACK: f32 = 0.40;
@@ -429,21 +422,16 @@ pub fn build_item_mesh(block: BlockType) -> Mesh {
 
 pub fn arm_model(swing: f32, bob: f32, aspect: f32) -> Mat4 {
     let punch = swing * swing * (3.0 - 2.0 * swing);
-    // Tuned against a Minecraft screenshot: at 16:9 the arm's top edge lands
-    // at NDC y -0.42 and it spans x +0.36..+0.74, running off the bottom of
-    // the frame so it reads as attached to the player rather than floating.
-    //
-    // A fixed view-space X would drift toward the centre on a wide window,
-    // because horizontal NDC scales with 1/aspect. Offsetting by
-    // `0.247 * aspect` holds the arm the same distance from the right edge
-    // on 4:3 through 32:9.
+    // Keep the square forearm almost parallel to camera forward. The elbow
+    // extends below the viewport throughout the punch, anchoring it to the POV.
+    // Scale the horizontal offset with aspect to retain the right-side framing.
     Mat4::from_translation(Vec3::new(
         0.46 + 0.247 * aspect + bob * 0.04 - punch * 0.20,
-        -0.71 + bob * 0.05,
+        -0.76 + bob * 0.025,
         -1.24 - punch * 0.12,
-    )) * Mat4::from_rotation_x(0.52 + punch * 0.55)
-        * Mat4::from_rotation_y(0.39)
-        * Mat4::from_rotation_z(0.36 - punch * 0.45)
+    )) * Mat4::from_rotation_x(0.18 + punch * 0.22)
+        * Mat4::from_rotation_y(0.08 + punch * 0.18)
+        * Mat4::from_rotation_z(-punch * 0.12)
 }
 
 pub fn item_model(swing: f32, bob: f32, aspect: f32) -> Mat4 {
@@ -467,7 +455,7 @@ pub fn draw(
     bob: f32,
     light: glam::Vec4,
 ) {
-    // `gbuffer.wgsl` computes `uMVP * (uModel * position)`, so uMVP must be
+    // The scene vertex shader computes `uMVP * (uModel * position)`, so uMVP must be
     // the view-projection ALONE, exactly as the chunk and entity passes bind
     // it. Folding the model matrix into uMVP as well applies the arm's
     // transform twice and lands it nowhere near where it was placed.
@@ -475,9 +463,15 @@ pub fn draw(
     // The arm is authored directly in view space, so its projection is the
     // whole of its "view-projection". Deliberately not the world projection:
     // see `projection`.
+    renderer::clear_viewmodel_depth();
+    renderer::set_depth_test(true);
+    renderer::set_depth_write(true);
+    shader.set_float(shader.get_uniform_location("uFogDensity"), 0.0);
+    shader.set_vec3(shader.get_uniform_location("viewPos"), Vec3::ZERO);
     let proj = projection(aspect);
     atlas.bind(0);
     shader.bind();
+    shader.set_int(shader.get_uniform_location("uBodyType"), 3);
     let loc_diff = shader.get_uniform_location("colDiffuse");
     shader.set_vec4(loc_diff, tint(hud::skin_preview_color(selected_skin)));
     shader.set_vec4(shader.get_uniform_location("uColor"), light);
@@ -497,10 +491,8 @@ pub fn draw(
         );
         item.draw();
     }
-    // Leave the shared uniforms as this pass found them. The chunk passes
-    // that follow bind their own uModel but inherit uMVP, so leaving the
-    // arm's view-space projection bound would draw the transparent layer
-    // through it.
+    // Restore shared transforms and disable the viewmodel lighting mode.
+    shader.set_int(shader.get_uniform_location("uBodyType"), 0);
     shader.set_mat4(shader.get_uniform_location("uMVP"), world_mvp);
     shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
     shader.set_vec4(loc_diff, glam::Vec4::ONE);
@@ -631,28 +623,15 @@ mod tests {
     }
 
     #[test]
-    fn the_arm_encodes_depth_exactly_like_the_world() {
-        // The arm shares the G-buffer's depth buffer with the terrain, so a
-        // point at a given view-space distance must produce the same depth
-        // under both projections. Only the FOV may differ. Tightening the
-        // arm's near plane once made nearby terrain occlude the arm.
-        for aspect in ASPECTS {
-            let hand = projection(aspect);
-            for world_fov in [60.0f32, 80.0, 100.0] {
-                let world =
-                    Mat4::perspective_rh(world_fov.to_radians(), aspect, NEAR_PLANE, FAR_PLANE);
-                for z in [-0.15f32, -0.4, -0.8, -2.0, -25.0, -300.0] {
-                    let p = Vec3::new(0.0, 0.0, z).extend(1.0);
-                    let (h, w) = (hand * p, world * p);
-                    let (hd, wd) = (h.z / h.w, w.z / w.w);
-                    assert!(
-                        (hd - wd).abs() < 1e-5,
-                        "at z={z} the arm writes depth {hd} but the world writes {wd}; \
-                         terrain would punch through the arm",
-                    );
-                }
-            }
-        }
+    fn the_arm_has_a_blocky_minecraft_cross_section_and_points_forward() {
+        assert!((ARM_FORWARD + ARM_BACK) / ARM_THICKNESS < 3.2);
+        let aim = arm_model(0.0, 0.0, 16.0 / 9.0)
+            .transform_vector3(-Vec3::Z)
+            .normalize();
+        assert!(
+            aim.dot(-Vec3::Z) > 0.97,
+            "idle arm should point almost straight forward"
+        );
     }
 
     #[test]
@@ -746,18 +725,11 @@ mod tests {
     }
 
     #[test]
-    fn the_arm_matches_the_minecraft_reference_footprint() {
-        // Measured off a Minecraft first-person screenshot: the arm's top
-        // edge sits at NDC y -0.42 and its inner edge at x +0.36 at 16:9.
-        let (min_x, _, _, max_y) = arm_bounds(16.0 / 9.0);
-        assert!(
-            (max_y + 0.42).abs() < 0.06,
-            "arm top edge at {max_y}, reference has -0.42",
-        );
-        assert!(
-            (min_x - 0.36).abs() < 0.06,
-            "hand edge at x {min_x}, reference has +0.36",
-        );
+    fn the_forward_arm_occupies_the_lower_right_quarter() {
+        let (min_x, max_x, _, max_y) = arm_bounds(16.0 / 9.0);
+        assert!((0.30..0.45).contains(&min_x), "inner edge: {min_x}");
+        assert!((-0.53..-0.48).contains(&max_y), "top edge: {max_y}");
+        assert!(max_x - min_x > 0.30, "forearm is too thin on screen");
     }
 
     #[test]
@@ -770,7 +742,7 @@ mod tests {
             );
             assert!(
                 (-0.55..=-0.30).contains(&max_y),
-                "arm top edge at {max_y} on aspect {aspect}, want roughly -0.42",
+                "arm top edge at {max_y} on aspect {aspect}, expected lower-right framing",
             );
         }
     }

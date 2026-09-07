@@ -158,7 +158,9 @@ Fancy graphics uses linear-color lighting, ACES tone mapping, directional sun
 and moon light, and subtle distance haze. Water has a muted blue-green tint,
 view-dependent sky reflection, and animated normals that leave block edges in
 place. Empty clicks punch, holding attack repeats the swing, and the arm extends
-past the bottom of the viewport throughout the animation.
+past the bottom of the viewport throughout the animation. Its square forearm
+points forward, and a separate depth pass keeps the arm and held item visible
+against nearby terrain in both graphics modes.
 
 The renderer takes inspiration from Microsoft's
 [Vibrant Visuals lighting](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/lightingcustomization?view=minecraft-bedrock-stable),
@@ -176,7 +178,8 @@ cargo run --release --locked --offline -- --smoke-test-lighting
 
 These hidden-window tests leave saves unchanged and capture the actual presented
 frames under `target/test-artifacts/`. They exercise press, release, and held
-attack in Fancy and Fast modes; noon, sunset, midnight, and sunrise; and GPU
+attack in Fancy and Fast modes; arm and held-item visibility against a near-plane
+wall; noon, sunset, midnight, and sunrise; and GPU
 probes for color conversion, distance haze, cave visibility, hidden sun glare,
 cloud tint, and stars being occluded by terrain.
 

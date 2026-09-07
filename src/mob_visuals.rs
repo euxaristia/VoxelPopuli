@@ -351,7 +351,14 @@ fn design(kind: MobKind) -> Design {
         Shape::Horse => {
             let camel = matches!(kind, Camel | CamelHusk);
             let llama = matches!(kind, Llama | TraderLlama);
-            let hip = if camel { 15.0 } else { 12.0 };
+            let horse = matches!(kind, Horse | SkeletonHorse | ZombieHorse);
+            let hip = if horse {
+                16.0
+            } else if camel {
+                15.0
+            } else {
+                12.0
+            };
             for (x, z, s) in [
                 (-4.0, -7.0, 1.0),
                 (4.0, -7.0, -1.0),
@@ -362,31 +369,64 @@ fn design(kind: MobKind) -> Design {
             }
             d.cube(0, [-6.0, hip, -10.0], [12.0, 11.0, 20.0], Body);
             let h = d.joint([0.0, hip + 7.0, 7.0], Action::Head);
-            let neck = if camel || llama { 15.0 } else { 10.0 };
-            d.cube(h, [-2.5, hip + 7.0, 6.0], [5.0, neck, 6.0], Body);
-            d.cube(h, [-3.0, hip + neck + 4.0, 7.0], [6.0, 6.0, 10.0], Head);
-            d.cube(h, [-3.0, hip + neck + 4.0, 15.0], [6.0, 3.0, 3.0], Muzzle);
-            for x in [-2.0, 2.0] {
+            if horse {
+                // The neck leans forward; the long face slopes down toward the nose.
+                d.cube(h, [-3.5, 21.0, 4.5], [7.0, 14.0, 7.0], Body);
+                d.tilt([0.4, 0.0, 0.0]);
+                d.cube(h, [-3.0, 30.0, 8.0], [6.0, 7.0, 12.0], Head);
+                d.tilt([0.5, 0.0, 0.0]);
+                d.cube(h, [-2.5, 27.0, 17.0], [5.0, 5.0, 5.0], Muzzle);
+                d.tilt([0.5, 0.0, 0.0]);
+                for x in [-2.1, 2.1] {
+                    d.cube(h, [x - 0.85, 36.5, 8.0], [1.7, 4.0, 2.5], Limb);
+                    d.tilt([-0.12, 0.0, 0.0]);
+                }
+                d.cube(h, [-0.85, 21.0, 2.5], [1.7, 15.0, 3.0], Dark);
+                d.tilt([0.4, 0.0, 0.0]);
+            } else {
+                let neck = if camel || llama { 15.0 } else { 10.0 };
+                d.cube(h, [-2.5, hip + 7.0, 6.0], [5.0, neck, 6.0], Body);
+                let head_width = 6.0;
+                let head_height = 6.0;
                 d.cube(
                     h,
-                    [x - 0.75, hip + neck + 10.0, 8.0],
-                    [
-                        1.5,
-                        if llama || matches!(kind, Donkey | Mule) {
-                            5.0
-                        } else {
-                            3.0
-                        },
-                        2.0,
-                    ],
-                    Limb,
+                    [-head_width * 0.5, hip + neck + 4.0, 7.0],
+                    [head_width, head_height, if horse { 12.0 } else { 10.0 }],
+                    Head,
                 );
+                let muzzle_width = if horse { 7.0 } else { 6.0 };
+                d.cube(
+                    h,
+                    [
+                        -muzzle_width * 0.5,
+                        hip + neck + 4.0,
+                        if horse { 17.0 } else { 15.0 },
+                    ],
+                    [muzzle_width, if horse { 4.0 } else { 3.0 }, 3.0],
+                    Muzzle,
+                );
+                for x in [-2.0, 2.0] {
+                    d.cube(
+                        h,
+                        [x - 0.75, hip + neck + 4.0 + head_height, 8.0],
+                        [
+                            1.5,
+                            if llama || matches!(kind, Donkey | Mule) {
+                                5.0
+                            } else {
+                                3.0
+                            },
+                            2.0,
+                        ],
+                        Limb,
+                    );
+                }
             }
             if camel {
                 d.cube(0, [-4.5, hip + 11.0, -4.0], [9.0, 5.0, 8.0], Body);
             }
-            if !camel && !llama {
-                d.cube(h, [-0.6, hip + 7.0, 5.0], [1.2, neck + 4.0, 2.0], Dark);
+            if !camel && !llama && !horse {
+                d.cube(h, [-0.6, hip + 7.0, 5.0], [1.2, 14.0, 2.0], Dark);
             }
             if kind == TraderLlama {
                 d.cube(0, [-6.15, hip + 5.0, -7.0], [12.3, 5.0, 12.0], Accent);
@@ -936,6 +976,7 @@ fn texel(
         Accent => s.accent,
         Dark => [54, 46, 40],
         Muzzle if matches!(kind, Chicken | Parrot | Sniffer) => [219, 174, 72],
+        Muzzle if matches!(kind, Horse | SkeletonHorse | ZombieHorse) => shade(s.coat, -24),
         Muzzle if kind == Pig => [207, 128, 140],
         Muzzle if kind == Dolphin => [139, 164, 170],
         Body | Head if kind == Dolphin && face == Face::Bottom => [189, 202, 198],
@@ -1020,6 +1061,19 @@ fn texel(
         if matches!(kind, Slime | SulfurCube) && (x == 1 || y == 1) {
             c = shade(base, 28);
         }
+    }
+    if surface == Head && matches!(kind, Horse | SkeletonHorse | ZombieHorse) {
+        // Equine eyes sit on the sides near the poll, never on the nose face.
+        let (px, py) = (x * 8 / w, y * 8 / h);
+        let eye = match face {
+            Face::Right => (5..7).contains(&px),
+            Face::Left => (1..3).contains(&px),
+            _ => false,
+        };
+        if eye && (2..4).contains(&py) {
+            return [32, 29, 30];
+        }
+        return c;
     }
     if surface == Muzzle && face == Face::Front && w >= 4 && y == h / 2 && (x == 1 || x == w - 2) {
         c = shade(base, -68);
@@ -1245,6 +1299,16 @@ fn bake(kind: MobKind, design: &Design, atlas: &mut Atlas) -> Vec<(usize, bool, 
 pub fn facing(yaw: f32) -> Mat4 {
     Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2 - yaw)
 }
+
+/// Raised horse heads extend above the collision box around the torso.
+pub fn render_height(mob: &Mob) -> f32 {
+    let adult_height = match mob.kind {
+        MobKind::Horse | MobKind::SkeletonHorse | MobKind::ZombieHorse => 2.2,
+        _ => mob.kind.species().height,
+    };
+    adult_height * mob.height() / mob.kind.species().height
+}
+
 impl MobVisuals {
     pub fn new() -> Self {
         let mut atlas = Atlas::new();
@@ -1285,7 +1349,7 @@ impl MobVisuals {
     pub fn draw(&self, mob: &Mob, shader: &Shader, time: f32, viewer: Vec3) {
         self.texture.bind(0);
         let model = &self.models[mob.kind as usize];
-        let scale = mob.height() / model.height;
+        let scale = render_height(mob) / model.height;
         let base = Mat4::from_translation(mob.position)
             * facing(mob.yaw)
             * Mat4::from_rotation_x(if mob.kind == MobKind::Dolphin {
@@ -1401,6 +1465,77 @@ fn variant_tint(mob: &Mob) -> Vec4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn horses_have_sloping_faces_and_side_eyes_instead_of_a_cow_face() {
+        for kind in [MobKind::Horse, MobKind::SkeletonHorse, MobKind::ZombieHorse] {
+            let d = design(kind);
+            let head = d.cubes.iter().find(|c| c.surface == Surface::Head).unwrap();
+            assert!(head.size.z >= head.size.x * 2.0);
+            assert!(head.rotation.x > 0.4, "nose must slope downward");
+            let neck = d
+                .cubes
+                .iter()
+                .find(|c| c.surface == Surface::Body && c.joint != 0)
+                .unwrap();
+            let neck_rotation = Mat4::from_rotation_x(neck.rotation.x);
+            let rise = neck_rotation.transform_vector3(Vec3::Y * neck.size.y);
+            assert!(
+                rise.y > 0.0 && rise.z > 4.0,
+                "neck must rise toward the +Z nose"
+            );
+            let top = neck.min + neck.size * 0.5 + rise * 0.5;
+            let head_center = head.min + head.size * 0.5;
+            let attachment =
+                Mat4::from_rotation_x(-head.rotation.x).transform_vector3(top - head_center);
+            assert!(
+                attachment.abs().cmple(head.size * 0.5).all(),
+                "neck must meet the head"
+            );
+            for face in [Face::Front, Face::Left, Face::Right] {
+                let eyes = (0..8)
+                    .flat_map(|y| (0..8).map(move |x| texel(kind, Surface::Head, face, x, y, 8, 8)))
+                    .filter(|p| *p == [32, 29, 30])
+                    .count();
+                assert_eq!(eyes, if face == Face::Front { 0 } else { 4 });
+            }
+        }
+    }
+
+    #[test]
+    fn adult_horses_have_long_legs_and_a_full_sized_head() {
+        for kind in [MobKind::Horse, MobKind::SkeletonHorse, MobKind::ZombieHorse] {
+            let mob = Mob::new(kind, Vec3::ZERO, Vec3::ZERO, 0);
+            let d = design(kind);
+            let height = d
+                .cubes
+                .iter()
+                .map(|c| c.min.y + c.size.y)
+                .fold(0., f32::max);
+            let scale = render_height(&mob) / height;
+            let body = d
+                .cubes
+                .iter()
+                .find(|c| c.joint == 0 && c.surface == Surface::Body)
+                .unwrap();
+            let head = d.cubes.iter().find(|c| c.surface == Surface::Head).unwrap();
+            assert!((2.1..2.3).contains(&render_height(&mob)));
+            assert!(
+                body.min.y * scale > 0.8,
+                "legs should clear most of a block"
+            );
+            assert!(
+                (body.min.y + body.size.y) * scale > 1.4,
+                "shoulders should reach chest height"
+            );
+            assert!(
+                head.size.x / body.size.x >= 0.5,
+                "head too narrow for torso"
+            );
+            assert!(head.size.y / body.size.y >= 0.6, "head too short for torso");
+            assert!(d.cubes.iter().all(|c| c.min.y >= 0.), "feet below ground");
+        }
+    }
+
     #[test]
     fn dolphin_stroke_moves_vertical_tail_and_inherits_fluke_pivot() {
         let d = design(MobKind::Dolphin);

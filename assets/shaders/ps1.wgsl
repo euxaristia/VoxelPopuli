@@ -73,6 +73,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         albedo = srgb_to_linear(texel.rgb) * srgb_to_linear(u.col_diffuse.rgb);
     }
     var color = albedo * light_factor;
+    // Camera-space viewmodel lighting keeps the square faces readable.
+    if (u.body_type == 3) {
+        let facing = max(dot(normalize(in.normal), normalize(vec3(-0.3, 0.8, -0.5))), 0.0);
+        color *= 0.65 + 0.35 * facing;
+    }
     color *= mix(vec3(1.0, 0.9, 0.8), vec3(1.0, 1.0, 1.05), sun_y); // slight tinting
 
     let distance = max(length(in.world_pos - u.view_pos) - 24.0, 0.0);

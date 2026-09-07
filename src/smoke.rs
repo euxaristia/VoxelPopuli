@@ -3,6 +3,104 @@ use crate::container::{Container, Furnace};
 use crate::inventory::{INVENTORY_SLOT_COUNT, ItemStack};
 use crate::renderer::{self, RenderTexture2D, Shader, Texture2D};
 
+/// An opaque near-plane surface must not erase the arm or held item.
+pub fn hand_occlusion(
+    shader: &Shader,
+    atlas: &Texture2D,
+    arm: &renderer::Mesh,
+    width: i32,
+    height: i32,
+) -> Result<(), String> {
+    use glam::{Mat4, Vec3, Vec4};
+    let target = RenderTexture2D::new(800, 450);
+    let wall = renderer::Mesh::new(
+        &[
+            -1., -1., 0.01, 1., -1., 0.01, 1., 1., 0.01, -1., -1., 0.01, 1., 1., 0.01, -1., 1.,
+            0.01,
+        ],
+        Some(&[0.5, 0.5].repeat(6)),
+        None,
+        Some(&[255, 255, 255, 255].repeat(6)),
+    );
+    let white = Texture2D::from_data(&[255, 255, 255, 255], 1, 1);
+    let item = crate::hand::build_item_mesh(BlockType::Stone);
+    for (pose, swing, held) in [
+        ("idle", 0., None),
+        ("punch", 1., None),
+        ("item", 0.5, Some(&item)),
+    ] {
+        let mut reference = None;
+        for occluded in [false, true] {
+            target.bind();
+            renderer::clear(0., 0., 0., 1.);
+            renderer::set_depth_test(true);
+            renderer::set_depth_write(true);
+            renderer::set_cull(false);
+            renderer::set_blend(false);
+            shader.bind();
+            shader.set_float(shader.get_uniform_location("uFogDensity"), 0.);
+            shader.set_float(shader.get_uniform_location("uHdrScale"), 1.);
+            shader.set_int(shader.get_uniform_location("uHdrOutput"), 0);
+            shader.set_vec3(shader.get_uniform_location("sunDir"), Vec3::Y);
+            shader.set_vec3(shader.get_uniform_location("viewPos"), Vec3::ZERO);
+            shader.set_vec4(
+                shader.get_uniform_location("uColor"),
+                Vec4::new(1., 0., 1., 1.),
+            );
+            if occluded {
+                white.bind(0);
+                shader.set_mat4(shader.get_uniform_location("uMVP"), &Mat4::IDENTITY);
+                shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+                shader.set_vec4(
+                    shader.get_uniform_location("colDiffuse"),
+                    Vec4::new(0.1, 0.3, 0.7, 1.),
+                );
+                wall.draw();
+            }
+            crate::hand::draw(
+                shader,
+                atlas,
+                arm,
+                held,
+                &Mat4::IDENTITY,
+                0,
+                800. / 450.,
+                swing,
+                0.,
+                Vec4::new(1., 0., 1., 1.),
+            );
+            RenderTexture2D::unbind();
+            renderer::end_frame(width, height);
+            let path = std::path::Path::new("target/test-artifacts")
+                .join(format!("hand-{pose}-wall-{occluded}.png"));
+            target.save_png(&path)?;
+            let pixels = image::open(path).map_err(|e| e.to_string())?.to_rgba8();
+            if let Some(baseline) = reference.as_ref() {
+                let baseline: &image::RgbaImage = baseline;
+                assert_ne!(
+                    baseline.get_pixel(0, 0),
+                    pixels.get_pixel(0, 0),
+                    "wall was not rendered"
+                );
+                let mut arm_pixels = 0;
+                for (before, after) in baseline.pixels().zip(pixels.pixels()) {
+                    if before.0[..3].iter().any(|&v| v > 5) {
+                        assert_eq!(before, after, "nearby surface hid the {pose} viewmodel");
+                        arm_pixels += 1;
+                    }
+                }
+                assert!(arm_pixels > 1000, "viewmodel was absent");
+                println!(
+                    "Hand {pose}: {arm_pixels} pixels remain visible against a near-plane wall"
+                );
+            } else {
+                reference = Some(pixels);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn hand_input(frame: u32) -> Option<glfw::WindowEvent> {
     let action = match frame % 72 {
         3 | 27 => glfw::Action::Press,
@@ -538,7 +636,7 @@ pub fn mobs() -> Result<(), String> {
     let target = RenderTexture2D::new(1600, 1100);
     std::fs::create_dir_all("target/test-artifacts").map_err(|e| e.to_string())?;
     for (page, entries) in MobKind::ALL.chunks(20).enumerate() {
-        for pose in 0..2 {
+        for pose in 0..3 {
             target.bind();
             renderer::clear(0.105, 0.14, 0.155, 1.0);
             renderer::set_depth_test(true);
@@ -549,12 +647,17 @@ pub fn mobs() -> Result<(), String> {
                 let mut mob = Mob::new(kind, Vec3::ZERO, Vec3::ZERO, 0);
                 mob.yaw = std::f32::consts::FRAC_PI_2;
                 mob.walk_phase = if pose == 0 { 0.0 } else { 1.2 };
-                mob.walk_blend = pose as f32;
-                let size = mob.height().max(kind.species().width * 1.3);
-                let eye = Vec3::new(size * 0.9, size * 0.78, size * 1.75);
+                mob.walk_blend = if pose == 1 { 1.0 } else { 0.0 };
+                let visual_height = crate::mob_visuals::render_height(&mob);
+                let size = visual_height.max(kind.species().width * 1.3);
+                let eye = if pose == 2 {
+                    Vec3::new(size * 2.0, size * 0.65, 0.0)
+                } else {
+                    Vec3::new(size * 0.9, size * 0.78, size * 1.75)
+                };
                 let view = glam::camera::rh::view::look_at_mat4(
                     eye,
-                    Vec3::Y * mob.height() * 0.48,
+                    Vec3::Y * visual_height * 0.48,
                     Vec3::Y,
                 );
                 let proj = glam::camera::rh::proj::directx::perspective(
@@ -579,7 +682,12 @@ pub fn mobs() -> Result<(), String> {
                 shader.set_float(shader.get_uniform_location("uFogDensity"), 0.0);
                 shader.set_float(shader.get_uniform_location("uHdrScale"), 1.0);
                 shader.set_int(shader.get_uniform_location("uHdrOutput"), 0);
-                visuals.draw(&mob, &shader, pose as f32 * 0.22, eye);
+                visuals.draw(
+                    &mob,
+                    &shader,
+                    pose as f32 * 0.22,
+                    if pose == 2 { eye * 100.0 } else { eye },
+                );
             }
             renderer::set_depth_test(false);
             renderer::set_cull(false);
@@ -589,7 +697,11 @@ pub fn mobs() -> Result<(), String> {
                 &format!(
                     "OVERWORLD / {} CREATURES / {}",
                     MobKind::ALL.len(),
-                    if pose == 0 { "REST" } else { "MOVEMENT" }
+                    match pose {
+                        0 => "REST",
+                        1 => "MOVEMENT",
+                        _ => "SIDE PROFILE",
+                    }
                 ),
                 32.0,
                 25.0,

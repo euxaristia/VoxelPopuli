@@ -1809,39 +1809,6 @@ fn main() {
                     world.entity_lighting(eye_pos),
                 );
             }
-            let held_block = inv_slots[player.selected_slot].map(|s| s.block);
-            let item_ref = if let Some(block) = held_block.filter(|b| *b != BlockType::Air) {
-                if held_item_mesh
-                    .as_ref()
-                    .is_none_or(|(cached, _)| *cached != block)
-                {
-                    held_item_mesh = Some((block, hand::build_item_mesh(block)));
-                }
-                held_item_mesh.as_ref().map(|(_, mesh)| mesh)
-            } else {
-                None
-            };
-            if let Some(atlas) = world.atlas.as_ref() {
-                let bob = player.velocity.x.hypot(player.velocity.z)
-                    * (current_time as f32 * 8.0).sin()
-                    * 0.04;
-                // The arm is wound outward like chunk geometry, so it culls
-                // with the pass default instead of turning culling off. It
-                // also builds its own fixed-FOV projection from the aspect
-                // ratio, so the FOV slider does not resize the player's hand.
-                hand::draw(
-                    world_shader,
-                    atlas,
-                    &arm_mesh,
-                    item_ref,
-                    &mvp,
-                    selected_skin,
-                    aspect,
-                    hand_swing.amount(),
-                    bob,
-                    world.entity_lighting(eye_pos),
-                );
-            }
         }
 
         // Resolve the G-buffer, then draw everything that cannot be
@@ -1950,6 +1917,42 @@ fn main() {
 
         if fancy_gfx_setting && above_clouds {
             world.render_clouds(&flat_shader, &mvp);
+        }
+        // Viewmodel goes last, after terrain, water and effects, with its own depth.
+        if game_state == GameState::Playing && !player.inventory_open {
+            let held_block = inv_slots[player.selected_slot].map(|s| s.block);
+            let item_ref = if let Some(block) = held_block.filter(|b| *b != BlockType::Air) {
+                if held_item_mesh
+                    .as_ref()
+                    .is_none_or(|(cached, _)| *cached != block)
+                {
+                    held_item_mesh = Some((block, hand::build_item_mesh(block)));
+                }
+                held_item_mesh.as_ref().map(|(_, mesh)| mesh)
+            } else {
+                None
+            };
+            if let Some(atlas) = world.atlas.as_ref() {
+                let bob = player.velocity.x.hypot(player.velocity.z)
+                    * (current_time as f32 * 8.0).sin()
+                    * 0.04;
+                // The arm is wound outward like chunk geometry, so it culls
+                // with the pass default instead of turning culling off. It
+                // also builds its own fixed-FOV projection from the aspect
+                // ratio, so the FOV slider does not resize the player's hand.
+                hand::draw(
+                    &shader,
+                    atlas,
+                    &arm_mesh,
+                    item_ref,
+                    &mvp,
+                    selected_skin,
+                    aspect,
+                    hand_swing.amount(),
+                    bob,
+                    world.entity_lighting(eye_pos),
+                );
+            }
         }
         if deferred {
             // Tone map the lit HDR scene down onto the offscreen target the
@@ -3104,6 +3107,14 @@ fn main() {
                 smoke_frames += 1;
                 fancy_gfx_setting = smoke_frames < 72;
                 if smoke_frames == 144 {
+                    smoke::hand_occlusion(
+                        &shader,
+                        world.atlas.as_ref().unwrap(),
+                        &arm_mesh,
+                        framebuffer_width,
+                        framebuffer_height,
+                    )
+                    .expect("Viewmodel depth regression failed");
                     smoke::water_lighting(
                         &water_shader,
                         world.atlas.as_ref().unwrap(),

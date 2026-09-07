@@ -1603,6 +1603,17 @@ pub fn clear(r: f32, g: f32, b: f32, a: f32) {
     });
 }
 
+/// Start a depth-only clear pass, preserving the completed scene color.
+/// Used only after all world geometry, before the first-person viewmodel.
+pub fn clear_viewmodel_depth() {
+    with_ctx(|c| {
+        let target = c.passes.last().unwrap().target.clone();
+        let mut pass = PassRec::new(target);
+        pass.clear_depth = true;
+        c.passes.push(pass);
+    });
+}
+
 fn switch_target(target: Target) {
     with_ctx(|c| switch_target_inner(c, target));
 }
