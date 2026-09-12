@@ -86,6 +86,7 @@ pub enum PauseClick {
     SetRenderDistance(i32),
     SetFov(f32),
     ToggleFancy,
+    SetDifficulty(crate::skeleton_ai::Difficulty),
     ExportJava,
     SelectSkin(u8),
 }
@@ -171,6 +172,18 @@ pub fn pause_click(menu: PauseSubMenu, sw: f32, sh: f32, mx: f32, my: f32) -> Op
             }
             if in_rect(mx, my, panel_x + 340.0, panel_y + 222.0, 140.0, 32.0) {
                 return Some(PauseClick::ToggleFancy);
+            }
+            for (i, difficulty) in crate::skeleton_ai::Difficulty::ALL.iter().enumerate() {
+                if in_rect(
+                    mx,
+                    my,
+                    panel_x + 270.0 + i as f32 * 95.0,
+                    panel_y + 292.0,
+                    90.0,
+                    32.0,
+                ) {
+                    return Some(PauseClick::SetDifficulty(*difficulty));
+                }
             }
             if in_rect(mx, my, panel_x + 230.0, panel_y + 420.0, 240.0, 44.0) {
                 return Some(PauseClick::Back);
@@ -754,6 +767,18 @@ mod tests {
         let sw = 1280.0;
         let sh = 720.0;
         let (sx, sy, _, _) = settings_panel(sw, sh);
+        for (i, difficulty) in crate::skeleton_ai::Difficulty::ALL.iter().enumerate() {
+            assert_eq!(
+                pause_click(
+                    PauseSubMenu::Settings,
+                    sw,
+                    sh,
+                    sx + 275.0 + i as f32 * 95.0,
+                    sy + 300.0
+                ),
+                Some(PauseClick::SetDifficulty(*difficulty))
+            );
+        }
         assert_eq!(
             pause_click(
                 PauseSubMenu::Settings,
@@ -901,6 +926,7 @@ pub fn draw_pause_menu(
     render_dist: i32,
     fov: f32,
     fancy_gfx: bool,
+    difficulty: crate::skeleton_ai::Difficulty,
 ) {
     draw_rect(ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 180], sw, sh);
 
@@ -1137,7 +1163,7 @@ pub fn draw_pause_menu(
 
             draw_text(
                 font_tex,
-                "SETTINGS - GRAPHICS & VIDEO",
+                "SETTINGS",
                 panel_x + 30.0,
                 panel_y + 25.0,
                 22.0,
@@ -1221,6 +1247,35 @@ pub fn draw_pause_menu(
                 );
             }
 
+            draw_text(
+                font_tex,
+                "Difficulty",
+                panel_x + 40.0,
+                panel_y + 300.0,
+                18.0,
+                tex_shader,
+                sw,
+                sh,
+            );
+            for (i, value) in crate::skeleton_ai::Difficulty::ALL.iter().enumerate() {
+                let x = panel_x + 270.0 + i as f32 * 95.0;
+                let color = if *value == difficulty {
+                    [40, 160, 80, 255]
+                } else {
+                    [100, 100, 100, 255]
+                };
+                draw_rect(ui_shader, x, panel_y + 292.0, 90.0, 32.0, color, sw, sh);
+                draw_text(
+                    font_tex,
+                    value.label(),
+                    x + 5.0,
+                    panel_y + 300.0,
+                    14.0,
+                    tex_shader,
+                    sw,
+                    sh,
+                );
+            }
             let gfx_label = format!(
                 "Graphics Quality: {}",
                 if fancy_gfx { "FANCY" } else { "FAST" }

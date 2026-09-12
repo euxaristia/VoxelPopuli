@@ -4,6 +4,21 @@ use glam::Vec3;
 pub use crate::mob_catalog::MobKind;
 use crate::mob_catalog::{Motion, Temper};
 
+/// Aim with this game's arrow gravity and drag, keeping horizontal launch
+/// speed at 18 blocks/s. Continuous drag approximates the frame-based solver.
+pub fn aimed_arrow_velocity(delta: Vec3) -> Vec3 {
+    let horizontal = delta.with_y(0.0);
+    let distance = horizontal.length();
+    if distance < 0.001 {
+        return delta.normalize_or_zero() * 18.0;
+    }
+    let drag_rate = -20.0 * 0.99_f32.ln();
+    let time = -(1.0 - drag_rate * distance / 18.0).max(0.01).ln() / drag_rate;
+    let travel = (1.0 - (-drag_rate * time).exp()) / drag_rate;
+    let vertical = (delta.y + 25.0 / drag_rate * (time - travel)) / travel;
+    horizontal / distance * 18.0 + Vec3::Y * (vertical + 25.0 / 120.0)
+}
+
 /// Minecraft animal goal timers. Hostiles leave this at default.
 #[derive(Clone, Debug, Default)]
 pub struct AnimalState {
@@ -24,6 +39,8 @@ pub struct AnimalState {
 }
 
 pub struct Mob {
+    pub id: u32,
+    pub skeleton: crate::skeleton_ai::SkeletonState,
     pub kind: MobKind,
     /// Feet-center position in world space
     pub position: Vec3,
@@ -51,8 +68,11 @@ pub struct Mob {
 
 impl Mob {
     pub fn new(kind: MobKind, position: Vec3, home: Vec3, variant: u8) -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
         let health = Self::max_health_for(kind);
         Self {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            skeleton: Default::default(),
             kind,
             position,
             velocity: Vec3::ZERO,
@@ -92,6 +112,36 @@ impl Mob {
             self.animal.eat_time = 0.0;
         }
         self.health <= 0.0
+    }
+
+    pub fn take_combat_damage(&mut self, damage: f32) -> bool {
+        if !self.uses_skeleton_ai() || !damage.is_finite() || damage <= 0.0 {
+            return self.take_damage(damage);
+        }
+        let defense: i32 = self
+            .skeleton
+            .armor
+            .iter()
+            .flatten()
+            .filter_map(|stack| crate::item::armor_properties(stack.block))
+            .map(|p| p.defense)
+            .sum();
+        for slot in &mut self.skeleton.armor {
+            if let Some(stack) = slot
+                && let Some(properties) = crate::item::armor_properties(stack.block)
+            {
+                let wear = (damage / 4.0).floor().max(1.0) as u16;
+                let remaining = stack
+                    .durability
+                    .unwrap_or(properties.durability)
+                    .saturating_sub(wear);
+                stack.durability = Some(remaining);
+                if remaining == 0 {
+                    *slot = None;
+                }
+            }
+        }
+        self.take_damage(damage * (1.0 - (defense as f32 * 0.04).min(0.8)))
     }
 
     pub fn is_animal(&self) -> bool {
@@ -207,6 +257,9 @@ impl Mob {
     }
 
     pub fn is_ranged(&self) -> bool {
+        if self.uses_skeleton_ai() {
+            return !self.skeleton.melee;
+        }
         matches!(
             self.kind,
             MobKind::Skeleton
@@ -215,6 +268,40 @@ impl Mob {
                 | MobKind::Parched
                 | MobKind::Pillager
         )
+    }
+
+    pub fn uses_skeleton_ai(&self) -> bool {
+        self.kind == MobKind::Skeleton || (self.kind == MobKind::Stray && self.skeleton.converted)
+    }
+
+    /// Combat locomotion overrides wandering, including during reloads.
+    pub fn track_combat_target(&mut self, target: Vec3, visible: bool) -> bool {
+        let delta = target - self.position;
+        let distance = delta.length();
+        self.yaw = delta.z.atan2(delta.x);
+        // Bedrock's skeleton uses a 15-block ranged goal. Other ranged mobs
+        // retain their existing ranges until their own definitions are ported.
+        let radius = if self.kind == MobKind::Skeleton {
+            15.0
+        } else {
+            12.0
+        };
+        let firing_position = self.is_ranged() && distance <= radius && visible;
+        self.walk_speed = if firing_position {
+            0.0
+        } else {
+            self.base_speed()
+        };
+        firing_position && self.attack_cooldown <= 0.0
+    }
+
+    pub fn ranged_attack_interval(&self) -> f32 {
+        // Normal difficulty in Mojang's skeleton behavior definition.
+        if self.kind == MobKind::Skeleton {
+            3.0
+        } else {
+            2.0
+        }
     }
 
     /// Returns the loot drop when this mob is defeated
@@ -238,6 +325,89 @@ impl Mob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skeleton_holds_firing_position_even_while_reloading() {
+        let mut mob = Mob::new(MobKind::Skeleton, Vec3::ZERO, Vec3::ZERO, 0);
+        for distance in [0.1, 1.0, 8.0, 14.0, 15.0] {
+            for cooldown in [0.0, 1.5] {
+                mob.walk_speed = mob.base_speed();
+                mob.attack_cooldown = cooldown;
+                let fire = mob.track_combat_target(Vec3::Z * distance, true);
+                assert_eq!(
+                    mob.walk_speed, 0.0,
+                    "distance {distance}, cooldown {cooldown}"
+                );
+                assert_eq!(fire, cooldown == 0.0);
+                assert!((mob.yaw - std::f32::consts::FRAC_PI_2).abs() < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn skeleton_pursues_outside_range_or_without_a_clear_shot() {
+        let mut mob = Mob::new(MobKind::Skeleton, Vec3::ZERO, Vec3::ZERO, 0);
+        for (distance, visible) in [(15.1, true), (8.0, false)] {
+            assert!(!mob.track_combat_target(Vec3::X * distance, visible));
+            assert_eq!(mob.walk_speed, mob.base_speed());
+        }
+        assert!(mob.track_combat_target(Vec3::X * 8.0, true));
+        assert_eq!(mob.walk_speed, 0.0);
+    }
+
+    #[test]
+    fn melee_mobs_continue_closing_distance() {
+        let mut mob = Mob::new(MobKind::Zombie, Vec3::ZERO, Vec3::ZERO, 0);
+        assert!(!mob.track_combat_target(Vec3::X * 8.0, true));
+        assert_eq!(mob.walk_speed, mob.base_speed());
+    }
+
+    #[test]
+    fn skeleton_reload_uses_normal_bedrock_interval() {
+        let mut mob = Mob::new(MobKind::Skeleton, Vec3::ZERO, Vec3::ZERO, 0);
+        assert_eq!(mob.ranged_attack_interval(), 3.0);
+        assert!(mob.track_combat_target(Vec3::X * 10.0, true));
+        mob.attack_cooldown = mob.ranged_attack_interval();
+        for _ in 0..29 {
+            mob.attack_cooldown = (mob.attack_cooldown - 0.1).max(0.0);
+            assert!(!mob.track_combat_target(Vec3::X * 10.0, true));
+            assert_eq!(mob.walk_speed, 0.0);
+        }
+        mob.attack_cooldown = (mob.attack_cooldown - 0.101).max(0.0);
+        assert!(mob.track_combat_target(Vec3::X * 10.0, true));
+    }
+
+    #[test]
+    fn ranged_arrows_reach_player_height_at_firing_distances() {
+        for fps in [30.0, 60.0, 144.0] {
+            for distance in [3.0, 8.0, 15.0] {
+                for elevation in [-2.0, 0.0, 2.0] {
+                    let target = Vec3::new(distance, elevation, 0.0);
+                    let mut velocity = aimed_arrow_velocity(target);
+                    let mut position = Vec3::ZERO;
+                    let dt = 1.0 / fps;
+                    for _ in 0..300 {
+                        let previous = position;
+                        velocity.y -= 25.0 * dt;
+                        velocity *= 0.99_f32.powf(dt * 20.0);
+                        position += velocity * dt;
+                        if position.x >= distance {
+                            let crossing = previous.lerp(
+                                position,
+                                (distance - previous.x) / (position.x - previous.x),
+                            );
+                            assert!(
+                                (crossing.y - elevation).abs() < 0.4,
+                                "{fps} fps, {distance} blocks, elevation {elevation}: {crossing:?}"
+                            );
+                            break;
+                        }
+                    }
+                    assert!(position.x >= distance);
+                }
+            }
+        }
+    }
 
     #[test]
     fn neutral_mobs_retaliate_but_passive_animals_flee() {
@@ -277,7 +447,7 @@ mod tests {
         assert_eq!(z.drop_item(), Some((BlockType::RawIron, 1)));
 
         let sk = Mob::new(MobKind::Skeleton, pos, home, 0);
-        assert_eq!(sk.height(), 1.99);
+        assert_eq!(sk.height(), 1.9);
         assert_eq!(sk.drop_item(), Some((BlockType::Stick, 1)));
 
         let c = Mob::new(MobKind::Creeper, pos, home, 0);

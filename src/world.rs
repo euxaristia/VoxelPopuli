@@ -7,6 +7,7 @@ use crate::chunk::{
 use crate::mob::{Mob, MobKind};
 use crate::mob_catalog::Motion;
 mod mobs;
+mod skeletons;
 pub const MOB_CAP: usize = 48;
 use crate::renderer;
 use crate::renderer::{Mesh, Shader, Texture2D};
@@ -197,7 +198,19 @@ impl Frustum {
     }
 }
 
+struct EffectMeshes {
+    tnt: Mesh,
+    spark: Mesh,
+    particle: Mesh,
+    arrow: Mesh,
+    xp_orb: Mesh,
+    fire: [Mesh; 8],
+}
+
 pub struct World {
+    pub difficulty: crate::skeleton_ai::Difficulty,
+    pub player_targetable: bool,
+    pub player_sneaking: bool,
     pub seed: u64,
     pub day_time: f32,
     pub chunks: Vec<Option<Box<Chunk>>>,
@@ -222,11 +235,7 @@ pub struct World {
     pub xp_orbs: Vec<crate::block::XpOrbEntity>,
     pub particles: Vec<crate::block::Particle>,
     pub detonations: Vec<(glam::Vec3, i32)>,
-    pub tnt_mesh: renderer::Mesh,
-    pub spark_mesh: renderer::Mesh,
-    pub particle_mesh: renderer::Mesh,
-    pub arrow_mesh: renderer::Mesh,
-    pub xp_orb_mesh: renderer::Mesh,
+    effects: Option<EffectMeshes>,
     pub is_loading: bool,
     pub loading_radius: i32,
     pub chunks_generated_count: i32,
@@ -237,7 +246,6 @@ pub struct World {
     fire_timer: f32,
     night_spawn_timer: f32,
     burn_timer: f32,
-    fire_meshes: [renderer::Mesh; 8],
     pub visible_chunks: Vec<usize>,
     pub meshing_in_flight: i32,
     next_mesh_job_id: u64,
@@ -260,6 +268,19 @@ pub struct World {
 
 impl World {
     pub fn new(seed: u64) -> Self {
+        let mut world = Self::simulation(seed);
+        world.effects = Some(EffectMeshes {
+            tnt: Self::create_textured_cube_mesh(BlockType::TNT),
+            spark: Self::create_textured_cube_mesh(BlockType::Torch),
+            particle: Self::create_textured_cube_mesh(BlockType::SnowLayer),
+            arrow: Self::create_textured_cube_mesh(BlockType::Arrow),
+            xp_orb: Self::create_textured_cube_mesh(BlockType::GoldOre),
+            fire: std::array::from_fn(crate::fire::build_frame_mesh),
+        });
+        world
+    }
+
+    fn simulation(seed: u64) -> Self {
         let mut chunks = Vec::with_capacity(CHUNK_POOL_SIZE);
         for _ in 0..CHUNK_POOL_SIZE {
             chunks.push(None);
@@ -268,6 +289,9 @@ impl World {
         let (gen_result_tx, gen_result_rx) = std::sync::mpsc::channel();
         Self {
             seed,
+            difficulty: Default::default(),
+            player_targetable: true,
+            player_sneaking: false,
             day_time: 120.0,
             chunks,
             atlas: None,
@@ -291,11 +315,7 @@ impl World {
             xp_orbs: Vec::new(),
             particles: Vec::new(),
             detonations: Vec::new(),
-            tnt_mesh: Self::create_textured_cube_mesh(BlockType::TNT),
-            spark_mesh: Self::create_textured_cube_mesh(BlockType::Torch),
-            particle_mesh: Self::create_textured_cube_mesh(BlockType::SnowLayer),
-            arrow_mesh: Self::create_textured_cube_mesh(BlockType::Arrow),
-            xp_orb_mesh: Self::create_textured_cube_mesh(BlockType::GoldOre),
+            effects: None,
             is_loading: true,
             loading_radius: 0,
             chunks_generated_count: 0,
@@ -306,7 +326,6 @@ impl World {
             fire_timer: 0.0,
             night_spawn_timer: 0.0,
             burn_timer: 0.0,
-            fire_meshes: std::array::from_fn(crate::fire::build_frame_mesh),
             visible_chunks: Vec::new(),
             meshing_in_flight: 0,
             next_mesh_job_id: 1,
@@ -464,7 +483,11 @@ impl World {
                 * glam::Mat4::from_scale(Vec3::splat(pulse))
                 * glam::Mat4::from_translation(Vec3::splat(-0.5));
             shader.set_mat4(loc_model, &model);
-            self.tnt_mesh.draw();
+            self.effects
+                .as_ref()
+                .expect("rendering requires effect meshes")
+                .tnt
+                .draw();
 
             let spark_phase = current_time * (18.0 + progress * 24.0);
             let spark_scale = 0.11 + spark_phase.sin().abs() * 0.05;
@@ -478,7 +501,11 @@ impl World {
                 glam::Mat4::from_translation(e.position + Vec3::new(0.5, 0.0, 0.5) + spark_offset)
                     * glam::Mat4::from_scale(Vec3::splat(spark_scale));
             shader.set_mat4(loc_model, &spark_model);
-            self.spark_mesh.draw();
+            self.effects
+                .as_ref()
+                .expect("rendering requires effect meshes")
+                .spark
+                .draw();
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
         shader.set_vec4(loc_light, glam::Vec4::ZERO);
@@ -503,7 +530,11 @@ impl World {
             let model = glam::Mat4::from_translation(p.position)
                 * glam::Mat4::from_scale(glam::Vec3::splat(p.scale * alpha));
             shader.set_mat4(loc_model, &model);
-            self.particle_mesh.draw();
+            self.effects
+                .as_ref()
+                .expect("rendering requires effect meshes")
+                .particle
+                .draw();
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
@@ -533,7 +564,11 @@ impl World {
             let model =
                 glam::Mat4::from_translation(arrow.position) * rot * glam::Mat4::from_scale(scale);
             shader.set_mat4(loc_model, &model);
-            self.arrow_mesh.draw();
+            self.effects
+                .as_ref()
+                .expect("rendering requires effect meshes")
+                .arrow
+                .draw();
         }
         shader.set_vec4(loc_light, glam::Vec4::ZERO);
         shader.set_mat4(loc_model, &glam::Mat4::IDENTITY);
@@ -556,7 +591,11 @@ impl World {
                 * glam::Mat4::from_scale(Vec3::splat(0.18));
             shader.set_vec4(loc_diff, glam::Vec4::new(0.4, 1.4, 0.2, 1.0));
             shader.set_mat4(loc_model, &model);
-            self.xp_orb_mesh.draw();
+            self.effects
+                .as_ref()
+                .expect("rendering requires effect meshes")
+                .xp_orb
+                .draw();
         }
         shader.set_vec4(loc_diff, glam::Vec4::ONE);
         shader.set_vec4(loc_light, glam::Vec4::ZERO);
@@ -733,6 +772,17 @@ impl World {
         }
     }
 
+    pub fn restore_skeletons(&mut self, saved: &[crate::save::SkeletonSave]) {
+        for record in saved.iter().take(MOB_CAP.saturating_sub(self.mobs.len())) {
+            let mob = record.restore();
+            self.spawned_natural_chunks.insert((
+                (mob.home.x / CHUNK_WIDTH as f32).floor() as i32,
+                (mob.home.z / CHUNK_DEPTH as f32).floor() as i32,
+            ));
+            self.mobs.push(mob);
+        }
+    }
+
     pub fn set_view_distance(&mut self, distance: i32) {
         let distance = distance.clamp(2, MAX_VIEW_DISTANCE);
         if distance != self.view_distance {
@@ -775,6 +825,20 @@ impl World {
     }
 
     fn collect_mob_drops(&mut self, mob: &Mob) {
+        for (slot, stack) in std::iter::once(mob.skeleton.weapon)
+            .chain(mob.skeleton.armor)
+            .enumerate()
+        {
+            if mob.skeleton.picked_up[slot]
+                && let Some(stack) = stack
+            {
+                self.dropped_items.push(crate::inventory::DroppedItem::new(
+                    stack,
+                    mob.position + Vec3::Y * 0.5,
+                    Vec3::Y,
+                ));
+            }
+        }
         if mob.is_baby() {
             return;
         }
@@ -823,11 +887,127 @@ impl World {
         let Some((index, _)) = best else {
             return false;
         };
-        if self.mobs[index].take_damage(damage) {
+        self.mobs[index]
+            .skeleton
+            .hurt_by(crate::skeleton_ai::TargetId::Player, None);
+        if self.mobs[index].take_combat_damage(damage) {
             let mob = self.mobs.swap_remove(index);
             self.finish_mob_death(mob);
         }
         true
+    }
+
+    // Small collision steps prevent arrows skipping targets at low frame rates.
+    fn update_arrows(&mut self, player_pos: Vec3, dt: f32) {
+        if !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
+        let dt = dt.min(0.1);
+        let speed = self
+            .arrows
+            .iter()
+            .filter(|a| !a.in_ground)
+            .map(|a| a.velocity.length())
+            .fold(0.0_f32, f32::max);
+        let steps = (((speed + 25.0 * dt) * dt / 0.1).ceil() as usize).clamp(1, 256);
+        for _ in 0..steps {
+            self.step_arrows(player_pos, dt / steps as f32);
+        }
+    }
+
+    fn step_arrows(&mut self, player_pos: Vec3, dt: f32) {
+        let mut a_idx = 0;
+        while a_idx < self.arrows.len() {
+            let mut remove_arrow = false;
+            self.arrows[a_idx].life -= dt;
+
+            if self.arrows[a_idx].life <= 0.0 {
+                remove_arrow = true;
+            } else if !self.arrows[a_idx].in_ground {
+                self.arrows[a_idx].velocity.y -= 25.0 * dt;
+                let vel = self.arrows[a_idx].velocity * 0.99f32.powf(dt * 20.0);
+                self.arrows[a_idx].velocity = vel;
+
+                let next_pos = self.arrows[a_idx].position + vel * dt;
+                let bx = next_pos.x.floor() as i32;
+                let by = next_pos.y.floor() as i32;
+                let bz = next_pos.z.floor() as i32;
+
+                if self.get_block(bx, by, bz).is_solid() {
+                    self.arrows[a_idx].in_ground = true;
+                    self.arrows[a_idx].velocity = Vec3::ZERO;
+                } else {
+                    let mut hit_mob = false;
+                    let mut m_idx = 0;
+                    let damage = self.arrows[a_idx].damage;
+                    let owner = self.arrows[a_idx].owner;
+                    let from_player = self.arrows[a_idx].from_player;
+                    let owner_kind =
+                        owner.and_then(|id| self.mobs.iter().find(|m| m.id == id).map(|m| m.kind));
+                    while m_idx < self.mobs.len() {
+                        let mob = &self.mobs[m_idx];
+                        if Some(mob.id) == owner {
+                            m_idx += 1;
+                            continue;
+                        }
+                        let feet = mob.position;
+                        let hw = mob.half_width();
+                        let h = mob.height();
+
+                        let in_x = next_pos.x >= feet.x - hw && next_pos.x <= feet.x + hw;
+                        let in_z = next_pos.z >= feet.z - hw && next_pos.z <= feet.z + hw;
+                        let in_y = next_pos.y >= feet.y && next_pos.y <= feet.y + h;
+
+                        if in_x && in_y && in_z {
+                            hit_mob = true;
+                            for _ in 0..4 {
+                                self.particles.push(crate::block::Particle {
+                                    position: next_pos,
+                                    velocity: Vec3::new(
+                                        (rand::random::<f32>() - 0.5) * 2.0,
+                                        rand::random::<f32>() * 2.0,
+                                        (rand::random::<f32>() - 0.5) * 2.0,
+                                    ),
+                                    color: glam::Vec4::new(0.8, 0.1, 0.1, 0.9),
+                                    life: 0.3,
+                                    max_life: 0.3,
+                                    scale: 0.08,
+                                });
+                            }
+                            if from_player {
+                                self.mobs[m_idx]
+                                    .skeleton
+                                    .hurt_by(crate::skeleton_ai::TargetId::Player, None);
+                            } else if let Some(id) = owner {
+                                self.mobs[m_idx]
+                                    .skeleton
+                                    .hurt_by(crate::skeleton_ai::TargetId::Mob(id), owner_kind);
+                            }
+                            if self.mobs[m_idx].take_combat_damage(damage) {
+                                let dead_mob = self.mobs.swap_remove(m_idx);
+                                self.finish_mob_death(dead_mob);
+                            }
+                            break;
+                        }
+                        m_idx += 1;
+                    }
+                    if hit_mob {
+                        remove_arrow = true;
+                    } else if !from_player && Self::player_aabb_hit(player_pos, next_pos) {
+                        self.pending_hurt += damage.round() as i32;
+                        remove_arrow = true;
+                    } else {
+                        self.arrows[a_idx].position = next_pos;
+                    }
+                }
+            }
+
+            if remove_arrow {
+                self.arrows.swap_remove(a_idx);
+            } else {
+                a_idx += 1;
+            }
+        }
     }
 
     fn player_aabb_hit(player_pos: Vec3, point: Vec3) -> bool {
@@ -1505,84 +1685,7 @@ impl World {
             }
         }
 
-        // --- Arrow Physics & Collision ---
-        let mut a_idx = 0;
-        while a_idx < self.arrows.len() {
-            let mut remove_arrow = false;
-            self.arrows[a_idx].life -= _time;
-
-            if self.arrows[a_idx].life <= 0.0 {
-                remove_arrow = true;
-            } else if !self.arrows[a_idx].in_ground {
-                self.arrows[a_idx].velocity.y -= 25.0 * _time;
-                let vel = self.arrows[a_idx].velocity * 0.99f32.powf(_time * 20.0);
-                self.arrows[a_idx].velocity = vel;
-
-                let next_pos = self.arrows[a_idx].position + vel * _time;
-                let bx = next_pos.x.floor() as i32;
-                let by = next_pos.y.floor() as i32;
-                let bz = next_pos.z.floor() as i32;
-
-                if self.get_block(bx, by, bz).is_solid() {
-                    self.arrows[a_idx].in_ground = true;
-                    self.arrows[a_idx].velocity = Vec3::ZERO;
-                } else if self.arrows[a_idx].from_player {
-                    let mut hit_mob = false;
-                    let mut m_idx = 0;
-                    let damage = self.arrows[a_idx].damage;
-                    while m_idx < self.mobs.len() {
-                        let mob = &self.mobs[m_idx];
-                        let feet = mob.position;
-                        let hw = mob.half_width();
-                        let h = mob.height();
-
-                        let in_x = next_pos.x >= feet.x - hw && next_pos.x <= feet.x + hw;
-                        let in_z = next_pos.z >= feet.z - hw && next_pos.z <= feet.z + hw;
-                        let in_y = next_pos.y >= feet.y && next_pos.y <= feet.y + h;
-
-                        if in_x && in_y && in_z {
-                            hit_mob = true;
-                            for _ in 0..4 {
-                                self.particles.push(crate::block::Particle {
-                                    position: next_pos,
-                                    velocity: Vec3::new(
-                                        (rand::random::<f32>() - 0.5) * 2.0,
-                                        rand::random::<f32>() * 2.0,
-                                        (rand::random::<f32>() - 0.5) * 2.0,
-                                    ),
-                                    color: glam::Vec4::new(0.8, 0.1, 0.1, 0.9),
-                                    life: 0.3,
-                                    max_life: 0.3,
-                                    scale: 0.08,
-                                });
-                            }
-                            if self.mobs[m_idx].take_damage(damage) {
-                                let dead_mob = self.mobs.swap_remove(m_idx);
-                                self.finish_mob_death(dead_mob);
-                            }
-                            break;
-                        }
-                        m_idx += 1;
-                    }
-                    if hit_mob {
-                        remove_arrow = true;
-                    } else {
-                        self.arrows[a_idx].position = next_pos;
-                    }
-                } else if Self::player_aabb_hit(player_pos, next_pos) {
-                    self.pending_hurt += self.arrows[a_idx].damage.round() as i32;
-                    remove_arrow = true;
-                } else {
-                    self.arrows[a_idx].position = next_pos;
-                }
-            }
-
-            if remove_arrow {
-                self.arrows.swap_remove(a_idx);
-            } else {
-                a_idx += 1;
-            }
-        }
+        self.update_arrows(player_pos, _time);
 
         // --- XP Orb Physics & Attraction ---
         let mut collected_xp = 0;
@@ -1982,7 +2085,19 @@ impl World {
         let mut mobs = std::mem::take(&mut self.mobs);
         let mut despawned_villages = Vec::new();
         let mut despawned_natural = Vec::new();
-        mobs.retain(|mob| {
+        mobs.retain_mut(|mob| {
+            if self.difficulty == crate::skeleton_ai::Difficulty::Peaceful
+                && mob.kind.species().temper == crate::mob_catalog::Temper::Hostile
+            {
+                return false;
+            }
+            if mob.uses_skeleton_ai() {
+                return !mob.skeleton.should_despawn(
+                    mob.position.distance(player_pos),
+                    dt,
+                    rand::random(),
+                );
+            }
             // Java animals do not despawn. Village mobs stay farther out.
             if mob.is_animal() {
                 return true;
@@ -2018,6 +2133,8 @@ impl World {
             .map(|m| (m.kind, m.position.x, m.position.z))
             .collect();
         self.separate_mobs(&mut mobs);
+        let peers: Vec<skeletons::CreatureSnapshot> = mobs.iter().map(Into::into).collect();
+        let mut mob_hits = Vec::new();
         for index in 0..mobs.len() {
             let (before, rest) = mobs.split_at_mut(index);
             let (mob, after) = rest.split_first_mut().unwrap();
@@ -2032,7 +2149,17 @@ impl World {
 
             let previous = mob.position;
             mob.anger_time = (mob.anger_time - dt).max(0.0);
-            if mob.is_animal() {
+            mob.attack_cooldown = (mob.attack_cooldown - dt).max(0.0);
+            let skeleton = mob.uses_skeleton_ai();
+            if skeleton {
+                if self.difficulty == crate::skeleton_ai::Difficulty::Peaceful {
+                    mob.health = 0.0;
+                    continue;
+                }
+                if let Some(hit) = self.tick_skeleton(mob, &peers, player_pos, dt) {
+                    mob_hits.push(hit);
+                }
+            } else if mob.is_animal() {
                 let parent_xz = if mob.is_baby() {
                     parents
                         .iter()
@@ -2069,12 +2196,6 @@ impl World {
                 }
             }
 
-            mob.attack_cooldown = (mob.attack_cooldown - dt).max(0.0);
-            let to_player = Vec3::new(
-                player_pos.x - mob.position.x,
-                0.0,
-                player_pos.z - mob.position.z,
-            );
             let player_dist = mob.position.distance(player_pos);
             let attack_origin = mob.position + Vec3::Y * mob.height() * 0.75;
             let attack_target = player_pos + Vec3::Y * 1.2;
@@ -2085,9 +2206,8 @@ impl World {
                 && !self
                     .raycast(attack_origin, attack_line, attack_line.length())
                     .hit;
-            if mob.is_hostile() && player_dist < 16.0 && player_dist > 0.05 {
-                mob.yaw = to_player.z.atan2(to_player.x);
-                mob.walk_speed = mob.base_speed();
+            if !skeleton && mob.is_hostile() && player_dist < 16.0 && player_dist > 0.05 {
+                let ranged_shot = mob.track_combat_target(player_pos, can_see_player);
                 if mob.kind == MobKind::Creeper && player_dist < 2.2 && can_see_player {
                     mob.walk_speed = 0.0;
                     if mob.attack_cooldown <= 0.0 {
@@ -2103,26 +2223,23 @@ impl World {
                     self.pending_hurt += mob.kind.species().damage;
                     mob.attack_cooldown = 1.0;
                     mob.animation.attack();
-                } else if mob.is_ranged()
-                    && player_dist < 12.0
-                    && can_see_player
-                    && mob.attack_cooldown <= 0.0
-                {
+                } else if ranged_shot {
                     let origin = mob.position + Vec3::new(0.0, 1.4, 0.0);
                     let target = player_pos + Vec3::new(0.0, 1.4, 0.0);
                     let dir = (target - origin).normalize_or_zero();
                     if dir.length_squared() > 0.01 {
                         self.arrows.push(crate::block::ArrowEntity {
                             position: origin,
-                            velocity: dir * 18.0,
+                            velocity: crate::mob::aimed_arrow_velocity(target - origin),
                             life: 8.0,
                             in_ground: false,
                             damage: 4.0,
                             is_critical: false,
                             from_player: false,
+                            owner: Some(mob.id),
                         });
                     }
-                    mob.attack_cooldown = 2.0;
+                    mob.attack_cooldown = mob.ranged_attack_interval();
                     mob.animation.attack();
                 }
             }
@@ -2250,6 +2367,15 @@ impl World {
         }
 
         let mut births = Vec::new();
+        for (id, damage, attacker) in mob_hits {
+            if let Some(victim) = mobs.iter_mut().find(|m| m.id == id && m.health > 0.0) {
+                victim.skeleton.hurt_by(
+                    crate::skeleton_ai::TargetId::Mob(attacker),
+                    Some(MobKind::Skeleton),
+                );
+                victim.take_combat_damage(damage);
+            }
+        }
         for i in 0..mobs.len() {
             if !mobs[i].is_animal() || mobs[i].is_baby() || mobs[i].animal.love_time <= 0.0 {
                 continue;
@@ -2277,7 +2403,19 @@ impl World {
         }
         births.truncate(MOB_CAP.saturating_sub(mobs.len()));
         mobs.extend(births);
-        mobs.retain(|mob| mob.health > 0.0);
+        let mut dead = 0;
+        while dead < mobs.len() {
+            if mobs[dead].health <= 0.0 {
+                let corpse = mobs.swap_remove(dead);
+                if self.difficulty != crate::skeleton_ai::Difficulty::Peaceful
+                    && corpse.kind != MobKind::Creeper
+                {
+                    self.finish_mob_death(corpse);
+                }
+            } else {
+                dead += 1;
+            }
+        }
         self.separate_mobs(&mut mobs);
         self.mobs = mobs;
         let player_chunk = (
@@ -2286,7 +2424,10 @@ impl World {
         );
         self.try_spawn_natural_mobs(player_chunk.0, player_chunk.1);
         self.night_spawn_timer -= dt;
-        if self.day_time >= 600.0 && self.night_spawn_timer <= 0.0 {
+        if self.day_time >= 600.0
+            && self.night_spawn_timer <= 0.0
+            && self.difficulty != crate::skeleton_ai::Difficulty::Peaceful
+        {
             self.night_spawn_timer = 5.0;
             if self.mobs.len() < MOB_CAP && self.mobs.iter().filter(|m| m.is_hostile()).count() < 16
             {
@@ -2520,7 +2661,11 @@ impl World {
             atlas.bind(0);
         }
         let (tx, _) = crate::fire::atlas_frame(time);
-        let mesh = &self.fire_meshes[tx as usize];
+        let mesh = &self
+            .effects
+            .as_ref()
+            .expect("rendering requires effect meshes")
+            .fire[tx as usize];
         renderer::set_blend(true);
         renderer::set_depth_write(false);
         shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);

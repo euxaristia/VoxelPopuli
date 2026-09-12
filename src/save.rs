@@ -8,12 +8,67 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 8] = b"VPOPSAV\0";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const MAX_EDITS: usize = 10_000_000;
 const MAX_CONTAINERS: usize = 100_000;
 const MAX_PENDING_STACKS: usize = 1_000_000;
 const MAX_PATH_BYTES: usize = 32 * 1024;
 pub const SAVE_FILE: &str = "world.vps";
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkeletonSave {
+    pub position: Vec3,
+    pub home: Vec3,
+    pub health: f32,
+    pub yaw: f32,
+    pub converted: bool,
+    pub melee: bool,
+    pub persistent: bool,
+    pub weapon: Option<ItemStack>,
+    pub armor: [Option<ItemStack>; 4],
+    pub picked_up: [bool; 5],
+    pub powder_time: f32,
+    pub fire_time: f32,
+}
+
+impl SkeletonSave {
+    fn capture(mob: &crate::mob::Mob) -> Self {
+        Self {
+            position: mob.position,
+            home: mob.home,
+            health: mob.health,
+            yaw: mob.yaw,
+            converted: mob.skeleton.converted,
+            melee: mob.skeleton.melee,
+            persistent: mob.skeleton.persistent,
+            weapon: mob.skeleton.weapon,
+            armor: mob.skeleton.armor,
+            picked_up: mob.skeleton.picked_up,
+            powder_time: mob.skeleton.powder_time,
+            fire_time: mob.skeleton.fire_time,
+        }
+    }
+
+    pub fn restore(&self) -> crate::mob::Mob {
+        let kind = if self.converted {
+            crate::mob::MobKind::Stray
+        } else {
+            crate::mob::MobKind::Skeleton
+        };
+        let mut mob = crate::mob::Mob::new(kind, self.position, self.home, 0);
+        mob.health = self.health;
+        mob.yaw = self.yaw;
+        mob.skeleton.converted = self.converted;
+        mob.skeleton.melee = self.melee;
+        mob.skeleton.persistent = self.persistent;
+        mob.skeleton.weapon = self.weapon;
+        mob.skeleton.armor = self.armor;
+        mob.skeleton.picked_up = self.picked_up;
+        mob.skeleton.powder_time = self.powder_time;
+        mob.skeleton.fire_time = self.fire_time;
+        mob
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GameSettings {
@@ -123,6 +178,8 @@ impl PlayerState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameSave {
+    pub difficulty: crate::skeleton_ai::Difficulty,
+    pub skeletons: Vec<SkeletonSave>,
     pub seed: u64,
     pub day_time: f32,
     player: PlayerState,
@@ -166,6 +223,13 @@ impl GameSave {
         containers.sort_unstable_by_key(|(position, _)| *position);
         Ok(Self {
             seed: world.seed,
+            difficulty: world.difficulty,
+            skeletons: world
+                .mobs
+                .iter()
+                .filter(|m| m.uses_skeleton_ai() && m.health > 0.0)
+                .map(SkeletonSave::capture)
+                .collect(),
             day_time: world.day_time,
             player: PlayerState::capture(player),
             inventory: *inventory,
@@ -314,6 +378,29 @@ impl GameSave {
             put_vec3(&mut out, drop.position);
             put_vec3(&mut out, drop.velocity);
             put_f32(&mut out, drop.pickup_delay);
+        }
+        out.push(self.difficulty as u8);
+        if self.skeletons.len() > crate::world::MOB_CAP {
+            return Err(invalid("too many skeletons"));
+        }
+        put_u32(&mut out, self.skeletons.len() as u32);
+        for mob in &self.skeletons {
+            put_vec3(&mut out, mob.position);
+            put_vec3(&mut out, mob.home);
+            put_f32(&mut out, mob.health);
+            put_f32(&mut out, mob.yaw);
+            put_bool(&mut out, mob.converted);
+            put_bool(&mut out, mob.melee);
+            put_bool(&mut out, mob.persistent);
+            put_stack(&mut out, mob.weapon)?;
+            for stack in mob.armor {
+                put_stack(&mut out, stack)?;
+            }
+            for picked in mob.picked_up {
+                put_bool(&mut out, picked);
+            }
+            put_f32(&mut out, mob.powder_time);
+            put_f32(&mut out, mob.fire_time);
         }
         Ok(out)
     }
@@ -474,11 +561,79 @@ impl GameSave {
                 });
             }
         }
+        let difficulty = if version >= 3 {
+            crate::skeleton_ai::Difficulty::from_byte(reader.u8()?)
+                .ok_or_else(|| invalid("invalid difficulty"))?
+        } else {
+            Default::default()
+        };
+        let mut skeletons = Vec::new();
+        if version >= 3 {
+            let count = reader.u32()? as usize;
+            if count > crate::world::MOB_CAP {
+                return Err(invalid("too many skeletons"));
+            }
+            for _ in 0..count {
+                let position = reader.vec3()?;
+                let home = reader.vec3()?;
+                let health = reader.f32()?;
+                let yaw = reader.f32()?;
+                let converted = reader.bool()?;
+                let melee = reader.bool()?;
+                let persistent = reader.bool()?;
+                let weapon = reader.stack()?;
+                let mut armor = [None; 4];
+                for (index, slot) in armor.iter_mut().enumerate() {
+                    *slot = reader.stack()?;
+                    if slot.is_some_and(|s| {
+                        s.count != 1
+                            || crate::item::armor_properties(s.block)
+                                .is_none_or(|p| p.slot as usize != index)
+                    }) {
+                        return Err(invalid("invalid skeleton armor"));
+                    }
+                }
+                let mut picked_up = [false; 5];
+                for picked in &mut picked_up {
+                    *picked = reader.bool()?;
+                }
+                let powder_time = reader.f32()?;
+                let fire_time = reader.f32()?;
+                if !(0.0..=20.0).contains(&health)
+                    || health == 0.0
+                    || !(0.0..=20.0).contains(&powder_time)
+                    || !(0.0..=8.0).contains(&fire_time)
+                    || !(1.0..crate::chunk::CHUNK_HEIGHT as f32).contains(&position.y)
+                    || position.x.abs() > 30_000_000.0
+                    || position.z.abs() > 30_000_000.0
+                    || home.abs().max_element() > 30_000_000.0
+                    || weapon.is_some_and(|s| s.count != 1)
+                {
+                    return Err(invalid("invalid skeleton state"));
+                }
+                skeletons.push(SkeletonSave {
+                    position,
+                    home,
+                    health,
+                    yaw,
+                    converted,
+                    melee,
+                    persistent,
+                    weapon,
+                    armor,
+                    picked_up,
+                    powder_time,
+                    fire_time,
+                });
+            }
+        }
         if reader.remaining() != 0 {
             return Err(invalid("trailing data in save file"));
         }
         Ok(Self {
             seed,
+            difficulty,
+            skeletons,
             day_time,
             player: PlayerState {
                 position,
@@ -725,6 +880,8 @@ mod tests {
         });
         GameSave {
             seed: 42,
+            difficulty: Default::default(),
+            skeletons: Vec::new(),
             day_time: 570.0,
             player: PlayerState {
                 position: Vec3::new(-2.5, 70.0, 18.25),
@@ -773,6 +930,48 @@ mod tests {
     }
 
     #[test]
+    fn version_two_saves_default_to_normal_and_no_saved_skeletons() {
+        let save = sample_save();
+        let mut bytes = save.encode().unwrap();
+        bytes.truncate(bytes.len() - 5);
+        bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(GameSave::decode(&bytes).unwrap(), save);
+    }
+
+    #[test]
+    fn save_preserves_skeleton_equipment_conversion_and_difficulty() {
+        let mut save = sample_save();
+        save.difficulty = crate::skeleton_ai::Difficulty::Hard;
+        let mut mob = crate::mob::Mob::new(
+            crate::mob::MobKind::Stray,
+            Vec3::new(2.0, 61.0, 3.0),
+            Vec3::ZERO,
+            0,
+        );
+        mob.skeleton.converted = true;
+        mob.skeleton
+            .equip(ItemStack::new_tool(BlockType::IronSword))
+            .unwrap();
+        mob.skeleton
+            .equip(ItemStack::new(BlockType::IronHelmet, 1))
+            .unwrap();
+        mob.skeleton.melee = true;
+        mob.skeleton.powder_time = 12.0;
+        mob.health = 9.0;
+        save.skeletons.push(SkeletonSave::capture(&mob));
+        let decoded = GameSave::decode(&save.encode().unwrap()).unwrap();
+        assert_eq!(decoded, save);
+        let restored = decoded.skeletons[0].restore();
+        assert!(
+            restored.uses_skeleton_ai() && restored.skeleton.melee && restored.skeleton.persistent
+        );
+        assert_eq!(restored.skeleton.weapon, mob.skeleton.weapon);
+        assert_eq!(restored.health, 9.0);
+        save.skeletons[0].armor[0] = Some(ItemStack::new(BlockType::Stone, 1));
+        assert!(GameSave::decode(&save.encode().unwrap()).is_err());
+    }
+
+    #[test]
     fn save_preserves_containers_open_crafting_cursor_and_overflow() {
         let mut save = sample_save();
         let mut furnace = Furnace {
@@ -816,7 +1015,7 @@ mod tests {
         let save = sample_save();
         let mut bytes = save.encode().unwrap();
         // Empty version 2 extension: cursor, crafting, counts, and survival state.
-        bytes.truncate(bytes.len() - 31);
+        bytes.truncate(bytes.len() - 36);
         bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
         assert_eq!(GameSave::decode(&bytes).unwrap(), save);
     }

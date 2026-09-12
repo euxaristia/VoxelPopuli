@@ -124,6 +124,11 @@ impl World {
 
     /// Natural encounters and catalogue summons share collision and capacity checks.
     pub fn spawn_mob(&mut self, kind: MobKind, pos: Vec3, variant: u8) -> Result<(), &'static str> {
+        if self.difficulty == crate::skeleton_ai::Difficulty::Peaceful
+            && kind.species().temper == Temper::Hostile
+        {
+            return Err("Hostile creatures cannot spawn on Peaceful difficulty.");
+        }
         if self.mobs.len() >= MOB_CAP {
             return Err("Creature limit reached (48).");
         }
@@ -221,6 +226,8 @@ impl World {
                 .copied()
                 .filter(|&k| {
                     can_spawn(k, biome, water, false, self.day_time >= 600.0)
+                        && (self.difficulty != crate::skeleton_ai::Difficulty::Peaceful
+                            || k.species().temper != Temper::Hostile)
                         && (!hostiles_only || k.species().temper == Temper::Hostile)
                 })
                 .collect();

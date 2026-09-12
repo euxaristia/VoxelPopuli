@@ -143,7 +143,7 @@ species! {
     Villager, "Villager", "villager", Villager, Walk, Passive, Village, 1.8, 0.56, 20.0, 1.7, 0, [153,107,70], [203,157,116];
     Golem, "Iron Golem", "iron_golem", Golem, Walk, Neutral, Village, 2.5, 1.1, 100.0, 1.15, 12, [203,202,181], [74,115,65];
     Zombie, "Zombie", "zombie", Person, Walk, Hostile, Night, 1.95, 0.6, 20.0, 1.5, 3, [55,139,144], [100,139,74];
-    Skeleton, "Skeleton", "skeleton", Person, Walk, Hostile, Night, 1.99, 0.6, 20.0, 1.6, 4, [210,207,185], [105,101,88];
+    Skeleton, "Skeleton", "skeleton", Person, Walk, Hostile, Night, 1.9, 0.6, 20.0, 2.6875, 2, [210,207,185], [105,101,88];
     Creeper, "Creeper", "creeper", Creeper, Walk, Hostile, Night, 1.7, 0.6, 20.0, 1.4, 0, [84,159,66], [37,69,35];
     Pig, "Pig", "pig", Grazer, Walk, Passive, Grassland, 0.9, 0.9, 10.0, 2.6875, 0, [224,153,157], [177,104,118];
     Cow, "Cow", "cow", Grazer, Walk, Passive, Grassland, 1.4, 0.9, 10.0, 2.15, 0, [87,64,49], [231,226,209];

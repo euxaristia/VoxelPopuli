@@ -32,6 +32,7 @@ mod png_io;
 mod profiler;
 mod renderer;
 mod save;
+mod skeleton_ai;
 mod smoke;
 mod vibrant;
 mod village;
@@ -561,6 +562,8 @@ async fn run() {
     if let Some(save) = &loaded_save {
         world.install_edits(&save.edits);
         world.day_time = save.day_time;
+        world.difficulty = save.difficulty;
+        world.restore_skeletons(&save.skeletons);
         world.containers = save.containers.iter().cloned().collect();
         world.pending_stacks = save.pending_stacks.clone();
         world.dropped_items = save.dropped_items.clone();
@@ -1272,6 +1275,9 @@ async fn run() {
                                 PauseClick::ToggleFancy => {
                                     fancy_gfx_setting = !fancy_gfx_setting;
                                 }
+                                PauseClick::SetDifficulty(difficulty) => {
+                                    world.difficulty = difficulty;
+                                }
                                 PauseClick::ExportJava => {
                                     #[cfg(target_arch = "wasm32")]
                                     {
@@ -1390,6 +1396,7 @@ async fn run() {
                                             damage: (bow_charge * 9.0 + 1.0).round(),
                                             is_critical: bow_charge >= 1.0,
                                             from_player: true,
+                                            owner: None,
                                         });
                                     }
                                 }
@@ -1665,6 +1672,8 @@ async fn run() {
             let held = inv_slots[player.selected_slot]
                 .map(|s| s.block)
                 .unwrap_or(BlockType::Air);
+            world.player_targetable = !player.sandbox && player.health > 0;
+            world.player_sneaking = is_sneaking;
             let earned_xp = world.update(player.position, delta_time as f32, held);
             profiler.world_update_ms = t_wu.elapsed().as_secs_f32() * 1000.0;
             if earned_xp > 0 {
@@ -3167,6 +3176,7 @@ async fn run() {
                     render_dist_setting,
                     fov_setting,
                     fancy_gfx_setting,
+                    world.difficulty,
                 );
                 if player.sandbox {
                     draw_text(
