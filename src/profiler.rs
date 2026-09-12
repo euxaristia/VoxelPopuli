@@ -1,4 +1,5 @@
-use std::time::{Duration, Instant};
+use crate::platform::Instant;
+use std::time::Duration;
 
 pub struct FrameProfiler {
     pub frame_history: [f32; 120], // Frame times in ms (last 120 frames)

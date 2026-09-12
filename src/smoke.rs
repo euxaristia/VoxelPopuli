@@ -1,7 +1,11 @@
 use crate::block::BlockType;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::container::{Container, Furnace};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::inventory::{INVENTORY_SLOT_COUNT, ItemStack};
 use crate::renderer::{self, RenderTexture2D, Shader, Texture2D};
+#[cfg(target_arch = "wasm32")]
+use crate::web_window as glfw;
 
 /// An opaque near-plane surface must not erase the arm or held item.
 pub fn hand_occlusion(
@@ -505,6 +509,7 @@ pub fn capture_world(scene: &RenderTexture2D, mode: &str) -> Result<(), String> 
 }
 
 /// Render the production container UI without opening a game or touching a save.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn container_ui() -> Result<(), String> {
     let mut glfw = glfw::init(glfw::log_errors).map_err(|e| e.to_string())?;
     glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
@@ -612,6 +617,7 @@ pub fn container_ui() -> Result<(), String> {
 }
 
 /// Captures every production model with animated and resting poses.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn mobs() -> Result<(), String> {
     use crate::mob::{Mob, MobKind};
     use glam::{Mat4, Vec3, Vec4};

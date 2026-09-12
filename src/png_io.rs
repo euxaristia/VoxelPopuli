@@ -1,5 +1,5 @@
 //! PNG-only asset and screenshot IO. No resizing or color-management engine.
-use std::io::{BufRead, BufReader, BufWriter, Seek};
+use std::io::{BufRead, BufWriter, Seek};
 use std::path::Path;
 
 pub struct Image {
@@ -33,8 +33,8 @@ impl Image {
 }
 
 pub fn load(path: impl AsRef<Path>) -> Result<Image, String> {
-    decode(BufReader::new(
-        std::fs::File::open(path).map_err(|e| e.to_string())?,
+    decode(std::io::Cursor::new(
+        crate::platform::read(path).map_err(|e| e.to_string())?,
     ))
 }
 

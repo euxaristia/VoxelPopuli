@@ -218,7 +218,7 @@ impl GameSave {
         Self::decode(&std::fs::read(path)?)
     }
 
-    fn encode(&self) -> io::Result<Vec<u8>> {
+    pub(crate) fn encode(&self) -> io::Result<Vec<u8>> {
         if self.edits.len() > MAX_EDITS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -318,7 +318,7 @@ impl GameSave {
         Ok(out)
     }
 
-    fn decode(bytes: &[u8]) -> io::Result<Self> {
+    pub(crate) fn decode(bytes: &[u8]) -> io::Result<Self> {
         let mut reader = Reader::new(bytes);
         if reader.take(MAGIC.len())? != MAGIC {
             return Err(invalid("not a VoxelPopuli save file"));

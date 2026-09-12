@@ -3,7 +3,10 @@ use crate::item;
 use crate::renderer::{Mesh, Shader, Texture2D};
 use glam::{Vec2, Vec4};
 
-const RENDER_DISTANCE_OPTIONS: [i32; 4] = [4, 8, 12, 16];
+#[cfg(not(target_arch = "wasm32"))]
+const RENDER_DISTANCE_OPTIONS: &[i32] = &[4, 8, 12, 16];
+#[cfg(target_arch = "wasm32")]
+const RENDER_DISTANCE_OPTIONS: &[i32] = &[4, 6, 8];
 
 const VERTICES_PER_QUAD: usize = 6;
 
@@ -176,7 +179,9 @@ pub fn pause_click(menu: PauseSubMenu, sw: f32, sh: f32, mx: f32, my: f32) -> Op
         }
         PauseSubMenu::WorldInfo => {
             let (panel_x, panel_y, _, _) = world_info_panel(sw, sh);
-            if in_rect(mx, my, panel_x + 40.0, panel_y + 220.0, 320.0, 44.0) {
+            if !cfg!(target_arch = "wasm32")
+                && in_rect(mx, my, panel_x + 40.0, panel_y + 220.0, 320.0, 44.0)
+            {
                 return Some(PauseClick::ExportJava);
             }
             if in_rect(mx, my, panel_x + 220.0, panel_y + 380.0, 240.0, 44.0) {
@@ -909,7 +914,11 @@ pub fn draw_pause_menu(
             let labels = [
                 "Resume Game",
                 "Settings",
-                "World Info & Export",
+                if cfg!(target_arch = "wasm32") {
+                    "World Info"
+                } else {
+                    "World Info & Export"
+                },
                 "Profile & Skins",
                 "Save & Quit",
             ];
@@ -1337,7 +1346,11 @@ pub fn draw_pause_menu(
             );
             draw_text(
                 font_tex,
-                "Format: Minecraft Java 1.17 MCA (Anvil 16x16x256)",
+                if cfg!(target_arch = "wasm32") {
+                    "Saved locally in this browser"
+                } else {
+                    "Format: Minecraft Java 1.17 MCA (Anvil 16x16x256)"
+                },
                 panel_x + 40.0,
                 panel_y + 170.0,
                 16.0,
@@ -1354,7 +1367,11 @@ pub fn draw_pause_menu(
                 panel_y + 220.0,
                 320.0,
                 44.0,
-                "Export Java 1.17 World",
+                if cfg!(target_arch = "wasm32") {
+                    "Java export: desktop only"
+                } else {
+                    "Export Java 1.17 World"
+                },
                 sw,
                 sh,
             );

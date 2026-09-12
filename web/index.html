@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1e1e1e">
+  <title>VoxelPopuli</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <header><h1>VoxelPopuli</h1><div><button id="save" type="button">Save world</button><button id="fullscreen" type="button">Fullscreen</button></div></header>
+    <section id="game" aria-label="VoxelPopuli game">
+      <canvas id="canvas" tabindex="0" aria-label="Game world. Use WASD to move and the mouse to look."></canvas>
+      <p id="status" role="status">Loading VoxelPopuli…</p>
+      <button id="enter" type="button" hidden>Click to play</button>
+    </section>
+    <footer>
+      <p>WASD move · Mouse look · Space jump · Shift sneak · Ctrl sprint · Left click mine · Right click place · E inventory · 1–9 hotbar · Esc pause</p>
+      <p id="save-status" role="status">Worlds save in this browser every 30 seconds and when paused. Use Save world before closing the tab.</p>
+      <p class="hint">Keyboard and mouse required. Clearing this site’s browser data deletes its saved world.</p>
+    </footer>
+  </main>
+  <script type="module" src="./boot.js"></script>
+</body>
+</html>

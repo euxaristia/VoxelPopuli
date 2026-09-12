@@ -1,3 +1,10 @@
+#[cfg(target_arch = "wasm32")]
+use crate::web_window as glfw;
+mod platform;
+#[cfg(target_arch = "wasm32")]
+mod web;
+#[cfg(target_arch = "wasm32")]
+mod web_window;
 use glfw::{Action, GamepadAxis, GamepadButton, JoystickId, Key};
 mod atlas;
 mod atlas_table;
@@ -43,6 +50,7 @@ use profiler::FrameProfiler;
 // scratch buffers, up to 64x/frame during chunk streaming -- see the
 // flying-forward stutter investigation). mimalloc's thread-local free
 // lists make that churn far cheaper.
+#[cfg(not(target_arch = "wasm32"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -127,6 +135,7 @@ mod render_target_tests {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 struct WindowState {
     width: u32,
@@ -136,6 +145,7 @@ struct WindowState {
     maximized: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl WindowState {
     fn load() -> Self {
         let path = "window.cfg";
@@ -186,7 +196,7 @@ impl WindowState {
 }
 
 fn load_shader(path: &str) -> String {
-    std::fs::read_to_string(format!("assets/shaders/{path}"))
+    platform::read_to_string(format!("assets/shaders/{path}"))
         .unwrap_or_else(|e| panic!("Failed to load shader {path}: {e}"))
 }
 
@@ -204,7 +214,7 @@ fn seed_from_text(text: &str) -> i64 {
 }
 
 fn resolve_world_seed() -> i64 {
-    let mut args = std::env::args().skip(1);
+    let mut args = platform::args().into_iter().skip(1);
     while let Some(arg) = args.next() {
         if let Some(seed) = arg.strip_prefix("--seed=") {
             return seed_from_text(seed);
@@ -329,9 +339,23 @@ fn save_path_from_args(args: &[String]) -> Result<std::path::PathBuf, String> {
     Ok(std::path::PathBuf::from(SAVE_FILE))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
+    renderer::block_on(run());
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    console_error_panic_hook::set_once();
+    wasm_bindgen_futures::spawn_local(async {
+        run().await;
+    });
+}
+
+async fn run() {
     // Entry point
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = platform::args();
+    #[cfg(not(target_arch = "wasm32"))]
     if args.iter().any(|arg| arg == "--smoke-test-mobs") {
         if let Err(error) = smoke::mobs() {
             eprintln!("Creature smoke test failed: {error}");
@@ -339,6 +363,7 @@ fn main() {
         }
         return;
     }
+    #[cfg(not(target_arch = "wasm32"))]
     if args.iter().any(|arg| arg == "--smoke-test-ui") {
         if let Err(error) = smoke::container_ui() {
             eprintln!("Container UI smoke test failed: {error}");
@@ -363,10 +388,14 @@ fn main() {
         if (smoke_world && !reset_spawn && !smoke_saved) || args_force_new_world(&args) {
             None
         } else {
-            match GameSave::read_from(&save_path) {
+            match load_game_save(&save_path).await {
                 Ok(save) => Some(save),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => {
+                    #[cfg(target_arch = "wasm32")]
+                    web::error(&format!(
+                        "Could not load your world: {error}. Your save has been preserved."
+                    ));
                     eprintln!(
                         "Could not load {}: {error}. The existing save has been preserved.",
                         save_path.display()
@@ -432,60 +461,74 @@ fn main() {
         }
     }
 
-    let state = if smoke_world {
-        WindowState {
-            width: 2560,
-            height: 1351,
-            x: 0,
-            y: 0,
-            maximized: false,
-        }
-    } else {
-        WindowState::load()
-    };
-    let window_title = format!("VoxelPopuli Rust - Seed {world_seed}");
-    let mut glfw = glfw::init(glfw::log_errors).unwrap();
-    // Add DualSense mappings for Linux
-    glfw.update_gamepad_mappings("030000004c050000e60d000011010000,PS5 Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b10,leftshoulder:b4,leftstick:b11,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b12,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b2,y:b3,platform:Linux,\n\
+    #[cfg(not(target_arch = "wasm32"))]
+    let (state, mut glfw, mut window, events, _renderer) = {
+        let state = if smoke_world {
+            WindowState {
+                width: 2560,
+                height: 1351,
+                x: 0,
+                y: 0,
+                maximized: false,
+            }
+        } else {
+            WindowState::load()
+        };
+        let window_title = format!("VoxelPopuli Rust - Seed {world_seed}");
+        let mut glfw = glfw::init(glfw::log_errors).unwrap();
+        // Add DualSense mappings for Linux
+        glfw.update_gamepad_mappings("030000004c050000e60d000011010000,PS5 Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b10,leftshoulder:b4,leftstick:b11,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b12,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b2,y:b3,platform:Linux,\n\
                                   050000004c050000e60d0000ff070000,PS5 Controller,a:b0,b:b1,back:b8,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b10,leftshoulder:b4,leftstick:b11,lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b12,righttrigger:a4,rightx:a2,righty:a5,start:b9,x:b2,y:b3,platform:Linux,");
-    // wgpu owns the GPU; tell GLFW not to create a GL context.
-    glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
-    glfw.window_hint(glfw::WindowHint::AutoIconify(false));
-    if smoke_world {
-        glfw.window_hint(glfw::WindowHint::Visible(false));
-    }
-    let (mut window, events) = glfw
-        .create_window(
-            state.width,
-            state.height,
-            &window_title,
-            glfw::WindowMode::Windowed,
-        )
-        .expect("Failed to create GLFW window.");
-    window.set_pos(state.x, state.y);
-    if state.maximized {
-        window.maximize();
-    }
-    window.set_key_polling(true);
-    window.set_cursor_pos_polling(true);
-    window.set_size_polling(true);
-    window.set_mouse_button_polling(true);
-    window.set_scroll_polling(true);
-    if !smoke_world {
-        window.set_cursor_mode(glfw::CursorMode::Disabled);
-    }
-    glfw.with_primary_monitor(|_, monitor| {
-        if let Some(monitor) = monitor
-            && let Some(mode) = monitor.get_video_mode()
-        {
-            println!(
-                "Monitor: {}x{} @ {} Hz",
-                mode.width, mode.height, mode.refresh_rate
-            );
+        // wgpu owns the GPU; tell GLFW not to create a GL context.
+        glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
+        glfw.window_hint(glfw::WindowHint::AutoIconify(false));
+        if smoke_world {
+            glfw.window_hint(glfw::WindowHint::Visible(false));
         }
-    });
-    let (init_fb_w, init_fb_h) = window.get_framebuffer_size();
-    let _renderer = renderer::init(&*window, init_fb_w, init_fb_h);
+        let (mut window, events) = glfw
+            .create_window(
+                state.width,
+                state.height,
+                &window_title,
+                glfw::WindowMode::Windowed,
+            )
+            .expect("Failed to create GLFW window.");
+        window.set_pos(state.x, state.y);
+        if state.maximized {
+            window.maximize();
+        }
+        window.set_key_polling(true);
+        window.set_cursor_pos_polling(true);
+        window.set_size_polling(true);
+        window.set_mouse_button_polling(true);
+        window.set_scroll_polling(true);
+        if !smoke_world {
+            window.set_cursor_mode(glfw::CursorMode::Disabled);
+        }
+        glfw.with_primary_monitor(|_, monitor| {
+            if let Some(monitor) = monitor
+                && let Some(mode) = monitor.get_video_mode()
+            {
+                println!(
+                    "Monitor: {}x{} @ {} Hz",
+                    mode.width, mode.height, mode.refresh_rate
+                );
+            }
+        });
+        let (init_fb_w, init_fb_h) = window.get_framebuffer_size();
+        let guard = renderer::init(&*window, init_fb_w, init_fb_h);
+        (state, glfw, window, events, guard)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let (mut glfw, mut window, events) = web_window::create();
+    #[cfg(target_arch = "wasm32")]
+    let _renderer = match renderer::init_web(window.canvas()).await {
+        Ok(guard) => guard,
+        Err(error) => {
+            web::error(&error);
+            return;
+        }
+    };
     let mut world = World::new(world_seed as u64);
     if let Some(path) = import_world_path.clone() {
         world.set_import_world(path);
@@ -512,25 +555,35 @@ fn main() {
         }
         None => println!("No village within 8 regions of spawn for this seed"),
     }
-    let shader = Shader::new(&load_shader("ps1.wgsl")).expect("Failed to compile PS1 shader");
+    let shader = Shader::new_async(&load_shader("ps1.wgsl"))
+        .await
+        .expect("Failed to compile PS1 shader");
     // Deferred geometry pass: same uniforms as ps1, four color attachments.
-    let gbuffer_shader = Shader::with_outputs(&load_shader("gbuffer.wgsl"), 4)
+    let gbuffer_shader = Shader::with_outputs_async(&load_shader("gbuffer.wgsl"), 4)
+        .await
         .expect("Failed to compile G-buffer shader");
     let vibrant_pack = vibrant::VibrantPack::load_default();
     for warning in &vibrant_pack.warnings {
         eprintln!("Vibrant Visuals pack: {warning}");
     }
-    let water_shader =
-        Shader::new(&load_shader("water.wgsl")).expect("Failed to compile water shader");
-    let flat_shader =
-        Shader::new(&load_shader("flat.wgsl")).expect("Failed to compile FLAT shader");
-    let ui_shader = Shader::new(&load_shader("ui.wgsl")).expect("Failed to compile UI shader");
-    let texture_shader =
-        Shader::new(&load_shader("texture.wgsl")).expect("Failed to compile TEXTURE shader");
-    let texture_ui_shader =
-        Shader::new(&load_shader("ui_texture.wgsl")).expect("Failed to compile UI TEXTURE shader");
-    let color_shader =
-        Shader::new(&load_shader("color.wgsl")).expect("Failed to compile COLOR shader");
+    let water_shader = Shader::new_async(&load_shader("water.wgsl"))
+        .await
+        .expect("Failed to compile water shader");
+    let flat_shader = Shader::new_async(&load_shader("flat.wgsl"))
+        .await
+        .expect("Failed to compile FLAT shader");
+    let ui_shader = Shader::new_async(&load_shader("ui.wgsl"))
+        .await
+        .expect("Failed to compile UI shader");
+    let texture_shader = Shader::new_async(&load_shader("texture.wgsl"))
+        .await
+        .expect("Failed to compile TEXTURE shader");
+    let texture_ui_shader = Shader::new_async(&load_shader("ui_texture.wgsl"))
+        .await
+        .expect("Failed to compile UI TEXTURE shader");
+    let color_shader = Shader::new_async(&load_shader("color.wgsl"))
+        .await
+        .expect("Failed to compile COLOR shader");
     let (initial_fb_width, initial_fb_height) = window.get_framebuffer_size();
     let (target_width, target_height) =
         render_target_size_for_framebuffer(initial_fb_width, initial_fb_height);
@@ -538,8 +591,11 @@ fn main() {
     let mut smoke_frames = 0;
     let font_texture = Texture2D::from_file("assets/font.png");
 
+    #[cfg(not(target_arch = "wasm32"))]
     let mut is_fullscreen = false;
+    #[cfg(not(target_arch = "wasm32"))]
     let mut win_pos = (state.x, state.y);
+    #[cfg(not(target_arch = "wasm32"))]
     let mut win_size = (state.width, state.height);
     let mut show_debug_overlay = false;
 
@@ -602,13 +658,20 @@ fn main() {
     let mut fps_frames: u32 = 0;
     let mut current_fps: f32 = 0.0;
     let mut profiler = FrameProfiler::new();
-    let smoke_started = std::time::Instant::now();
+    let smoke_started = platform::Instant::now();
+    #[cfg(target_arch = "wasm32")]
+    let mut last_save_time = glfw.get_time();
+    #[cfg(target_arch = "wasm32")]
+    let mut was_paused = false;
     while !window.should_close() {
+        #[cfg(target_arch = "wasm32")]
+        web::next_frame().await;
+
         assert!(
             !smoke_world || smoke_started.elapsed().as_secs() < 120,
             "World smoke test timed out"
         );
-        let frame_start = std::time::Instant::now();
+        let frame_start = platform::Instant::now();
         let current_time = glfw.get_time();
         let delta_time = if smoke_hand {
             1.0 / 60.0
@@ -616,6 +679,9 @@ fn main() {
             ((current_time - last_time) as f32).clamp(0.0, 0.1)
         };
         last_time = current_time;
+        // Keep the spawn safe while the browser's Click to play prompt is up.
+        #[cfg(target_arch = "wasm32")]
+        let delta_time = if web::has_started() { delta_time } else { 0.0 };
 
         fps_frames += 1;
         let fps_elapsed = current_time - fps_last_time;
@@ -785,6 +851,24 @@ fn main() {
             );
         for event in input_events {
             match event {
+                #[cfg(target_arch = "wasm32")]
+                glfw::WindowEvent::Focus(false) => {
+                    left_mouse_held = false;
+                    right_mouse_held = false;
+                    bow_charge = 0.0;
+                    if game_state == GameState::Playing {
+                        open_container = None;
+                        if crafting_table_open {
+                            ct_close(&mut craft_table_slots, &mut inv_slots);
+                            crafting_table_open = false;
+                        }
+                        player.inventory_open = false;
+                        return_cursor(&mut inv_slots, &mut inv_cursor);
+                        game_state = GameState::Paused;
+                        pause_sub_menu = PauseSubMenu::Main;
+                        window.set_cursor_mode(glfw::CursorMode::Normal);
+                    }
+                }
                 // Surface size follows the framebuffer in renderer::end_frame.
                 glfw::WindowEvent::Size(..) => {}
                 glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
@@ -856,52 +940,57 @@ fn main() {
                     show_debug_overlay = !show_debug_overlay;
                 }
                 glfw::WindowEvent::Key(Key::F11, _, Action::Press, _) => {
-                    is_fullscreen = !is_fullscreen;
-                    if is_fullscreen {
-                        win_pos = window.get_pos();
-                        let (w, h) = window.get_size();
-                        win_size = (w as u32, h as u32);
-                        glfw.with_primary_monitor(|_, m| {
-                            if let Some(monitor) = m {
-                                let video_mode = monitor.get_video_mode().unwrap();
-                                #[cfg(target_os = "linux")]
-                                {
-                                    window.set_decorated(false);
-                                    window.set_monitor(
-                                        glfw::WindowMode::Windowed,
-                                        0,
-                                        0,
-                                        video_mode.width,
-                                        video_mode.height,
-                                        Some(video_mode.refresh_rate),
-                                    );
+                    #[cfg(target_arch = "wasm32")]
+                    web::toggle_fullscreen();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        is_fullscreen = !is_fullscreen;
+                        if is_fullscreen {
+                            win_pos = window.get_pos();
+                            let (w, h) = window.get_size();
+                            win_size = (w as u32, h as u32);
+                            glfw.with_primary_monitor(|_, m| {
+                                if let Some(monitor) = m {
+                                    let video_mode = monitor.get_video_mode().unwrap();
+                                    #[cfg(target_os = "linux")]
+                                    {
+                                        window.set_decorated(false);
+                                        window.set_monitor(
+                                            glfw::WindowMode::Windowed,
+                                            0,
+                                            0,
+                                            video_mode.width,
+                                            video_mode.height,
+                                            Some(video_mode.refresh_rate),
+                                        );
+                                    }
+                                    #[cfg(not(target_os = "linux"))]
+                                    {
+                                        window.set_monitor(
+                                            glfw::WindowMode::FullScreen(monitor),
+                                            0,
+                                            0,
+                                            video_mode.width,
+                                            video_mode.height,
+                                            Some(video_mode.refresh_rate),
+                                        );
+                                    }
                                 }
-                                #[cfg(not(target_os = "linux"))]
-                                {
-                                    window.set_monitor(
-                                        glfw::WindowMode::FullScreen(monitor),
-                                        0,
-                                        0,
-                                        video_mode.width,
-                                        video_mode.height,
-                                        Some(video_mode.refresh_rate),
-                                    );
-                                }
+                            });
+                        } else {
+                            #[cfg(target_os = "linux")]
+                            {
+                                window.set_decorated(true);
                             }
-                        });
-                    } else {
-                        #[cfg(target_os = "linux")]
-                        {
-                            window.set_decorated(true);
+                            window.set_monitor(
+                                glfw::WindowMode::Windowed,
+                                win_pos.0,
+                                win_pos.1,
+                                win_size.0,
+                                win_size.1,
+                                None,
+                            );
                         }
-                        window.set_monitor(
-                            glfw::WindowMode::Windowed,
-                            win_pos.0,
-                            win_pos.1,
-                            win_size.0,
-                            win_size.1,
-                            None,
-                        );
                     }
                 }
                 // Hotbar selection: keys 1-9
@@ -962,7 +1051,15 @@ fn main() {
                     }
                 }
 
+                #[cfg(target_arch = "wasm32")]
+                glfw::WindowEvent::CursorDelta(dx, dy) => {
+                    if game_state == GameState::Playing && !player.inventory_open {
+                        camera_angle.x -= dx as f32 * 0.003;
+                        camera_angle.y = (camera_angle.y - dy as f32 * 0.003).clamp(-1.56, 1.56);
+                    }
+                }
                 glfw::WindowEvent::CursorPos(x, y) => {
+                    #[cfg(not(target_arch = "wasm32"))]
                     if game_state == GameState::Playing && !player.inventory_open {
                         let dx = (x - last_cursor_pos.0) as f32;
                         let dy = (y - last_cursor_pos.1) as f32;
@@ -1111,20 +1208,32 @@ fn main() {
                                     fancy_gfx_setting = !fancy_gfx_setting;
                                 }
                                 PauseClick::ExportJava => {
-                                    let config = java_compat::ExportConfig {
-                                        output_dir: std::path::PathBuf::from("java17_world"),
-                                        radius: 4,
-                                    };
-                                    match java_compat::export_classic_java_chunks(
-                                        world.seed,
-                                        &config,
-                                        |cx, cz| world.chunk_for_export(cx, cz),
-                                    ) {
-                                        Ok(summary) => {
-                                            export_status_msg =
-                                                format!("Exported {} live chunks!", summary.chunks)
+                                    #[cfg(target_arch = "wasm32")]
+                                    {
+                                        export_status_msg =
+                                            "Java export is available in the desktop game.".into();
+                                    }
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    {
+                                        let config = java_compat::ExportConfig {
+                                            output_dir: std::path::PathBuf::from("java17_world"),
+                                            radius: 4,
+                                        };
+                                        match java_compat::export_classic_java_chunks(
+                                            world.seed,
+                                            &config,
+                                            |cx, cz| world.chunk_for_export(cx, cz),
+                                        ) {
+                                            Ok(summary) => {
+                                                export_status_msg = format!(
+                                                    "Exported {} live chunks!",
+                                                    summary.chunks
+                                                )
+                                            }
+                                            Err(e) => {
+                                                export_status_msg = format!("Export failed: {e}")
+                                            }
                                         }
-                                        Err(e) => export_status_msg = format!("Export failed: {e}"),
                                     }
                                 }
                                 PauseClick::SelectSkin(skin) => {
@@ -1344,7 +1453,7 @@ fn main() {
             }
         }
 
-        if let Some(gs) = gp_gs {
+        if let Some(ref gs) = gp_gs {
             const DEADZONE: f32 = 0.15;
             const LOOK_SPEED: f32 = 3.0;
 
@@ -1479,7 +1588,7 @@ fn main() {
                 is_sneaking,
                 current_time,
             );
-            let t_wu = std::time::Instant::now();
+            let t_wu = platform::Instant::now();
             let held = inv_slots[player.selected_slot]
                 .map(|s| s.block)
                 .unwrap_or(BlockType::Air);
@@ -3097,6 +3206,44 @@ fn main() {
             }
         }
 
+        #[cfg(target_arch = "wasm32")]
+        {
+            web::ready();
+            let paused = game_state == GameState::Paused;
+            if current_time - last_save_time >= 30.0
+                || (paused && !was_paused)
+                || web::take_save_request()
+                || window.should_close()
+            {
+                let settings = GameSettings {
+                    view_distance: render_dist_setting,
+                    fov: fov_setting,
+                    fancy_graphics: fancy_gfx_setting,
+                    selected_skin,
+                }
+                .clamped();
+                let result = GameSave::capture(
+                    &world,
+                    &player,
+                    &inv_slots,
+                    camera_angle,
+                    settings,
+                    None,
+                    inv_cursor,
+                    &craft_table_slots,
+                );
+                let saved = web::save_result(result).await;
+                if window.should_close() {
+                    if saved {
+                        web::finished();
+                        return;
+                    }
+                    window.set_should_close(false);
+                }
+                last_save_time = glfw.get_time();
+            }
+            was_paused = paused;
+        }
         profiler.record_frame(frame_start.elapsed());
         profiler.log_telemetry_if_needed(
             world.chunks.iter().flatten().count(),
@@ -3105,17 +3252,20 @@ fn main() {
             world.mobs.len(),
         );
     }
-    let (xw, yw) = window.get_pos();
-    let (ww, hw) = window.get_size();
-    let maximized = window.is_maximized();
-    let state = WindowState {
-        width: ww as u32,
-        height: hw as u32,
-        x: xw,
-        y: yw,
-        maximized,
-    };
-    state.save();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (xw, yw) = window.get_pos();
+        let (ww, hw) = window.get_size();
+        let maximized = window.is_maximized();
+        let state = WindowState {
+            width: ww as u32,
+            height: hw as u32,
+            x: xw,
+            y: yw,
+            maximized,
+        };
+        state.save();
+    }
     if game_state == GameState::Loading {
         return;
     }
@@ -3135,8 +3285,17 @@ fn main() {
         import_world_path.as_deref(),
         inv_cursor,
         &craft_table_slots,
-    )
-    .and_then(|save| save.write_to(&save_path));
+    );
+    #[cfg(target_arch = "wasm32")]
+    {
+        if web::save_result(result).await {
+            web::finished();
+        }
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = result.and_then(|save| save.write_to(&save_path));
+    #[cfg(not(target_arch = "wasm32"))]
     if let Err(err) = result {
         eprintln!("Failed to save world: {err}");
     }
@@ -3176,5 +3335,17 @@ mod survival_tests {
         }
         assert!(save_path_from_args(&args(&["--save", "--seed", "42"])).is_err());
         assert!(save_path_from_args(&args(&["--save="])).is_err());
+    }
+}
+
+async fn load_game_save(path: &std::path::Path) -> std::io::Result<GameSave> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        GameSave::read_from(path)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        web::load_save().await
     }
 }

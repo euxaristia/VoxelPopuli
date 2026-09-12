@@ -13,9 +13,21 @@ lto = true
 [dependencies]
 flate2 = "1.1.9"
 glam = "0.33"
-glfw = { version = "0.62.0", default-features = false, features = ["raw-window-handle-v0-6", "wayland", "x11", "native-handles", "src-build"] }
 png = "0.18.1"
-mimalloc = "0.1"
 rand = "0.10"
-rayon = "1.11.0"
 wgpu = { version = "30.0.0", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "gles", "vulkan", "wgsl"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+glfw = { version = "0.62.0", default-features = false, features = ["raw-window-handle-v0-6", "wayland", "x11", "native-handles", "src-build"] }
+mimalloc = "0.1"
+rayon = "1.11.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30.0.0", default-features = false, features = ["webgpu"] }
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElement", "Performance", "console"] }
+web-time = "1.1"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+console_error_panic_hook = "0.1"

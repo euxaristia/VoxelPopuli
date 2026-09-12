@@ -90,8 +90,8 @@ fn compare_gpu_mesh_test(cpu: &[GpuMeshTestVertex], gpu: &[GpuMeshTestVertex], c
     }
 }
 
-pub const DEFAULT_VIEW_DISTANCE: i32 = 16;
-pub const MAX_VIEW_DISTANCE: i32 = 16;
+pub const DEFAULT_VIEW_DISTANCE: i32 = if cfg!(target_arch = "wasm32") { 4 } else { 16 };
+pub const MAX_VIEW_DISTANCE: i32 = if cfg!(target_arch = "wasm32") { 8 } else { 16 };
 pub const VIEW_DISTANCE: i32 = DEFAULT_VIEW_DISTANCE;
 pub const POOL_WIDTH: i32 = MAX_VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
@@ -1137,7 +1137,7 @@ impl World {
         let seed = self.seed;
         let import_world = self.import_world.clone();
         let tx = self.gen_result_tx.clone();
-        rayon::spawn(move || {
+        crate::platform::spawn(move || {
             if let Some(path) = import_world {
                 match crate::java_compat::import_classic_java_chunk(&path, x, z) {
                     Ok(Some(chunk)) => {
@@ -1157,6 +1157,11 @@ impl World {
     }
 
     fn request_missing_chunks(&mut self, pcx: i32, pcz: i32, max_in_flight: usize) -> bool {
+        let max_in_flight = if cfg!(target_arch = "wasm32") {
+            1
+        } else {
+            max_in_flight
+        };
         let view = self.view_distance;
         let mut all_present = true;
         'scan: for r in 0..=view {
@@ -1323,7 +1328,7 @@ impl World {
                 self.meshing_in_flight += 1;
 
                 let tx = self.mesh_result_tx.clone();
-                rayon::spawn(move || {
+                crate::platform::spawn(move || {
                     work.calculate_lighting();
                     let (opaque, transparent, water) = work.calculate_mesh_data(&snap);
                     let _ = tx.send(MeshResult {
@@ -1338,7 +1343,13 @@ impl World {
                 });
 
                 dispatches_this_frame += 1;
-                let max_dispatches = if self.is_loading { 64 } else { 16 };
+                let max_dispatches = if cfg!(target_arch = "wasm32") {
+                    1
+                } else if self.is_loading {
+                    64
+                } else {
+                    16
+                };
                 if dispatches_this_frame >= max_dispatches {
                     break;
                 }

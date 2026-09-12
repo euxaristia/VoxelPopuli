@@ -2,6 +2,9 @@
 
 A lightweight Minecraft-inspired voxel sandbox written in Rust with `wgpu` and GPU compute meshing.
 
+The game also builds to WebAssembly for GitHub Pages. See the [browser build,
+deployment, controls, and save guide](docs/web.md).
+
 ## Highlights ✨
 - **wgpu Renderer**: Modern GPU-accelerated rendering pipeline with WebGPU standard support
 - **Survival Mechanics**: Health, Hunger/Food, Saturation, Armor Defense, Oxygen, and Starvation

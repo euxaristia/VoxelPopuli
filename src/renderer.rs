@@ -62,7 +62,7 @@ fn cast_slice<T: Copy>(data: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) }
 }
 
-fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     let mut fut = std::pin::pin!(fut);
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     loop {
@@ -302,8 +302,12 @@ const M3_DEBUG_DIRECT_DRAW: bool = true;
 
 struct Ctx {
     instance: wgpu::Instance,
+    #[cfg(not(target_arch = "wasm32"))]
     raw_display_handle: wgpu::rwh::RawDisplayHandle,
+    #[cfg(not(target_arch = "wasm32"))]
     raw_window_handle: wgpu::rwh::RawWindowHandle,
+    #[cfg(target_arch = "wasm32")]
+    canvas: web_sys::HtmlCanvasElement,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
@@ -390,12 +394,14 @@ impl Drop for RendererGuard {
     fn drop(&mut self) {
         let context = CTX.with(|c| c.borrow_mut().take());
         if let Some(context) = context {
+            #[cfg(not(target_arch = "wasm32"))]
             let _ = context.device.poll(wgpu::PollType::wait_indefinitely());
             drop(context);
         }
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
     window: &W,
     width: i32,
@@ -412,23 +418,65 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
             })
             .expect("create surface")
     };
-    let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: Some(&surface),
-        ..Default::default()
-    }))
-    .expect("no suitable GPU adapter");
+    block_on(init_surface(
+        instance,
+        surface,
+        width,
+        height,
+        raw_display_handle,
+        raw_window_handle,
+    ))
+    .expect("initialize renderer")
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn init_web(canvas: web_sys::HtmlCanvasElement) -> Result<RendererGuard, String> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::BROWSER_WEBGPU;
+    let instance = wgpu::Instance::new(descriptor);
+    let surface = instance
+        .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+        .map_err(|error| format!("Could not create the game canvas: {error}"))?;
+    init_surface(
+        instance,
+        surface,
+        canvas.width() as i32,
+        canvas.height() as i32,
+        canvas,
+    )
+    .await
+}
+
+async fn init_surface(
+    instance: wgpu::Instance,
+    surface: wgpu::Surface<'static>,
+    width: i32,
+    height: i32,
+    #[cfg(not(target_arch = "wasm32"))] raw_display_handle: wgpu::rwh::RawDisplayHandle,
+    #[cfg(not(target_arch = "wasm32"))] raw_window_handle: wgpu::rwh::RawWindowHandle,
+    #[cfg(target_arch = "wasm32")] canvas: web_sys::HtmlCanvasElement,
+) -> Result<RendererGuard, String> {
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        })
+        .await
+        .map_err(|error| format!("No suitable WebGPU adapter: {error}"))?;
     let info = adapter.get_info();
     println!("Renderer: {} ({:?})", info.name, info.backend);
     let adapter_limits = adapter.limits();
     println!("Adapter limits: {:#?}", adapter_limits);
-    let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: None,
-        required_features: wgpu::Features::empty(),
-        required_limits: adapter_limits,
-        ..Default::default()
-    }))
-    .expect("request device");
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter_limits,
+            ..Default::default()
+        })
+        .await
+        .map_err(|error| format!("Could not initialize the GPU: {error}"))?;
 
     let caps = surface.get_capabilities(&adapter);
     // The GL renderer used a non-sRGB default framebuffer; match it so
@@ -566,7 +614,7 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
 
     let load_shader = |name: &str| -> wgpu::ShaderModule {
         let path = format!("assets/shaders/{name}");
-        let source = std::fs::read_to_string(&path)
+        let source = crate::platform::read_to_string(&path)
             .unwrap_or_else(|e| panic!("Failed to load shader {path}: {e}"));
         device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(name),
@@ -604,8 +652,12 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
         )
         .1,
         instance,
+        #[cfg(not(target_arch = "wasm32"))]
         raw_display_handle,
+        #[cfg(not(target_arch = "wasm32"))]
         raw_window_handle,
+        #[cfg(target_arch = "wasm32")]
+        canvas,
         device,
         queue,
         surface,
@@ -644,7 +696,7 @@ pub fn init<W: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle>(
         gpu_mesh_m3_tinted: None,
     };
     CTX.with(|c| *c.borrow_mut() = Some(ctx));
-    RendererGuard
+    Ok(RendererGuard)
 }
 
 /// Allocates the persistent GPU voxel pool sized for `pool_size` chunk slots.
@@ -750,7 +802,7 @@ fn mesh_test_compute_pipeline(
     c: &Ctx,
 ) -> Result<(wgpu::BindGroupLayout, wgpu::ComputePipeline), String> {
     let scope = c.device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let source = std::fs::read_to_string("assets/shaders/chunk_mesh_test.wgsl")
+    let source = crate::platform::read_to_string("assets/shaders/chunk_mesh_test.wgsl")
         .map_err(|e| format!("read chunk_mesh_test.wgsl: {e}"))?;
     let module = c.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("chunk_mesh_test"),
@@ -1669,26 +1721,55 @@ impl Shader {
     /// Compiles a shader that writes `outputs` color attachments, for the
     /// deferred geometry pass.
     pub fn with_outputs(source: &str, outputs: usize) -> Result<Self, String> {
-        with_ctx(|c| {
-            let scope = c.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        block_on(Self::with_outputs_async(source, outputs))
+    }
+
+    pub async fn new_async(source: &str) -> Result<Self, String> {
+        Self::with_outputs_async(source, 1).await
+    }
+
+    pub async fn with_outputs_async(source: &str, outputs: usize) -> Result<Self, String> {
+        let (scope, module) = with_ctx(|c| {
+            // Browser shader diagnostics are asynchronous. Use compilation
+            // info there; native error scopes retain the desktop diagnostics.
+            let scope = if cfg!(target_arch = "wasm32") {
+                None
+            } else {
+                Some(c.device.push_error_scope(wgpu::ErrorFilter::Validation))
+            };
             let module = c.device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             });
-            match block_on(scope.pop()) {
-                Some(e) => Err(e.to_string()),
-                None => Ok(Self {
-                    inner: Arc::new(ShaderInner {
-                        id: SHADER_IDS.fetch_add(1, Ordering::Relaxed),
-                        module,
-                        outputs,
-                        staging: RefCell::new(initial_uniform_staging()),
-                        dirty: std::cell::Cell::new(true),
-                        cached_offset: std::cell::Cell::new(0),
-                        cached_frame: std::cell::Cell::new(u64::MAX),
-                    }),
-                }),
+            (scope, module)
+        });
+        // Do not keep the renderer RefCell borrowed while the browser yields.
+        if let Some(scope) = scope {
+            if let Some(error) = scope.pop().await {
+                return Err(error.to_string());
             }
+        } else {
+            let info = module.get_compilation_info().await;
+            let errors = info
+                .messages
+                .into_iter()
+                .filter(|message| message.message_type == wgpu::CompilationMessageType::Error)
+                .map(|message| message.message)
+                .collect::<Vec<_>>();
+            if !errors.is_empty() {
+                return Err(errors.join("\n"));
+            }
+        }
+        Ok(Self {
+            inner: Arc::new(ShaderInner {
+                id: SHADER_IDS.fetch_add(1, Ordering::Relaxed),
+                module,
+                outputs,
+                staging: RefCell::new(initial_uniform_staging()),
+                dirty: std::cell::Cell::new(true),
+                cached_offset: std::cell::Cell::new(0),
+                cached_frame: std::cell::Cell::new(u64::MAX),
+            }),
         })
     }
 
@@ -2533,6 +2614,11 @@ pub fn end_frame_capture(width: i32, height: i32, path: Option<&std::path::Path>
                 }
             }
             Cst::Lost => {
+                #[cfg(target_arch = "wasm32")]
+                let replacement = c
+                    .instance
+                    .create_surface(wgpu::SurfaceTarget::Canvas(c.canvas.clone()));
+                #[cfg(not(target_arch = "wasm32"))]
                 let replacement = unsafe {
                     c.instance
                         .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
