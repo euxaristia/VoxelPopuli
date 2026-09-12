@@ -141,7 +141,7 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32, playe
     }
     for index in dead_mobs.into_iter().rev() {
         let mob = world.mobs.swap_remove(index);
-        world.collect_mob_drops(mob);
+        world.finish_mob_death(mob);
     }
 
     world.pending_hurt += explosion_entity_damage(player_pos.distance(explosion_center), size);

@@ -248,6 +248,7 @@ pub struct World {
     // Chunk coordinates currently being generated on a worker
     gen_in_flight: std::collections::HashSet<(i32, i32)>,
     pub mobs: Vec<Mob>,
+    dying_mobs: Vec<Mob>,
     // Village center chunks whose inhabitants have already been spawned
     spawned_villages: std::collections::HashSet<(i32, i32)>,
     // Chunks whose natural mobs (passive, hostile, spawner) have already been spawned
@@ -315,6 +316,7 @@ impl World {
             gen_result_rx,
             gen_in_flight: std::collections::HashSet::new(),
             mobs: Vec::new(),
+            dying_mobs: Vec::new(),
             spawned_villages: std::collections::HashSet::new(),
             spawned_natural_chunks: std::collections::HashSet::new(),
             imported: HashMap::new(),
@@ -764,7 +766,15 @@ impl World {
         chunk
     }
 
-    pub fn collect_mob_drops(&mut self, mob: Mob) {
+    pub fn finish_mob_death(&mut self, mut mob: Mob) {
+        self.collect_mob_drops(&mob);
+        mob.animation.death_elapsed = 0.0;
+        mob.animation.swing.reset();
+        mob.walk_blend = 0.0;
+        self.dying_mobs.push(mob);
+    }
+
+    fn collect_mob_drops(&mut self, mob: &Mob) {
         if mob.is_baby() {
             return;
         }
@@ -815,7 +825,7 @@ impl World {
         };
         if self.mobs[index].take_damage(damage) {
             let mob = self.mobs.swap_remove(index);
-            self.collect_mob_drops(mob);
+            self.finish_mob_death(mob);
         }
         true
     }
@@ -1548,7 +1558,7 @@ impl World {
                             }
                             if self.mobs[m_idx].take_damage(damage) {
                                 let dead_mob = self.mobs.swap_remove(m_idx);
-                                self.collect_mob_drops(dead_mob);
+                                self.finish_mob_death(dead_mob);
                             }
                             break;
                         }
@@ -1968,6 +1978,7 @@ impl World {
 
     pub fn update_mobs(&mut self, player_pos: Vec3, dt: f32, held: BlockType) {
         let dt = dt.clamp(0.0, 0.1);
+        self.update_death_animations(dt);
         let mut mobs = std::mem::take(&mut self.mobs);
         let mut despawned_villages = Vec::new();
         let mut despawned_natural = Vec::new();
@@ -2010,6 +2021,7 @@ impl World {
         for index in 0..mobs.len() {
             let (before, rest) = mobs.split_at_mut(index);
             let (mob, after) = rest.split_first_mut().unwrap();
+            mob.animation.update(dt);
             // Freeze mobs whose chunk is unloaded so they don't fall
             // through ungenerated terrain.
             let mcx = (mob.position.x / CHUNK_WIDTH as f32).floor() as i32;
@@ -2090,6 +2102,7 @@ impl World {
                 {
                     self.pending_hurt += mob.kind.species().damage;
                     mob.attack_cooldown = 1.0;
+                    mob.animation.attack();
                 } else if mob.is_ranged()
                     && player_dist < 12.0
                     && can_see_player
@@ -2110,6 +2123,7 @@ impl World {
                         });
                     }
                     mob.attack_cooldown = 2.0;
+                    mob.animation.attack();
                 }
             }
 
@@ -2284,8 +2298,16 @@ impl World {
         }
     }
 
+    fn update_death_animations(&mut self, dt: f32) {
+        for mob in &mut self.dying_mobs {
+            mob.animation.death_elapsed += dt;
+        }
+        self.dying_mobs
+            .retain(|mob| mob.animation.death_elapsed < crate::combat_animation::DEATH_SECONDS);
+    }
+
     pub fn render_mobs(&self, shader: &Shader, player_pos: Vec3) {
-        if self.mobs.is_empty() {
+        if self.mobs.is_empty() && self.dying_mobs.is_empty() {
             return;
         }
         let loc_model = shader.get_uniform_location("uModel");
@@ -2294,7 +2316,7 @@ impl World {
         let visuals = self
             .mob_visuals
             .get_or_init(crate::mob_visuals::MobVisuals::new);
-        for mob in &self.mobs {
+        for mob in self.mobs.iter().chain(&self.dying_mobs) {
             if mob.position.distance_squared(player_pos) > 64.0 * 64.0 {
                 continue;
             }
@@ -3297,6 +3319,55 @@ impl World {
             mesh.draw();
             crate::renderer::set_depth_write(true);
         }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod combat_smoke {
+    use super::*;
+
+    pub fn run() {
+        lethal_melee_keeps_only_a_visual_corpse_and_drops_once();
+        nonlethal_melee_starts_hurt_feedback_without_drops();
+        println!("Combat damage, corpse cleanup, and single-drop checks passed");
+    }
+
+    fn lethal_melee_keeps_only_a_visual_corpse_and_drops_once() {
+        let mut world = World::new(1);
+        let position = Vec3::new(0.0, 60.0, 2.0);
+        world
+            .mobs
+            .push(Mob::new(MobKind::Zombie, position, position, 0));
+        let eye = Vec3::new(0.0, 61.0, 0.0);
+        assert!(world.try_melee(eye, Vec3::Z, 100.0, 4.0));
+        assert!(world.mobs.is_empty());
+        assert_eq!(world.dying_mobs.len(), 1);
+        assert_eq!(world.xp_orbs.len(), 1);
+        let drops = world.pending_drops.clone();
+        assert!(!world.try_melee(eye, Vec3::Z, 100.0, 4.0));
+        world.update_death_animations(0.5);
+        assert!(world.dying_mobs[0].animation.death_roll() > 1.0);
+        world.update_death_animations(0.5);
+        assert!(world.dying_mobs.is_empty());
+        assert_eq!(world.xp_orbs.len(), 1);
+        assert_eq!(world.pending_drops, drops);
+    }
+
+    fn nonlethal_melee_starts_hurt_feedback_without_drops() {
+        let mut world = World::new(1);
+        let position = Vec3::new(0.0, 60.0, 2.0);
+        world
+            .mobs
+            .push(Mob::new(MobKind::Zombie, position, position, 0));
+        assert!(world.try_melee(Vec3::new(0.0, 61.0, 0.0), Vec3::Z, 1.0, 4.0));
+        assert_eq!(world.mobs[0].health, 19.0);
+        assert!(world.mobs[0].animation.hurt_remaining > 0.0);
+        world.mobs[0]
+            .animation
+            .update(crate::combat_animation::HURT_SECONDS);
+        assert_eq!(world.mobs[0].animation.hurt_remaining, 0.0);
+        assert!(world.dying_mobs.is_empty());
+        assert!(world.pending_drops.is_empty());
     }
 }
 

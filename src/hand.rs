@@ -31,51 +31,15 @@ const NEAR_MARGIN: f32 = 0.03;
 /// Arm box in local space: square cross-section, hand end toward -Z, elbow
 /// running back toward the camera, with the hidden elbow extending offscreen.
 const ARM_THICKNESS: f32 = 0.25;
-const ARM_FORWARD: f32 = 0.38;
+const ARM_FORWARD: f32 = 0.375;
 // Keep the entire elbow face below the viewport, even during bob and punches.
-const ARM_BACK: f32 = 0.40;
+const ARM_BACK: f32 = 0.375;
 /// Half-extent of the held block cube.
 const ITEM_SCALE: f32 = 0.17;
 
-const SWING_DURATION: f32 = 0.30;
-
-pub struct SwingAnimation {
-    elapsed: f32,
-}
-
-impl Default for SwingAnimation {
-    fn default() -> Self {
-        Self {
-            elapsed: SWING_DURATION,
-        }
-    }
-}
-
-impl SwingAnimation {
-    pub fn start(&mut self) {
-        if self.elapsed >= SWING_DURATION {
-            self.elapsed = 0.0;
-        }
-    }
-
-    pub fn update(&mut self, dt: f32, held: bool) {
-        if held {
-            self.start();
-        }
-        self.elapsed = (self.elapsed + dt.max(0.0)).min(SWING_DURATION);
-    }
-
-    pub fn amount(&self) -> f32 {
-        if self.elapsed >= SWING_DURATION {
-            return 0.0;
-        }
-        (std::f32::consts::PI * self.elapsed / SWING_DURATION).sin()
-    }
-
-    pub fn reset(&mut self) {
-        self.elapsed = SWING_DURATION;
-    }
-}
+#[cfg(test)]
+use crate::combat_animation::SWING_SECONDS as SWING_DURATION;
+pub use crate::combat_animation::Swing as SwingAnimation;
 
 /// Camera height above `player.position`, matching `main`.
 const EYE_HEIGHT: f32 = 1.6;
@@ -420,18 +384,32 @@ pub fn build_item_mesh(block: BlockType) -> Mesh {
     Mesh::new(&v, Some(&t), Some(&n), Some(&c))
 }
 
-pub fn arm_model(swing: f32, bob: f32, aspect: f32) -> Mat4 {
-    let punch = swing * swing * (3.0 - 2.0 * swing);
-    // Keep the square forearm almost parallel to camera forward. The elbow
-    // extends below the viewport throughout the punch, anchoring it to the POV.
-    // Scale the horizontal offset with aspect to retain the right-side framing.
-    Mat4::from_translation(Vec3::new(
-        0.46 + 0.247 * aspect + bob * 0.04 - punch * 0.20,
-        -0.76 + bob * 0.025,
-        -1.24 - punch * 0.12,
-    )) * Mat4::from_rotation_x(0.18 + punch * 0.22)
-        * Mat4::from_rotation_y(0.08 + punch * 0.18)
-        * Mat4::from_rotation_z(-punch * 0.12)
+pub fn arm_model(swing: f32, bob: f32, _aspect: f32) -> Mat4 {
+    let factor = (swing * std::f32::consts::PI).sin();
+    let (offset, degrees) = crate::combat_animation::first_person_pose(swing, factor);
+    arm_bone_model(offset, degrees, bob)
+}
+
+fn arm_bone_model(offset: Vec3, attack_degrees: Vec3, bob: f32) -> Mat4 {
+    // Bedrock adds animation channels to the base pose BEFORE constructing
+    // one XYZ rotation. Multiplying base and attack matrices changes the path.
+    let degrees = Vec3::new(95.0, -45.0, 115.0) + attack_degrees;
+    // rightArm pivot (-5,22,0), first-person position (13.5,-10,12),
+    // and eye height 25.6 pixels. View-space forward is -Z.
+    let position = (Vec3::new(8.5, -13.6, -12.0) + Vec3::new(offset.x, offset.y, -offset.z)) / 16.0
+        + Vec3::new(bob * 0.04, bob * 0.025, 0.0);
+    // The existing outward-wound box runs along Z. Reorient it onto the
+    // source bone's -Y axis: local bounds (-3,-10,-2)..(1,2,2) pixels.
+    let mesh_to_bone = Mat4::from_translation(Vec3::new(-1.0, -4.0, 0.0) / 16.0)
+        * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    Mat4::from_translation(position)
+        * Mat4::from_euler(
+            glam::EulerRot::ZYX,
+            -degrees.z.to_radians(),
+            -degrees.y.to_radians(),
+            degrees.x.to_radians(),
+        )
+        * mesh_to_bone
 }
 
 pub fn item_model(swing: f32, bob: f32, aspect: f32) -> Mat4 {
@@ -503,8 +481,161 @@ pub fn draw(
 mod tests {
     use super::*;
 
+    #[test]
+    fn base_and_attack_channels_cancel_before_rotation() {
+        let model = arm_bone_model(Vec3::ZERO, Vec3::new(-95.0, 45.0, -115.0), 0.0);
+        let hand = model.transform_point3(Vec3::new(0.0, 0.0, -ARM_FORWARD));
+        assert!(hand.abs_diff_eq(Vec3::new(0.46875, -1.475, -0.75), 1e-6));
+    }
+
+    #[test]
+    fn strike_rises_diagonally_toward_the_crosshair() {
+        for aspect in ASPECTS {
+            let position = |p| {
+                let (x, y) = to_ndc(Vec3::new(0.0, 0.0, -ARM_FORWARD), p, aspect);
+                glam::Vec2::new(x * aspect, y)
+            };
+            let idle = position(0.0);
+            for progress in [0.05, 0.1, 0.2, 0.3] {
+                let strike = position(progress);
+                let motion = strike - idle;
+                assert!(
+                    motion.x < 0.0 && motion.y > 0.0,
+                    "strike must move up and inward: {motion}"
+                );
+                let alignment = motion.normalize().dot((-idle).normalize());
+                assert!(
+                    alignment > 0.98,
+                    "strike veers sideways: p={progress}, alignment={alignment}"
+                );
+                assert!(
+                    strike.x >= 0.0 && strike.y <= 0.0,
+                    "strike overshoots the crosshair: {strike}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn attack_moves_hand_and_held_item_toward_crosshair() {
+        for aspect in ASPECTS {
+            for held in [false, true] {
+                let screen_position = |progress| {
+                    let (model, point) = if held {
+                        (item_model(progress, 0.0, aspect), Vec3::ZERO)
+                    } else {
+                        (
+                            arm_model(progress, 0.0, aspect),
+                            Vec3::new(0.0, 0.0, -ARM_FORWARD),
+                        )
+                    };
+                    let clip = projection(aspect) * model * point.extend(1.0);
+                    glam::Vec2::new(clip.x * aspect, clip.y) / clip.w
+                };
+                let idle = screen_position(0.0);
+                for progress in [0.05, 0.1, 0.25, 0.5] {
+                    let attack = screen_position(progress);
+                    assert!(
+                        attack.x < idle.x,
+                        "outward swing: held={held}, aspect={aspect}, progress={progress}, idle={idle}, attack={attack}"
+                    );
+                    assert!(
+                        attack.length() < idle.length(),
+                        "swing moves away from crosshair: held={held}, aspect={aspect}, progress={progress}, idle={idle}, attack={attack}"
+                    );
+                }
+                assert!(screen_position(1.0).abs_diff_eq(idle, 1e-6));
+            }
+        }
+    }
+
+    #[test]
+    fn attack_outbound_and_recovery_follow_different_paths() {
+        let mut swing = SwingAnimation::default();
+        swing.start();
+        swing.update(0.075, false);
+        let outbound = arm_model(swing.progress(), 0.0, 16.0 / 9.0);
+        swing.update(0.15, false);
+        let recovery = arm_model(swing.progress(), 0.0, 16.0 / 9.0);
+        assert!(!outbound.abs_diff_eq(recovery, 0.001));
+    }
+
     /// Aspect ratios from an old 4:3 panel out to a 32:9 superultrawide.
     const ASPECTS: [f32; 4] = [4.0 / 3.0, 16.0 / 9.0, 21.0 / 9.0, 32.0 / 9.0];
+
+    /// CPU-only pose preview: no GLFW window, GPU context, or cursor access.
+    #[test]
+    #[ignore = "writes a pose contact sheet to target/test-artifacts"]
+    fn render_attack_pose_contact_sheet() {
+        const W: usize = 480;
+        const H: usize = 270;
+        let mut pixels = [24, 30, 38, 255].repeat(W * H * 4);
+        for (panel, progress) in [0.0, 0.1, 0.25, 0.75].into_iter().enumerate() {
+            let model = arm_model(progress, 0.0, W as f32 / H as f32);
+            let mvp = projection(W as f32 / H as f32) * model;
+            let mut depth = vec![f32::INFINITY; W * H];
+            for (tri, normal) in arm_triangles() {
+                let points = tri.map(|p| {
+                    let clip = mvp * p.extend(1.0);
+                    let ndc = clip.truncate() / clip.w;
+                    Vec3::new(
+                        (ndc.x + 1.0) * W as f32 * 0.5,
+                        (1.0 - ndc.y) * H as f32 * 0.5,
+                        ndc.z,
+                    )
+                });
+                let edge = |a: Vec3, b: Vec3, p: Vec3| {
+                    (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+                };
+                let area = edge(points[0], points[1], points[2]);
+                if area.abs() < 1e-5 {
+                    continue;
+                }
+                let light = 0.55
+                    + 0.45
+                        * model
+                            .transform_vector3(normal)
+                            .dot(Vec3::new(-0.3, 0.7, 0.6).normalize())
+                            .max(0.0);
+                let color = [186.0, 135.0, 92.0].map(|c| (c * light) as u8);
+                for y in 0..H {
+                    for x in 0..W {
+                        let p = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, 0.0);
+                        let a = edge(points[1], points[2], p) / area;
+                        let b = edge(points[2], points[0], p) / area;
+                        let c = 1.0 - a - b;
+                        let z = a * points[0].z + b * points[1].z + c * points[2].z;
+                        if a >= 0.0 && b >= 0.0 && c >= 0.0 && z < depth[y * W + x] {
+                            depth[y * W + x] = z;
+                            let i = (y * W * 4 + panel * W + x) * 4;
+                            pixels[i..i + 3].copy_from_slice(&color);
+                        }
+                    }
+                }
+            }
+            assert!(
+                depth.iter().filter(|z| z.is_finite()).count() > 500,
+                "arm disappeared at progress {progress}"
+            );
+            for d in -5i32..=5 {
+                for (x, y) in [
+                    (W as i32 / 2 + d, H as i32 / 2),
+                    (W as i32 / 2, H as i32 / 2 + d),
+                ] {
+                    let i = (y as usize * W * 4 + panel * W + x as usize) * 4;
+                    pixels[i..i + 3].copy_from_slice(&[240, 240, 240]);
+                }
+            }
+        }
+        std::fs::create_dir_all("target/test-artifacts").unwrap();
+        crate::png_io::save(
+            "target/test-artifacts/attack-poses-cpu.png",
+            &pixels,
+            (W * 4) as u32,
+            H as u32,
+        )
+        .unwrap();
+    }
 
     fn arm_corners() -> Vec<Vec3> {
         let (o, s) = arm_box();
@@ -606,7 +737,7 @@ mod tests {
     fn swing_moves_the_hand_from_idle() {
         let hand = Vec3::new(0.0, 0.0, -ARM_FORWARD);
         let idle = arm_model(0.0, 0.0, 16.0 / 9.0).transform_point3(hand);
-        let punch = arm_model(1.0, 0.0, 16.0 / 9.0).transform_point3(hand);
+        let punch = arm_model(0.5, 0.0, 16.0 / 9.0).transform_point3(hand);
         assert!(idle.distance(punch) > 0.05);
     }
 
@@ -623,15 +754,9 @@ mod tests {
     }
 
     #[test]
-    fn the_arm_has_a_blocky_minecraft_cross_section_and_points_forward() {
-        assert!((ARM_FORWARD + ARM_BACK) / ARM_THICKNESS < 3.2);
-        let aim = arm_model(0.0, 0.0, 16.0 / 9.0)
-            .transform_vector3(-Vec3::Z)
-            .normalize();
-        assert!(
-            aim.dot(-Vec3::Z) > 0.97,
-            "idle arm should point almost straight forward"
-        );
+    fn the_arm_has_the_source_four_by_twelve_pixel_dimensions() {
+        assert_eq!(ARM_THICKNESS * 16.0, 4.0);
+        assert_eq!((ARM_FORWARD + ARM_BACK) * 16.0, 12.0);
     }
 
     #[test]
@@ -686,18 +811,17 @@ mod tests {
     }
 
     #[test]
-    fn the_arm_never_rides_up_over_the_horizon() {
-        // Bounding only part of the arm once let it climb to the middle of
-        // the screen and block the view.
+    fn the_attacking_arm_stays_below_the_top_of_the_viewport() {
+        // An attack may cross the horizon, but must not flip over the camera.
         for aspect in ASPECTS {
             for step in 0..=10 {
                 let swing = step as f32 / 10.0;
                 for c in arm_corners() {
                     let (_, y) = to_ndc(c, swing, aspect);
                     assert!(
-                        y < -0.28,
+                        y < 0.9,
                         "arm reaches y={y} at swing={swing}, aspect={aspect}: it would \
-                         cover the horizon and the crosshair",
+                         leave the top of the viewport",
                     );
                 }
             }
@@ -705,10 +829,10 @@ mod tests {
     }
 
     #[test]
-    fn the_entire_elbow_stays_offscreen_during_punching_and_bobbing() {
+    fn the_resting_shoulder_stays_offscreen_during_bobbing() {
         for aspect in ASPECTS {
             for bob in [-1.0, 0.0, 1.0] {
-                for step in 0..=20 {
+                for step in [0, 20] {
                     let mvp = projection(aspect) * arm_model(step as f32 / 20.0, bob, aspect);
                     for x in [-ARM_THICKNESS * 0.5, ARM_THICKNESS * 0.5] {
                         for y in [-ARM_THICKNESS * 0.5, ARM_THICKNESS * 0.5] {
@@ -728,7 +852,7 @@ mod tests {
     fn the_forward_arm_occupies_the_lower_right_quarter() {
         let (min_x, max_x, _, max_y) = arm_bounds(16.0 / 9.0);
         assert!((0.30..0.45).contains(&min_x), "inner edge: {min_x}");
-        assert!((-0.53..-0.48).contains(&max_y), "top edge: {max_y}");
+        assert!((-0.45..-0.35).contains(&max_y), "top edge: {max_y}");
         assert!(max_x - min_x > 0.30, "forearm is too thin on screen");
     }
 
@@ -943,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hand_end_aims_up_and_inward_toward_the_crosshair() {
+    fn the_resting_arm_matches_the_source_base_pose() {
         let m = arm_model(0.0, 0.0, 16.0 / 9.0);
         let base = m.transform_point3(Vec3::ZERO);
         let aim = m.transform_point3(Vec3::new(0.0, 0.0, -1.0)) - base;
@@ -955,10 +1079,7 @@ mod tests {
             aim.y > 0.05,
             "arm must tilt up toward the crosshair, got {aim}"
         );
-        assert!(
-            aim.x < -0.05,
-            "right arm must angle inward to screen centre, got {aim}"
-        );
+        assert!(aim.abs_diff_eq(Vec3::new(0.376689, 0.6015841, -0.704416), 1e-6));
     }
 
     #[test]

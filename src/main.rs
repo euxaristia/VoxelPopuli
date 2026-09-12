@@ -10,6 +10,7 @@ mod atlas;
 mod atlas_table;
 mod block;
 mod chunk;
+mod combat_animation;
 mod container;
 mod container_ui;
 mod crafting;
@@ -352,6 +353,28 @@ fn main() {
     });
 }
 
+fn apply_interactive_cursor<M>(smoke_test: bool, mode: M, apply: impl FnOnce(M)) {
+    if !smoke_test {
+        apply(mode);
+    }
+}
+
+fn set_game_cursor_mode(window: &mut glfw::Window, smoke_test: bool, mode: glfw::CursorMode) {
+    apply_interactive_cursor(smoke_test, mode, |mode| window.set_cursor_mode(mode));
+}
+
+#[test]
+fn smoke_tests_never_call_the_os_cursor_api() {
+    for mode in [glfw::CursorMode::Normal, glfw::CursorMode::Disabled] {
+        apply_interactive_cursor(true, mode, |_| {
+            panic!("smoke test touched the desktop cursor")
+        });
+    }
+    let mut applied = false;
+    apply_interactive_cursor(false, glfw::CursorMode::Normal, |_| applied = true);
+    assert!(applied, "interactive gameplay must retain cursor control");
+}
+
 async fn run() {
     // Entry point
     let args: Vec<String> = platform::args();
@@ -484,6 +507,8 @@ async fn run() {
         glfw.window_hint(glfw::WindowHint::AutoIconify(false));
         if smoke_world {
             glfw.window_hint(glfw::WindowHint::Visible(false));
+            glfw.window_hint(glfw::WindowHint::Focused(false));
+            glfw.window_hint(glfw::WindowHint::FocusOnShow(false));
         }
         let (mut window, events) = glfw
             .create_window(
@@ -503,7 +528,7 @@ async fn run() {
         window.set_mouse_button_polling(true);
         window.set_scroll_polling(true);
         if !smoke_world {
-            window.set_cursor_mode(glfw::CursorMode::Disabled);
+            set_game_cursor_mode(&mut window, smoke_world, glfw::CursorMode::Disabled);
         }
         glfw.with_primary_monitor(|_, monitor| {
             if let Some(monitor) = monitor
@@ -866,7 +891,7 @@ async fn run() {
                         return_cursor(&mut inv_slots, &mut inv_cursor);
                         game_state = GameState::Paused;
                         pause_sub_menu = PauseSubMenu::Main;
-                        window.set_cursor_mode(glfw::CursorMode::Normal);
+                        set_game_cursor_mode(&mut window, smoke_world, glfw::CursorMode::Normal);
                     }
                 }
                 // Surface size follows the framebuffer in renderer::end_frame.
@@ -874,13 +899,17 @@ async fn run() {
                 glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                     if creature_menu.take().is_some() {
                         game_state = GameState::Playing;
-                        window.set_cursor_mode(glfw::CursorMode::Disabled);
+                        set_game_cursor_mode(&mut window, smoke_world, glfw::CursorMode::Disabled);
                     } else if game_state == GameState::Paused {
                         if pause_sub_menu != PauseSubMenu::Main {
                             pause_sub_menu = PauseSubMenu::Main;
                         } else {
                             game_state = GameState::Playing;
-                            window.set_cursor_mode(glfw::CursorMode::Disabled);
+                            set_game_cursor_mode(
+                                &mut window,
+                                smoke_world,
+                                glfw::CursorMode::Disabled,
+                            );
                         }
                     } else if game_state == GameState::Playing {
                         open_container = None;
@@ -889,14 +918,26 @@ async fn run() {
                             crafting_table_open = false;
                             player.inventory_open = false;
                             return_cursor(&mut inv_slots, &mut inv_cursor);
-                            window.set_cursor_mode(glfw::CursorMode::Disabled);
+                            set_game_cursor_mode(
+                                &mut window,
+                                smoke_world,
+                                glfw::CursorMode::Disabled,
+                            );
                         } else if player.inventory_open {
                             player.inventory_open = false;
                             return_cursor(&mut inv_slots, &mut inv_cursor);
-                            window.set_cursor_mode(glfw::CursorMode::Disabled);
+                            set_game_cursor_mode(
+                                &mut window,
+                                smoke_world,
+                                glfw::CursorMode::Disabled,
+                            );
                         } else {
                             game_state = GameState::Paused;
-                            window.set_cursor_mode(glfw::CursorMode::Normal);
+                            set_game_cursor_mode(
+                                &mut window,
+                                smoke_world,
+                                glfw::CursorMode::Normal,
+                            );
                         }
                     }
                 }
@@ -910,14 +951,22 @@ async fn run() {
                         crafting_table_open = false;
                         player.inventory_open = false;
                         return_cursor(&mut inv_slots, &mut inv_cursor);
-                        window.set_cursor_mode(glfw::CursorMode::Disabled);
+                        set_game_cursor_mode(&mut window, smoke_world, glfw::CursorMode::Disabled);
                     } else {
                         player.inventory_open = !player.inventory_open;
                         if player.inventory_open {
-                            window.set_cursor_mode(glfw::CursorMode::Normal);
+                            set_game_cursor_mode(
+                                &mut window,
+                                smoke_world,
+                                glfw::CursorMode::Normal,
+                            );
                         } else {
                             return_cursor(&mut inv_slots, &mut inv_cursor);
-                            window.set_cursor_mode(glfw::CursorMode::Disabled);
+                            set_game_cursor_mode(
+                                &mut window,
+                                smoke_world,
+                                glfw::CursorMode::Disabled,
+                            );
                         }
                     }
                 }
@@ -928,11 +977,19 @@ async fn run() {
                     {
                         if creature_menu.take().is_some() {
                             game_state = GameState::Playing;
-                            window.set_cursor_mode(glfw::CursorMode::Disabled);
+                            set_game_cursor_mode(
+                                &mut window,
+                                smoke_world,
+                                glfw::CursorMode::Disabled,
+                            );
                         } else {
                             creature_menu = Some(creature_ui::Catalogue::default());
                             game_state = GameState::Paused;
-                            window.set_cursor_mode(glfw::CursorMode::Normal);
+                            set_game_cursor_mode(
+                                &mut window,
+                                smoke_world,
+                                glfw::CursorMode::Normal,
+                            );
                         }
                     }
                 }
@@ -1170,7 +1227,11 @@ async fn run() {
                                 Some(creature_ui::Click::Close) => {
                                     creature_menu = None;
                                     game_state = GameState::Playing;
-                                    window.set_cursor_mode(glfw::CursorMode::Disabled);
+                                    set_game_cursor_mode(
+                                        &mut window,
+                                        smoke_world,
+                                        glfw::CursorMode::Disabled,
+                                    );
                                 }
                                 None => {}
                             }
@@ -1180,7 +1241,11 @@ async fn run() {
                             match click {
                                 PauseClick::Resume => {
                                     game_state = GameState::Playing;
-                                    window.set_cursor_mode(glfw::CursorMode::Disabled);
+                                    set_game_cursor_mode(
+                                        &mut window,
+                                        smoke_world,
+                                        glfw::CursorMode::Disabled,
+                                    );
                                 }
                                 PauseClick::OpenSettings => {
                                     pause_sub_menu = PauseSubMenu::Settings;
@@ -1347,7 +1412,11 @@ async fn run() {
                                     right_mouse_held = false;
                                     crafting_table_open = true;
                                     player.inventory_open = true;
-                                    window.set_cursor_mode(glfw::CursorMode::Normal);
+                                    set_game_cursor_mode(
+                                        &mut window,
+                                        smoke_world,
+                                        glfw::CursorMode::Normal,
+                                    );
                                     continue;
                                 }
                                 let position = (res.x, res.y, res.z);
@@ -1356,7 +1425,11 @@ async fn run() {
                                     player.inventory_open = true;
                                     right_mouse_held = false;
                                     left_mouse_held = false;
-                                    window.set_cursor_mode(glfw::CursorMode::Normal);
+                                    set_game_cursor_mode(
+                                        &mut window,
+                                        smoke_world,
+                                        glfw::CursorMode::Normal,
+                                    );
                                     continue;
                                 }
                                 if target_block == BlockType::Bed {
@@ -1623,7 +1696,7 @@ async fn run() {
                 open_container = None;
                 player.inventory_open = false;
                 return_cursor(&mut inv_slots, &mut inv_cursor);
-                window.set_cursor_mode(glfw::CursorMode::Disabled);
+                set_game_cursor_mode(&mut window, smoke_world, glfw::CursorMode::Disabled);
             }
             if world.pending_hurt > 0 {
                 player.take_damage(world.pending_hurt);
@@ -1642,7 +1715,7 @@ async fn run() {
                 load_position = player.position;
                 world.is_loading = true;
                 game_state = GameState::Loading;
-                window.set_cursor_mode(glfw::CursorMode::Disabled);
+                set_game_cursor_mode(&mut window, smoke_world, glfw::CursorMode::Disabled);
                 continue;
             }
 
@@ -2006,7 +2079,7 @@ async fn run() {
                     &mvp,
                     selected_skin,
                     aspect,
-                    hand_swing.amount(),
+                    hand_swing.progress(),
                     bob,
                     world.entity_lighting(eye_pos),
                 );
@@ -3165,6 +3238,10 @@ async fn run() {
                 smoke_frames += 1;
                 fancy_gfx_setting = smoke_frames < 72;
                 if smoke_frames == 144 {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    world::combat_smoke::run();
+                    smoke::combat_poses(&shader, framebuffer_width, framebuffer_height)
+                        .expect("Combat poses were not visible");
                     smoke::hand_occlusion(
                         &shader,
                         world.atlas.as_ref().unwrap(),

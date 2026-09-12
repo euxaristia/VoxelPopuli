@@ -30,7 +30,7 @@ pub fn hand_occlusion(
     let item = crate::hand::build_item_mesh(BlockType::Stone);
     for (pose, swing, held) in [
         ("idle", 0., None),
-        ("punch", 1., None),
+        ("punch", 0.5, None),
         ("item", 0.5, Some(&item)),
     ] {
         let mut reference = None;
@@ -116,6 +116,78 @@ pub fn hand_input(frame: u32) -> Option<glfw::WindowEvent> {
         action,
         glfw::Modifiers::empty(),
     ))
+}
+
+/// Render the same articulated meshes used in gameplay, including hit tint.
+pub fn combat_poses(shader: &Shader, width: i32, height: i32) -> Result<(), String> {
+    use crate::mob::{Mob, MobKind};
+    use glam::{Mat4, Vec3, Vec4};
+    let visuals = crate::mob_visuals::MobVisuals::new();
+    let target = RenderTexture2D::new(480, 480);
+    let viewer = Vec3::new(3.0, 2.0, 5.0);
+    let mvp = Mat4::perspective_rh(50.0f32.to_radians(), 1.0, 0.1, 30.0)
+        * Mat4::look_at_rh(viewer, Vec3::Y * 1.3, Vec3::Y);
+    for (name, kind) in [("zombie", MobKind::Zombie), ("golem", MobKind::Golem)] {
+        let mut idle: Option<crate::png_io::Image> = None;
+        for pose in ["idle", "attack", "hurt", "death"] {
+            let mut mob = Mob::new(kind, Vec3::ZERO, Vec3::ZERO, 0);
+            mob.yaw = viewer.z.atan2(viewer.x);
+            match pose {
+                "attack" => {
+                    mob.animation.attack();
+                    mob.animation.update(0.15);
+                }
+                "hurt" => {
+                    mob.take_damage(1.0);
+                }
+                "death" => {
+                    mob.take_damage(1000.0);
+                    mob.animation.death_elapsed = 0.5;
+                }
+                _ => {}
+            }
+            target.bind();
+            renderer::clear(0.03, 0.04, 0.06, 1.0);
+            renderer::set_depth_test(true);
+            renderer::set_depth_write(true);
+            renderer::set_cull(true);
+            renderer::set_blend(false);
+            shader.bind();
+            shader.set_float(shader.get_uniform_location("uFogDensity"), 0.0);
+            shader.set_float(shader.get_uniform_location("uHdrScale"), 1.0);
+            shader.set_int(shader.get_uniform_location("uHdrOutput"), 0);
+            shader.set_int(shader.get_uniform_location("uBodyType"), 0);
+            shader.set_vec3(shader.get_uniform_location("sunDir"), Vec3::Y);
+            shader.set_vec3(shader.get_uniform_location("viewPos"), viewer);
+            shader.set_vec4(
+                shader.get_uniform_location("uColor"),
+                Vec4::new(1.0, 0.0, 1.0, 1.0),
+            );
+            shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+            visuals.draw(&mob, shader, 0.0, viewer);
+            RenderTexture2D::unbind();
+            renderer::end_frame(width, height);
+            let path = std::path::Path::new("target/test-artifacts")
+                .join(format!("combat-{name}-{pose}.png"));
+            target.save_png(&path)?;
+            let pixels = crate::png_io::load(path).map_err(|e| e.to_string())?;
+            if let Some(idle) = &idle {
+                let changed = idle
+                    .pixels()
+                    .zip(pixels.pixels())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                assert!(
+                    changed > 200,
+                    "{name} {pose} did not change the rendered mob"
+                );
+                println!("Combat {name} {pose}: {changed} changed pixels");
+            } else {
+                idle = Some(pixels);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn hand_capture(frame: u32) -> Option<String> {

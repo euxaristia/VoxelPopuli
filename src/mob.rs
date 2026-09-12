@@ -46,6 +46,7 @@ pub struct Mob {
     pub walk_blend: f32,
     pub anger_time: f32,
     pub swim_pitch: f32,
+    pub animation: crate::combat_animation::MobAnimation,
 }
 
 impl Mob {
@@ -68,6 +69,7 @@ impl Mob {
             walk_blend: 0.0,
             anger_time: 0.0,
             swim_pitch: 0.0,
+            animation: Default::default(),
         }
     }
 
@@ -76,6 +78,9 @@ impl Mob {
     }
 
     pub fn take_damage(&mut self, damage: f32) -> bool {
+        if damage.is_finite() && damage > 0.0 && self.health > 0.0 {
+            self.animation.hurt_remaining = crate::combat_animation::HURT_SECONDS;
+        }
         self.health = (self.health - damage.max(0.0)).max(0.0);
         if damage > 0.0 && self.kind.species().temper == Temper::Neutral {
             self.anger_time = 15.0;

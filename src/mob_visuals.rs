@@ -1403,6 +1403,7 @@ impl MobVisuals {
         let scale = render_height(mob) / model.height;
         let base = Mat4::from_translation(mob.position)
             * facing(mob.yaw)
+            * Mat4::from_rotation_z(mob.animation.death_roll())
             * Mat4::from_rotation_x(if mob.kind == MobKind::Dolphin {
                 mob.swim_pitch - 0.05 - 0.05 * (time * 6.0).cos()
             } else if mob.kind.species().motion == crate::mob_catalog::Motion::Swim {
@@ -1418,6 +1419,11 @@ impl MobVisuals {
                 variant_tint(mob)
             } else {
                 Vec4::ONE
+            };
+            let tint = if mob.animation.hurt_remaining > 0.0 || mob.health <= 0.0 {
+                tint * Vec4::new(1.0, 0.35, 0.35, 1.0)
+            } else {
+                tint
             };
             shader.set_vec4(shader.get_uniform_location("colDiffuse"), tint);
             shader.set_mat4(shader.get_uniform_location("uModel"), &transform);
@@ -1452,13 +1458,21 @@ fn joint_transforms(joints: &[Joint], mob: &Mob, time: f32, viewer: Vec3) -> Vec
                     mob.kind,
                     MobKind::Zombie | MobKind::Husk | MobKind::Drowned | MobKind::ZombifiedPiglin
                 ) {
-                    rotation.x -= 1.35;
+                    rotation = crate::combat_animation::zombie_arm(
+                        mob.animation.swing.progress(),
+                        time,
+                        sign,
+                    );
                 }
                 if matches!(
                     mob.kind,
                     MobKind::Skeleton | MobKind::Stray | MobKind::Bogged | MobKind::Parched
                 ) {
                     rotation.x -= 0.8;
+                }
+                if mob.kind == MobKind::Golem && mob.animation.golem_attack_remaining > 0.0 {
+                    rotation.x =
+                        crate::combat_animation::golem_arm(mob.animation.golem_attack_remaining);
                 }
             }
             Action::Wing(sign) => {
@@ -1516,6 +1530,28 @@ fn variant_tint(mob: &Mob) -> Vec4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zombie_attack_changes_both_arm_joints_without_moving_feet() {
+        let mut mob = Mob::new(MobKind::Zombie, Vec3::ZERO, Vec3::ZERO, 0);
+        let design = design(mob.kind);
+        let idle = joint_transforms(&design.joints, &mob, 0.0, Vec3::Z * 4.0);
+        mob.animation.attack();
+        mob.animation.update(0.15);
+        let attack = joint_transforms(&design.joints, &mob, 0.0, Vec3::Z * 4.0);
+        let mut arms = 0;
+        for (i, joint) in design.joints.iter().enumerate() {
+            match joint.action {
+                Action::Arm(_) => {
+                    assert!(!idle[i].abs_diff_eq(attack[i], 0.01));
+                    arms += 1;
+                }
+                Action::Stride(_) => assert_eq!(idle[i], attack[i]),
+                _ => {}
+            }
+        }
+        assert_eq!(arms, 2);
+    }
     #[test]
     fn cattle_and_sheep_keep_block_scale_and_half_size_babies() {
         for kind in [MobKind::Cow, MobKind::Mooshroom, MobKind::Sheep] {
