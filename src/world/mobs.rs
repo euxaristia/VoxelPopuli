@@ -234,7 +234,10 @@ impl World {
             if options.is_empty() {
                 return;
             }
-            let kind = options[random as usize % options.len()];
+            let mut kind = options[random as usize % options.len()];
+            if kind == MobKind::Zombie && ((random >> 24) % 20 == 0) {
+                kind = MobKind::ZombieVillager;
+            }
             let pos = Vec3::new(
                 x as f32 + 0.5,
                 if water {

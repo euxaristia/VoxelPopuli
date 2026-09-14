@@ -2008,6 +2008,8 @@ impl ChunkData {
                         (fx, fx + 1.0, fz, fz + 1.0, 0.125)
                     } else if block == BlockType::Bell {
                         (fx + 0.2, fx + 0.8, fz + 0.2, fz + 0.8, 0.6)
+                    } else if matches!(block, BlockType::OakDoor | BlockType::IronDoor) {
+                        (fx, fx + 1.0, fz, fz + 3.0 / 16.0, 1.0)
                     } else {
                         (fx, fx + 1.0, fz, fz + 1.0, 1.0)
                     };
@@ -2212,8 +2214,9 @@ impl ChunkData {
                         ),
                     ];
                     let is_cactus = block == BlockType::Cactus;
+                    let is_door = matches!(block, BlockType::OakDoor | BlockType::IronDoor);
                     for (i, (neighbor, norm, s_mul)) in neighbors.iter().enumerate() {
-                        if is_cactus || should_draw_face(block, *neighbor) {
+                        if is_cactus || (is_door && i == 0) || should_draw_face(block, *neighbor) {
                             if i == 0 {
                                 // Z+
                                 let z_coord = if is_cactus { fz + 15.0 / 16.0 } else { max_z };

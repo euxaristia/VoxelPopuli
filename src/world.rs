@@ -819,6 +819,29 @@ impl World {
     }
 
     pub fn finish_mob_death(&mut self, mut mob: Mob) {
+        if mob.kind == MobKind::Villager {
+            let zombie_kill = matches!(
+                mob.last_damage_source,
+                Some(MobKind::Zombie | MobKind::Husk | MobKind::Drowned | MobKind::ZombieVillager)
+            );
+            let infect = match self.difficulty {
+                crate::skeleton_ai::Difficulty::Peaceful | crate::skeleton_ai::Difficulty::Easy => {
+                    false
+                }
+                crate::skeleton_ai::Difficulty::Normal => {
+                    zombie_kill && rand::random::<f32>() < 0.5
+                }
+                crate::skeleton_ai::Difficulty::Hard => zombie_kill,
+            };
+            if infect {
+                let mut zv = Mob::new(MobKind::ZombieVillager, mob.position, mob.home, mob.variant);
+                if mob.is_baby() {
+                    zv.animal.growth = mob.animal.growth;
+                }
+                self.mobs.push(zv);
+                return;
+            }
+        }
         self.collect_mob_drops(&mob);
         mob.animation.death_elapsed = 0.0;
         mob.animation.swing.reset();
@@ -1908,6 +1931,10 @@ impl World {
             let lz = z - iz as f32;
             return lx >= 1.0 / 16.0 && lx <= 15.0 / 16.0 && lz >= 1.0 / 16.0 && lz <= 15.0 / 16.0;
         }
+        if matches!(b, BlockType::OakDoor | BlockType::IronDoor) {
+            let lz = z - iz as f32;
+            return lz >= 0.0 && lz <= 3.0 / 16.0;
+        }
         b.is_solid()
     }
 
@@ -1924,7 +1951,14 @@ impl World {
         for x in min_x..=max_x {
             for y in min_y..=max_y {
                 for z in min_z..=max_z {
-                    if self.solid_at(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5) {
+                    let b = self.get_block(x, y, z);
+                    if matches!(b, BlockType::OakDoor | BlockType::IronDoor) {
+                        let door_min_z = z as f32;
+                        let door_max_z = z as f32 + 3.0 / 16.0;
+                        if pos.z + hw > door_min_z && pos.z - hw < door_max_z {
+                            return true;
+                        }
+                    } else if self.solid_at(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5) {
                         return true;
                     }
                 }
@@ -2283,19 +2317,47 @@ impl World {
                 }
             }
 
+            let is_zombie_type = matches!(
+                mob.kind,
+                MobKind::Zombie | MobKind::Husk | MobKind::Drowned | MobKind::ZombieVillager
+            );
             let player_dist = mob.position.distance(player_pos);
+            let mut target_pos = player_pos;
+            let mut target_dist = player_dist;
+            let mut target_id = None;
+            let mut is_target_player = true;
+            if is_zombie_type {
+                for other in before.iter().chain(after.iter()) {
+                    if (other.kind == MobKind::Villager || other.kind == MobKind::Golem)
+                        && other.health > 0.0
+                    {
+                        let d = mob.position.distance(other.position);
+                        if d < 16.0 && (d < target_dist || target_dist >= 16.0) {
+                            target_dist = d;
+                            target_pos = other.position;
+                            target_id = Some((other.id, other.kind, other.half_width()));
+                            is_target_player = false;
+                        }
+                    }
+                }
+            }
+
             let attack_origin = mob.position + Vec3::Y * mob.height() * 0.75;
-            let attack_target = player_pos + Vec3::Y * 1.2;
+            let attack_target = target_pos + Vec3::Y * 1.2;
             let attack_line = attack_target - attack_origin;
-            let can_see_player = mob.is_hostile()
-                && player_dist < 16.0
+            let can_see_target = mob.is_hostile()
+                && target_dist < 16.0
                 && attack_line.length_squared() > 0.001
                 && !self
                     .raycast(attack_origin, attack_line, attack_line.length())
                     .hit;
-            if !skeleton && mob.is_hostile() && player_dist < 16.0 && player_dist > 0.05 {
-                let ranged_shot = mob.track_combat_target(player_pos, can_see_player);
-                if mob.kind == MobKind::Creeper && player_dist < 2.2 && can_see_player {
+            if !skeleton && mob.is_hostile() && target_dist < 16.0 && target_dist > 0.05 {
+                let ranged_shot = mob.track_combat_target(target_pos, can_see_target);
+                if mob.kind == MobKind::Creeper
+                    && target_dist < 2.2
+                    && can_see_target
+                    && is_target_player
+                {
                     mob.walk_speed = 0.0;
                     if mob.attack_cooldown <= 0.0 {
                         self.detonations
@@ -2303,16 +2365,20 @@ impl World {
                         mob.health = 0.0;
                     }
                 } else if !mob.is_ranged()
-                    && player_dist < 1.3 + mob.half_width()
-                    && can_see_player
+                    && target_dist < 1.3 + mob.half_width() + target_id.map(|t| t.2).unwrap_or(0.0)
+                    && can_see_target
                     && mob.attack_cooldown <= 0.0
                 {
-                    self.pending_hurt += mob.kind.species().damage;
+                    if is_target_player {
+                        self.pending_hurt += mob.kind.species().damage;
+                    } else if let Some((tid, _, _)) = target_id {
+                        mob_hits.push((tid, mob.kind.species().damage as f32, mob.id));
+                    }
                     mob.attack_cooldown = 1.0;
                     mob.animation.attack();
                 } else if ranged_shot {
                     let origin = mob.position + Vec3::new(0.0, 1.4, 0.0);
-                    let target = player_pos + Vec3::new(0.0, 1.4, 0.0);
+                    let target = target_pos + Vec3::new(0.0, 1.4, 0.0);
                     let dir = (target - origin).normalize_or_zero();
                     if dir.length_squared() > 0.01 {
                         self.arrows.push(crate::block::ArrowEntity {
@@ -2411,8 +2477,11 @@ impl World {
                     mob.wander_timer = mob.wander_timer.min(0.2);
                     continue;
                 }
+                let is_spider = matches!(mob.kind, MobKind::Spider | MobKind::CaveSpider);
                 if !self.mob_box_blocked(cand, hw, height) {
                     mob.position = cand;
+                } else if is_spider {
+                    mob.velocity.y = 3.5;
                 } else if mob.grounded {
                     let mut up = cand;
                     up.y += 1.0;
@@ -2481,11 +2550,12 @@ impl World {
 
         let mut births = Vec::new();
         for (id, damage, attacker) in mob_hits {
+            let attacker_kind = mobs.iter().find(|m| m.id == attacker).map(|m| m.kind);
             if let Some(victim) = mobs.iter_mut().find(|m| m.id == id && m.health > 0.0) {
-                victim.skeleton.hurt_by(
-                    crate::skeleton_ai::TargetId::Mob(attacker),
-                    Some(MobKind::Skeleton),
-                );
+                victim.last_damage_source = attacker_kind;
+                victim
+                    .skeleton
+                    .hurt_by(crate::skeleton_ai::TargetId::Mob(attacker), attacker_kind);
                 victim.take_combat_damage(damage);
             }
         }
@@ -2614,6 +2684,7 @@ impl World {
         let bx = x.rem_euclid(CHUNK_WIDTH as i32) as usize;
         let bz = z.rem_euclid(CHUNK_DEPTH as i32) as usize;
 
+        let mut should_record_edit = false;
         if let Some(chunk) = self.get_chunk_mut(cx, cz) {
             let old_level = chunk.liquid_levels[bx][y as usize][bz];
             if old_level == level {
@@ -2629,9 +2700,19 @@ impl World {
                     chunk.blocks[bx][y as usize][bz] = BlockType::Air;
                 }
             }
+            should_record_edit = true;
             if !chunk.dirty {
                 chunk.dirty = true;
                 self.dirty_count += 1;
+            }
+        }
+        if should_record_edit {
+            if let Ok(mut edits) = self.edits.write() {
+                if level == 1 {
+                    edits.insert((x, y, z), BlockType::Water);
+                } else if level == 0 {
+                    edits.remove(&(x, y, z));
+                }
             }
         }
     }
@@ -4095,5 +4176,131 @@ mod tests {
             BlockType::Cactus,
             "Cactus naturally grew 1 block"
         );
+    }
+
+    #[test]
+    fn test_zombie_infects_villager() {
+        let mut world = World::simulation(42);
+        world.difficulty = crate::skeleton_ai::Difficulty::Hard;
+        let mut villager = crate::mob::Mob::new(
+            crate::mob::MobKind::Villager,
+            Vec3::new(10.0, 64.0, 10.0),
+            Vec3::new(10.0, 64.0, 10.0),
+            2,
+        );
+        villager.last_damage_source = Some(crate::mob::MobKind::Zombie);
+        world.finish_mob_death(villager);
+
+        assert_eq!(world.mobs.len(), 1);
+        assert_eq!(world.mobs[0].kind, crate::mob::MobKind::ZombieVillager);
+        assert_eq!(world.mobs[0].variant, 2);
+
+        // Baby villager infection preserves baby growth
+        world.mobs.clear();
+        let mut baby_villager = crate::mob::Mob::new(
+            crate::mob::MobKind::Villager,
+            Vec3::new(10.0, 64.0, 10.0),
+            Vec3::new(10.0, 64.0, 10.0),
+            3,
+        );
+        baby_villager.animal.growth = 800.0;
+        baby_villager.last_damage_source = Some(crate::mob::MobKind::Zombie);
+        world.finish_mob_death(baby_villager);
+
+        assert_eq!(world.mobs.len(), 1);
+        assert_eq!(world.mobs[0].kind, crate::mob::MobKind::ZombieVillager);
+        assert!(world.mobs[0].is_baby());
+        assert_eq!(world.mobs[0].animal.growth, 800.0);
+    }
+
+    #[test]
+    fn test_spider_wall_climbing() {
+        let mut world = World::simulation(42);
+        let idx = world.get_pool_index(0, 0);
+        world.chunks[idx] = Some(Box::new(crate::chunk::Chunk::new(0, 0, 42)));
+
+        for x in 8..=12 {
+            for z in 8..=12 {
+                world.set_block(x, 63, z, BlockType::Stone);
+            }
+        }
+        for y in 64..=66 {
+            for z in 8..=12 {
+                world.set_block(11, y, z, BlockType::Stone);
+            }
+        }
+
+        let mut spider = crate::mob::Mob::new(
+            crate::mob::MobKind::Spider,
+            Vec3::new(10.25, 64.0, 10.0),
+            Vec3::new(10.25, 64.0, 10.0),
+            0,
+        );
+        spider.yaw = 0.0;
+        spider.walk_speed = 2.0;
+        world.mobs.push(spider);
+
+        // Player is behind the wall at x=20, so spider heads into the wall to pursue
+        world.update_mobs(Vec3::new(20.0, 64.0, 10.0), 0.05, BlockType::Air);
+
+        assert_eq!(world.mobs.len(), 1);
+        assert!(
+            world.mobs[0].velocity.y > 0.0,
+            "Spider climbing wall has positive vertical velocity: {}",
+            world.mobs[0].velocity.y
+        );
+        assert!(
+            world.mobs[0].position.y > 64.0,
+            "Spider climbed upward: y={}",
+            world.mobs[0].position.y
+        );
+    }
+
+    #[test]
+    fn test_infinite_water_source_generation_and_persistence() {
+        let mut world = World::simulation(42);
+        let idx = world.get_pool_index(0, 0);
+        world.chunks[idx] = Some(Box::new(crate::chunk::Chunk::new(0, 0, 42)));
+
+        for x in 9..=13 {
+            for z in 9..=13 {
+                world.set_block(x, 63, z, BlockType::Stone);
+            }
+        }
+
+        world.set_liquid_level(10, 64, 10, 1);
+        world.set_liquid_level(10, 64, 12, 1);
+        world.set_liquid_level(10, 64, 11, 2);
+        world.active_water.insert((10, 64, 11));
+
+        world.update_water(0.3);
+
+        assert_eq!(
+            world.get_liquid_level(10, 64, 11),
+            1,
+            "Middle block became source"
+        );
+        let edits = world.edits.read().unwrap();
+        assert_eq!(
+            edits.get(&(10, 64, 11)),
+            Some(&BlockType::Water),
+            "Infinite source is saved in edits for persistence"
+        );
+    }
+
+    #[test]
+    fn test_door_geometry_and_collision() {
+        let mut world = World::simulation(42);
+        let idx = world.get_pool_index(0, 0);
+        world.chunks[idx] = Some(Box::new(crate::chunk::Chunk::new(0, 0, 42)));
+
+        world.set_block(5, 64, 5, BlockType::OakDoor);
+        world.set_block(6, 64, 5, BlockType::IronDoor);
+
+        assert!(world.solid_at(5.5, 64.5, 5.1));
+        assert!(world.solid_at(6.5, 64.5, 5.1));
+
+        assert!(!world.solid_at(5.5, 64.5, 5.5));
+        assert!(!world.solid_at(6.5, 64.5, 5.5));
     }
 }

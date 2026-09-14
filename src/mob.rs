@@ -64,6 +64,7 @@ pub struct Mob {
     pub anger_time: f32,
     pub swim_pitch: f32,
     pub animation: crate::combat_animation::MobAnimation,
+    pub last_damage_source: Option<MobKind>,
 }
 
 impl Mob {
@@ -90,6 +91,7 @@ impl Mob {
             anger_time: 0.0,
             swim_pitch: 0.0,
             animation: Default::default(),
+            last_damage_source: None,
         }
     }
 

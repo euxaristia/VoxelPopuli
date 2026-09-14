@@ -264,6 +264,10 @@ impl Player {
             let lz = p.z - bz as f32;
             return lx >= 1.0 / 16.0 && lx <= 15.0 / 16.0 && lz >= 1.0 / 16.0 && lz <= 15.0 / 16.0;
         }
+        if matches!(b, BlockType::OakDoor | BlockType::IronDoor) {
+            let lz = p.z - bz as f32;
+            return lz >= 0.0 && lz <= 3.0 / 16.0;
+        }
         b.is_solid()
     }
 

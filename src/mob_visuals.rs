@@ -28,7 +28,7 @@ enum Face {
     Top,
     Bottom,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Action {
     Fixed,
     Head,
@@ -181,8 +181,16 @@ fn design(kind: MobKind) -> Design {
             d.leg(2.0, 0.0, 8.0, 3.5, -1.0, true);
             d.cube(0, [-4.5, 4.0, -3.0], [9.0, 16.0, 6.0], Body);
             d.cube(0, [-4.6, 6.0, -3.1], [9.2, 1.0, 6.2], Accent);
-            d.cube(0, [-6.0, 14.0, 2.2], [12.0, 3.0, 3.5], Body);
-            d.cube(0, [-2.0, 14.2, 4.0], [4.0, 2.4, 2.0], Limb);
+            if kind == ZombieVillager {
+                for (x, sign) in [(-5.5, -1.0), (5.5, 1.0)] {
+                    let arm = d.joint([x, 19.0, 0.0], Action::Arm(sign));
+                    d.cube(arm, [x - 1.75, 7.0, -1.75], [3.5, 12.0, 3.5], Limb);
+                    d.cube(arm, [x - 1.79, 15.0, -1.79], [3.58, 4.0, 3.58], Body);
+                }
+            } else {
+                d.cube(0, [-6.0, 14.0, 2.2], [12.0, 3.0, 3.5], Body);
+                d.cube(0, [-2.0, 14.2, 4.0], [4.0, 2.4, 2.0], Limb);
+            }
             let h = d.joint([0.0, 20.0, 0.0], Action::Head);
             d.cube(h, [-4.0, 20.0, -4.0], [8.0, 10.0, 8.0], Head);
             d.cube(h, [-1.0, 21.0, 4.0], [2.0, 4.0, 2.5], Muzzle);
@@ -1060,10 +1068,18 @@ fn texel(
         {
             c = shade(base, -13);
         }
-        if matches!(kind, Creeper | Bogged | Zombie | Husk | Drowned)
-            && (x / 2 * 3 + y / 2 * 7) % 11 < 3
+        if matches!(
+            kind,
+            Creeper | Bogged | Zombie | Husk | Drowned | ZombieVillager
+        ) && (x / 2 * 3 + y / 2 * 7) % 11 < 3
         {
             c = shade(base, -22);
+        }
+        if kind == ZombieVillager
+            && surface == Body
+            && ((x + y * 2) % 7 == 2 || (x * 3 + y) % 9 == 0)
+        {
+            c = shade(s.accent, grain);
         }
         if kind == Bee && !matches!(face, Face::Front | Face::Back) && y % 4 < 2 {
             c = s.accent;
@@ -1185,6 +1201,13 @@ fn texel(
         }
         if matches!(kind, Spider | CaveSpider | Golem) {
             return [177, 49, 41];
+        }
+        if kind == ZombieVillager {
+            return if px == 1 || px == 6 {
+                [180, 50, 45]
+            } else {
+                [90, 15, 15]
+            };
         }
         if kind == Enderman {
             return [207, 134, 238];
@@ -1456,7 +1479,11 @@ fn joint_transforms(joints: &[Joint], mob: &Mob, time: f32, viewer: Vec3) -> Vec
                 rotation.x = -swing * sign * 0.45;
                 if matches!(
                     mob.kind,
-                    MobKind::Zombie | MobKind::Husk | MobKind::Drowned | MobKind::ZombifiedPiglin
+                    MobKind::Zombie
+                        | MobKind::Husk
+                        | MobKind::Drowned
+                        | MobKind::ZombifiedPiglin
+                        | MobKind::ZombieVillager
                 ) {
                     rotation = crate::combat_animation::zombie_arm(
                         mob.animation.swing.progress(),
@@ -1493,12 +1520,18 @@ fn joint_transforms(joints: &[Joint], mob: &Mob, time: f32, viewer: Vec3) -> Vec
             Action::Feelers(phase) => rotation.x = (time * 2.5 + phase).sin() * 0.23,
         }
         let rotation = Mat4::from_euler(glam::EulerRot::XYZ, rotation.x, rotation.y, rotation.z);
+        let head_scale = if mob.is_baby() && joint.action == Action::Head {
+            Mat4::from_scale(Vec3::splat(1.75))
+        } else {
+            Mat4::IDENTITY
+        };
         let transform = if let Some(parent) = joint.parent {
             transforms[parent]
                 * Mat4::from_translation(joint.pivot - joints[parent].pivot)
                 * rotation
+                * head_scale
         } else {
-            Mat4::from_translation(joint.pivot) * rotation
+            Mat4::from_translation(joint.pivot) * rotation * head_scale
         };
         transforms.push(transform);
     }
@@ -1754,5 +1787,82 @@ mod tests {
                 .collect();
             assert_ne!(front, back, "missing face on {kind:?}");
         }
+    }
+    #[test]
+    fn test_zombie_villager_visuals_and_baby_head_scaling() {
+        let eye_sclera = texel(
+            MobKind::ZombieVillager,
+            Surface::Head,
+            Face::Front,
+            1,
+            2,
+            8,
+            8,
+        );
+        let eye_pupil = texel(
+            MobKind::ZombieVillager,
+            Surface::Head,
+            Face::Front,
+            2,
+            2,
+            8,
+            8,
+        );
+        assert_eq!(eye_sclera, [180, 50, 45]);
+        assert_eq!(eye_pupil, [90, 15, 15]);
+
+        let villager_nose = texel(MobKind::Villager, Surface::Muzzle, Face::Front, 0, 0, 2, 4);
+        let zombie_villager_nose = texel(
+            MobKind::ZombieVillager,
+            Surface::Muzzle,
+            Face::Front,
+            0,
+            0,
+            2,
+            4,
+        );
+        assert_ne!(villager_nose, zombie_villager_nose);
+        assert!(
+            zombie_villager_nose[1] > zombie_villager_nose[0],
+            "zombie nose should be greenish"
+        );
+
+        let zv_design = design(MobKind::ZombieVillager);
+        let has_arms = zv_design
+            .joints
+            .iter()
+            .any(|j| matches!(j.action, Action::Arm(_)));
+        assert!(has_arms, "zombie villager should have articulated arms");
+
+        let v_design = design(MobKind::Villager);
+        let villager_has_arms = v_design
+            .joints
+            .iter()
+            .any(|j| matches!(j.action, Action::Arm(_)));
+        assert!(
+            !villager_has_arms,
+            "regular villager should have folded arms"
+        );
+
+        let mut baby = Mob::new(MobKind::Cow, Vec3::ZERO, Vec3::ZERO, 0);
+        baby.animal.growth = 20.0 * 60.0;
+        assert!(baby.is_baby());
+        let cow_design = design(MobKind::Cow);
+        let baby_transforms = joint_transforms(&cow_design.joints, &baby, 0.0, Vec3::ZERO);
+        let adult_transforms = joint_transforms(
+            &cow_design.joints,
+            &Mob::new(MobKind::Cow, Vec3::ZERO, Vec3::ZERO, 0),
+            0.0,
+            Vec3::ZERO,
+        );
+        let head_idx = cow_design
+            .joints
+            .iter()
+            .position(|j| j.action == Action::Head)
+            .unwrap();
+        // The scale of the head transform for baby should be 1.75x
+        let baby_head_x_scale = baby_transforms[head_idx].x_axis.length();
+        let adult_head_x_scale = adult_transforms[head_idx].x_axis.length();
+        assert!((baby_head_x_scale / adult_head_x_scale - 1.75).abs() < 1e-4);
     }
 }
