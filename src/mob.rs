@@ -310,13 +310,13 @@ impl Mob {
             MobKind::Villager => None,
             MobKind::Golem => Some((BlockType::IronIngot, 3)),
             MobKind::Zombie => Some((BlockType::RawIron, 1)),
-            MobKind::Skeleton => Some((BlockType::Stick, 1)),
+            MobKind::Skeleton => Some((BlockType::Bone, 1)),
             MobKind::Creeper => Some((BlockType::Gunpowder, 1)),
             MobKind::Pig => Some((BlockType::RawPorkchop, 1 + (rand::random::<u8>() % 3))),
             MobKind::Cow => Some((BlockType::RawBeef, 1 + (rand::random::<u8>() % 3))),
             MobKind::Sheep => Some((BlockType::Wool, 1)),
             MobKind::Mooshroom => Some((BlockType::RawBeef, 2)),
-            MobKind::Stray | MobKind::Bogged | MobKind::Parched => Some((BlockType::Stick, 1)),
+            MobKind::Stray | MobKind::Bogged | MobKind::Parched => Some((BlockType::Bone, 1)),
             _ => None,
         }
     }
@@ -448,7 +448,7 @@ mod tests {
 
         let sk = Mob::new(MobKind::Skeleton, pos, home, 0);
         assert_eq!(sk.height(), 1.9);
-        assert_eq!(sk.drop_item(), Some((BlockType::Stick, 1)));
+        assert_eq!(sk.drop_item(), Some((BlockType::Bone, 1)));
 
         let c = Mob::new(MobKind::Creeper, pos, home, 0);
         assert_eq!(c.drop_item(), Some((BlockType::Gunpowder, 1)));

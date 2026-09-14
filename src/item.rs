@@ -70,6 +70,7 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
         Sponge => s(0.6, TT::None, TM::None, false, Sponge, 1),
         Wool => s(0.8, TT::None, TM::None, false, Wool, 1),
         Wheat => s(0.0, TT::None, TM::None, false, Wheat, 1),
+        WheatStage0 | WheatStage1 | WheatStage2 => s(0.0, TT::None, TM::None, false, WheatSeeds, 1),
         Cactus => s(0.4, TT::None, TM::None, false, Cactus, 1),
 
         // Wood blocks (axe)
@@ -357,6 +358,7 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         Clay => (9, 7),
         Farmland => (10, 7),
         Wheat => (11, 7),
+        WheatStage0 | WheatStage1 | WheatStage2 => (11, 7),
         RedstoneOre => (12, 7),
         MobSpawner => (13, 7),
 
@@ -370,6 +372,9 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         Gunpowder => (6, 4),
         Leather => (7, 4),
         RedstoneDust => (8, 4),
+        WheatSeeds => (9, 4),
+        Bone => (5, 10),
+        BoneMeal => (6, 10),
 
         // Row 5: wood & stone tools
         WoodPickaxe => (0, 5),

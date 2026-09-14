@@ -1804,7 +1804,14 @@ impl ChunkData {
                         continue;
                     }
 
-                    if block == BlockType::Wheat {
+                    let is_crop = matches!(
+                        block,
+                        BlockType::Wheat
+                            | BlockType::WheatStage0
+                            | BlockType::WheatStage1
+                            | BlockType::WheatStage2
+                    );
+                    if is_crop {
                         let (v, t, n, c) = (&mut v_tr, &mut t_tr, &mut n_tr, &mut c_tr);
                         let (tx, ty) = crate::item::atlas_uv(block);
                         let u0 = tx as f32 * ts + pad;
@@ -1822,7 +1829,13 @@ impl ChunkData {
                         let block_val = (255.0 * calc_light_f(block_light)) as u8;
                         let color = [sky_val, block_val, 255, 255];
                         let y0 = fy;
-                        let y1 = fy + 0.875;
+                        let crop_height = match block {
+                            BlockType::WheatStage0 => 0.25,
+                            BlockType::WheatStage1 => 0.50,
+                            BlockType::WheatStage2 => 0.72,
+                            _ => 0.875,
+                        };
+                        let y1 = fy + crop_height;
                         let x0 = fx + 0.12;
                         let x1 = fx + 0.88;
                         let z0 = fz + 0.12;

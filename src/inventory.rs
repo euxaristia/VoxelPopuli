@@ -443,6 +443,69 @@ pub fn try_place_block_with_lock(
         return true;
     }
 
+    if s.block == BlockType::WheatSeeds {
+        let target = world.get_block(res.x, res.y, res.z);
+        if target == BlockType::Farmland {
+            let (cx, cy, cz) = (res.x, res.y + 1, res.z);
+            if world.get_block(cx, cy, cz) == BlockType::Air && !player.intersects_block(cx, cy, cz)
+            {
+                world.set_block(cx, cy, cz, BlockType::WheatStage0);
+                s.count -= 1;
+                if s.count == 0 {
+                    inv_slots[selected_slot] = None;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if s.block == BlockType::BoneMeal {
+        let target = world.get_block(res.x, res.y, res.z);
+        let crop_pos = if matches!(
+            target,
+            BlockType::WheatStage0 | BlockType::WheatStage1 | BlockType::WheatStage2
+        ) {
+            Some((res.x, res.y, res.z))
+        } else if target == BlockType::Farmland
+            && matches!(
+                world.get_block(res.x, res.y + 1, res.z),
+                BlockType::WheatStage0 | BlockType::WheatStage1 | BlockType::WheatStage2
+            )
+        {
+            Some((res.x, res.y + 1, res.z))
+        } else {
+            None
+        };
+
+        if let Some((cx, cy, cz)) = crop_pos {
+            world.set_block(cx, cy, cz, BlockType::Wheat);
+            for _ in 0..6 {
+                let r1 = (rand::random::<f32>() - 0.5) * 0.6;
+                let r2 = rand::random::<f32>() * 0.5;
+                let r3 = (rand::random::<f32>() - 0.5) * 0.6;
+                world.particles.push(crate::block::Particle {
+                    position: Vec3::new(
+                        cx as f32 + 0.5 + r1,
+                        cy as f32 + 0.2 + r2,
+                        cz as f32 + 0.5 + r3,
+                    ),
+                    velocity: Vec3::new(r1 * 0.5, 0.4 + r2 * 0.5, r3 * 0.5),
+                    color: glam::Vec4::new(0.2, 0.8, 0.2, 1.0),
+                    life: 0.8,
+                    max_life: 0.8,
+                    scale: 0.08,
+                });
+            }
+            s.count -= 1;
+            if s.count == 0 {
+                inv_slots[selected_slot] = None;
+            }
+            return true;
+        }
+        return false;
+    }
+
     if !s.block.is_item() {
         let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
 
@@ -967,5 +1030,54 @@ mod tests {
         // 3rd block: must stay on vertical Y axis (x=10, z=5)
         assert!(lock.matches((10, 66, 5)));
         assert!(!lock.matches((11, 66, 5))); // Drift along X rejected
+    }
+
+    #[test]
+    fn test_wheat_seeds_planting_and_bone_meal() {
+        let mut world = World::simulation(1);
+        let mut player = Player::new(70.0);
+        player.position = Vec3::new(10.0, 70.0, 10.0);
+
+        world.set_block(0, 60, 0, BlockType::Farmland);
+
+        let mut inv = [None::<ItemStack>; INVENTORY_SLOT_COUNT];
+        inv[0] = Some(ItemStack::new(BlockType::WheatSeeds, 2));
+
+        let eye_pos = Vec3::new(0.5, 62.0, 0.5);
+        let look_dir = Vec3::new(0.0, -1.0, 0.0);
+        let mut lock = None;
+
+        // 1. Planting seeds on Farmland succeeds and sets WheatStage0
+        let planted = try_place_block_with_lock(
+            &mut world, &mut inv, 0, eye_pos, look_dir, &player, &mut lock,
+        );
+        assert!(planted);
+        assert_eq!(world.get_block(0, 61, 0), BlockType::WheatStage0);
+        assert_eq!(inv[0].unwrap().count, 1);
+
+        // 2. Bone meal on WheatStage0 matures it to Wheat
+        inv[0] = Some(ItemStack::new(BlockType::BoneMeal, 1));
+        let fertilized = try_place_block_with_lock(
+            &mut world, &mut inv, 0, eye_pos, look_dir, &player, &mut lock,
+        );
+        assert!(fertilized);
+        assert_eq!(world.get_block(0, 61, 0), BlockType::Wheat);
+        assert_eq!(inv[0], None);
+
+        // 3. Planting seeds on regular Dirt fails
+        world.set_block(2, 60, 2, BlockType::Dirt);
+        inv[0] = Some(ItemStack::new(BlockType::WheatSeeds, 1));
+        let placed_on_dirt = try_place_block_with_lock(
+            &mut world,
+            &mut inv,
+            0,
+            Vec3::new(2.5, 62.0, 2.5),
+            look_dir,
+            &player,
+            &mut lock,
+        );
+        assert!(!placed_on_dirt);
+        assert_eq!(inv[0].unwrap().count, 1);
+        assert_eq!(world.get_block(2, 61, 2), BlockType::Air);
     }
 }

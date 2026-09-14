@@ -246,6 +246,7 @@ pub struct World {
     fire_timer: f32,
     night_spawn_timer: f32,
     burn_timer: f32,
+    pub crop_timer: f32,
     pub visible_chunks: Vec<usize>,
     pub meshing_in_flight: i32,
     next_mesh_job_id: u64,
@@ -280,7 +281,7 @@ impl World {
         world
     }
 
-    fn simulation(seed: u64) -> Self {
+    pub(crate) fn simulation(seed: u64) -> Self {
         let mut chunks = Vec::with_capacity(CHUNK_POOL_SIZE);
         for _ in 0..CHUNK_POOL_SIZE {
             chunks.push(None);
@@ -326,6 +327,7 @@ impl World {
             fire_timer: 0.0,
             night_spawn_timer: 0.0,
             burn_timer: 0.0,
+            crop_timer: 0.0,
             visible_chunks: Vec::new(),
             meshing_in_flight: 0,
             next_mesh_job_id: 1,
@@ -1759,6 +1761,7 @@ impl World {
         self.update_water(_time);
         self.update_falling_blocks();
         self.update_fire(_time);
+        self.update_crops(_time);
         let standing_in_fire = self.get_block(
             player_pos.x.floor() as i32,
             player_pos.y.floor() as i32,
@@ -2650,6 +2653,86 @@ impl World {
             if self.get_block(x, y, z) == BlockType::Fire {
                 self.set_block(x, y, z, BlockType::Air);
             }
+        }
+    }
+
+    pub fn is_farmland_hydrated(&self, x: i32, y: i32, z: i32) -> bool {
+        for dx in -4..=4 {
+            for dz in -4..=4 {
+                for dy in 0..=1 {
+                    if self.get_block(x + dx, y + dy, z + dz) == BlockType::Water {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn update_crops(&mut self, dt: f32) {
+        self.crop_timer += dt;
+        if self.crop_timer < 1.0 {
+            return;
+        }
+        self.crop_timer = 0.0;
+
+        let mut crop_advances = Vec::new();
+        let mut farmland_dehydrates = Vec::new();
+
+        let edits_snapshot: Vec<((i32, i32, i32), BlockType)> = {
+            let edits = self.edits.read().unwrap();
+            edits.iter().map(|(&pos, &b)| (pos, b)).collect()
+        };
+
+        for ((x, y, z), block) in edits_snapshot {
+            match block {
+                BlockType::WheatStage0 | BlockType::WheatStage1 | BlockType::WheatStage2 => {
+                    let below = self.get_block(x, y - 1, z);
+                    if below != BlockType::Farmland {
+                        crop_advances.push(((x, y, z), BlockType::Air));
+                        continue;
+                    }
+                    let hydrated = self.is_farmland_hydrated(x, y - 1, z);
+                    let growth_chance = if hydrated { 0.25 } else { 0.08 };
+                    if rand::random::<f32>() < growth_chance {
+                        let next_stage = match block {
+                            BlockType::WheatStage0 => BlockType::WheatStage1,
+                            BlockType::WheatStage1 => BlockType::WheatStage2,
+                            _ => BlockType::Wheat,
+                        };
+                        crop_advances.push(((x, y, z), next_stage));
+                    }
+                }
+                BlockType::Wheat => {
+                    let below = self.get_block(x, y - 1, z);
+                    if below != BlockType::Farmland {
+                        crop_advances.push(((x, y, z), BlockType::Air));
+                    }
+                }
+                BlockType::Farmland => {
+                    let above = self.get_block(x, y + 1, z);
+                    let has_crop = matches!(
+                        above,
+                        BlockType::Wheat
+                            | BlockType::WheatStage0
+                            | BlockType::WheatStage1
+                            | BlockType::WheatStage2
+                    );
+                    if !has_crop && !self.is_farmland_hydrated(x, y, z) {
+                        if rand::random::<f32>() < 0.10 {
+                            farmland_dehydrates.push((x, y, z));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for (pos, next_block) in crop_advances {
+            self.set_block(pos.0, pos.1, pos.2, next_block);
+        }
+        for (x, y, z) in farmland_dehydrates {
+            self.set_block(x, y, z, BlockType::Dirt);
         }
     }
 
@@ -3710,5 +3793,56 @@ mod tests {
 
         assert_eq!(chunk.get_block(6, 60, 5), BlockType::Stone);
         assert_eq!(chunk.get_block(7, 60, 5), BlockType::Air);
+    }
+
+    #[test]
+    fn test_farmland_hydration_and_crop_growth() {
+        let mut world = World::simulation(12345);
+
+        // Farmland hydration check
+        world.set_block(10, 60, 10, BlockType::Farmland);
+        assert!(!world.is_farmland_hydrated(10, 60, 10));
+
+        // Water within 4 blocks horizontally (and dy in 0..=1)
+        world.set_block(14, 60, 10, BlockType::Water);
+        assert!(world.is_farmland_hydrated(10, 60, 10));
+
+        world.set_block(14, 60, 10, BlockType::Air);
+        assert!(!world.is_farmland_hydrated(10, 60, 10));
+
+        // Distance 5 is too far
+        world.set_block(15, 60, 10, BlockType::Water);
+        assert!(!world.is_farmland_hydrated(10, 60, 10));
+        world.set_block(15, 60, 10, BlockType::Air);
+
+        // Crop popping when farmland missing below
+        world.set_block(20, 60, 20, BlockType::Dirt);
+        world.set_block(20, 61, 20, BlockType::WheatStage0);
+        world.update_crops(1.5);
+        assert_eq!(world.get_block(20, 61, 20), BlockType::Air);
+
+        // Crop growth above hydrated farmland
+        world.set_block(30, 60, 30, BlockType::Farmland);
+        world.set_block(31, 60, 30, BlockType::Water);
+        world.set_block(30, 61, 30, BlockType::WheatStage0);
+        assert!(world.is_farmland_hydrated(30, 60, 30));
+
+        for _ in 0..100 {
+            world.update_crops(1.0);
+            if world.get_block(30, 61, 30) == BlockType::Wheat {
+                break;
+            }
+        }
+        assert_eq!(world.get_block(30, 61, 30), BlockType::Wheat);
+
+        // Farmland dehydration back to Dirt when unhydrated and empty
+        world.set_block(40, 60, 40, BlockType::Farmland);
+        for _ in 0..150 {
+            world.update_crops(1.0);
+            if world.get_block(40, 60, 40) == BlockType::Dirt {
+                break;
+            }
+        }
+        assert_eq!(world.get_block(40, 60, 40), BlockType::Dirt);
     }
 }

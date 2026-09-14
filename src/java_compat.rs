@@ -70,6 +70,9 @@ const CHEST: &[JavaProperty] = &[
 ];
 const FARMLAND: &[JavaProperty] = &[JavaProperty::new("moisture", "7")];
 const WHEAT: &[JavaProperty] = &[JavaProperty::new("age", "7")];
+const WHEAT_0: &[JavaProperty] = &[JavaProperty::new("age", "0")];
+const WHEAT_1: &[JavaProperty] = &[JavaProperty::new("age", "2")];
+const WHEAT_2: &[JavaProperty] = &[JavaProperty::new("age", "4")];
 const REDSTONE_ORE: &[JavaProperty] = &[JavaProperty::new("lit", "false")];
 const BELL: &[JavaProperty] = &[
     JavaProperty::new("attachment", "ceiling"),
@@ -131,6 +134,9 @@ pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
         Clay => JavaBlockState::new("minecraft:clay"),
         Farmland => JavaBlockState::with_properties("minecraft:farmland", FARMLAND),
         Wheat => JavaBlockState::with_properties("minecraft:wheat", WHEAT),
+        WheatStage0 => JavaBlockState::with_properties("minecraft:wheat", WHEAT_0),
+        WheatStage1 => JavaBlockState::with_properties("minecraft:wheat", WHEAT_1),
+        WheatStage2 => JavaBlockState::with_properties("minecraft:wheat", WHEAT_2),
         RedstoneOre => JavaBlockState::with_properties("minecraft:redstone_ore", REDSTONE_ORE),
         MobSpawner => JavaBlockState::new("minecraft:spawner"),
         Bell => JavaBlockState::with_properties("minecraft:bell", BELL),
@@ -158,7 +164,7 @@ pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
         | LeatherLeggings | LeatherBoots | IronHelmet | IronChestplate | IronLeggings
         | IronBoots | GoldHelmet | GoldChestplate | GoldLeggings | GoldBoots | DiamondHelmet
         | DiamondChestplate | DiamondLeggings | DiamondBoots | Bow | Arrow | Bucket
-        | WaterBucket | LavaBucket => return None,
+        | WaterBucket | LavaBucket | WheatSeeds | Bone | BoneMeal => return None,
     })
 }
 

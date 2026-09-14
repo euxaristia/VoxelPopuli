@@ -196,11 +196,19 @@ pub enum BlockType {
     StickyPiston,
     PistonHead,
     Fire,
+
+    // === MC 1.0 Agriculture & Farming (124-129) ===
+    WheatStage0,
+    WheatStage1,
+    WheatStage2,
+    WheatSeeds,
+    Bone,
+    BoneMeal,
 }
 
 #[allow(dead_code)]
 impl BlockType {
-    pub const COUNT: usize = 124;
+    pub const COUNT: usize = 130;
 
     pub fn from_u8(value: u8) -> Self {
         if (value as usize) < Self::COUNT {
@@ -280,6 +288,9 @@ impl BlockType {
                 | BlockType::Bucket
                 | BlockType::WaterBucket
                 | BlockType::LavaBucket
+                | BlockType::WheatSeeds
+                | BlockType::Bone
+                | BlockType::BoneMeal
         )
     }
 
@@ -299,7 +310,10 @@ impl BlockType {
             | BlockType::RedstoneTorch
             | BlockType::PistonHead
             | BlockType::Bell
-            | BlockType::Fire => false,
+            | BlockType::Fire
+            | BlockType::WheatStage0
+            | BlockType::WheatStage1
+            | BlockType::WheatStage2 => false,
             _ => !self.is_item(),
         }
     }
@@ -347,6 +361,9 @@ impl BlockType {
                 | BlockType::Glass
                 | BlockType::Torch
                 | BlockType::Wheat
+                | BlockType::WheatStage0
+                | BlockType::WheatStage1
+                | BlockType::WheatStage2
                 | BlockType::Bed
                 | BlockType::OakDoor
                 | BlockType::IronDoor
@@ -399,6 +416,9 @@ impl BlockType {
             | BlockType::Torch
             | BlockType::RedstoneTorch
             | BlockType::Wheat
+            | BlockType::WheatStage0
+            | BlockType::WheatStage1
+            | BlockType::WheatStage2
             | BlockType::SnowLayer
             | BlockType::Fire => 0.0,
             _ => 1.0,
@@ -412,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_count() {
-        assert_eq!(BlockType::COUNT, 124);
+        assert_eq!(BlockType::COUNT, 130);
     }
 
     #[test]
@@ -426,7 +446,7 @@ mod tests {
     #[test]
     fn test_from_u8_out_of_range() {
         assert_eq!(BlockType::from_u8(BlockType::COUNT as u8), BlockType::Air);
-        assert_eq!(BlockType::from_u8(128), BlockType::Air);
+        assert_eq!(BlockType::from_u8(200), BlockType::Air);
         assert_eq!(BlockType::from_u8(255), BlockType::Air);
     }
 
@@ -487,6 +507,9 @@ mod tests {
         assert!(BlockType::Gunpowder.is_item());
         assert!(BlockType::Leather.is_item());
         assert!(BlockType::Wheat.is_item());
+        assert!(BlockType::WheatSeeds.is_item());
+        assert!(BlockType::Bone.is_item());
+        assert!(BlockType::BoneMeal.is_item());
         assert!(BlockType::RedstoneDust.is_item());
     }
 

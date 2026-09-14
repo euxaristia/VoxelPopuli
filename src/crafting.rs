@@ -760,6 +760,15 @@ const RECIPES: &[Recipe] = &[
         output_count: 1,
         mirror: false,
     },
+    // Bone Meal: 1 Bone -> 3 Bone Meal
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Bone],
+        },
+        output: BoneMeal,
+        output_count: 3,
+        mirror: false,
+    },
     // Golden Apple: Apple surrounded by 8 Gold Ingots
     Recipe {
         shape: RecipeShape::Shaped {
@@ -1255,6 +1264,32 @@ mod tests {
         ]);
         let result = find_recipe(&grid, 3, 3);
         assert_eq!(result, Some((Furnace, 1)));
+    }
+
+    #[test]
+    fn test_iron_chestplate() {
+        // Iron Chestplate (8 IronIngot)
+        let grid = grid_3x3([
+            s(IronIngot),
+            n(),
+            s(IronIngot),
+            s(IronIngot),
+            s(IronIngot),
+            s(IronIngot),
+            s(IronIngot),
+            s(IronIngot),
+            s(IronIngot),
+        ]);
+        let result = find_recipe(&grid, 3, 3);
+        assert_eq!(result, Some((IronChestplate, 1)));
+    }
+
+    #[test]
+    fn test_bone_meal() {
+        // 1 Bone -> 3 BoneMeal
+        let grid = vec![s(Bone)];
+        let result = find_recipe(&grid, 1, 1);
+        assert_eq!(result, Some((BoneMeal, 3)));
     }
 
     #[test]

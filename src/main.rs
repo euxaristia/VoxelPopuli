@@ -1750,6 +1750,25 @@ async fn run() {
                                 .push(ItemStack::new(mined.drop, remaining));
                         }
                     }
+                    if mined.block == BlockType::Wheat {
+                        let bonus_seeds = 1 + (rand::random::<u8>() % 3);
+                        let rem =
+                            inv_add(&mut inv_slots, BlockType::WheatSeeds, bonus_seeds as u32);
+                        if rem > 0 {
+                            world
+                                .pending_stacks
+                                .push(ItemStack::new(BlockType::WheatSeeds, rem));
+                        }
+                    } else if matches!(mined.block, BlockType::Grass | BlockType::SnowyGrass)
+                        && rand::random::<f32>() < 0.15
+                    {
+                        let rem = inv_add(&mut inv_slots, BlockType::WheatSeeds, 1);
+                        if rem > 0 {
+                            world
+                                .pending_stacks
+                                .push(ItemStack::new(BlockType::WheatSeeds, rem));
+                        }
+                    }
                     let target_b = world.get_block(mined.x, mined.y, mined.z);
                     let xp_val = match target_b {
                         BlockType::CoalOre => 1,
