@@ -2142,11 +2142,23 @@ impl ChunkData {
                         BlockType::Bedrock
                     };
                     if should_draw_face(block, neighbor_bottom) {
+                        let (mut bu0, mut bv0, mut bu1, mut bv1) = (u0, v0, u1, v1);
+                        {
+                            let (btx, bty) = crate::item::atlas_uv_bottom(block);
+                            if (btx as i32, bty as i32) != (tx, ty) {
+                                bu0 = btx as f32 * ts + pad;
+                                bv0 = bty as f32 * ts + pad;
+                                bu1 = (btx as f32 + 1.0) * ts - pad;
+                                bv1 = (bty as f32 + 1.0) * ts - pad;
+                            }
+                        }
                         v.extend_from_slice(&[
                             min_x, fy, min_z, max_x, fy, max_z, min_x, fy, max_z, min_x, fy, min_z,
                             max_x, fy, min_z, max_x, fy, max_z,
                         ]);
-                        t.extend_from_slice(&[u0, v0, u1, v1, u0, v1, u0, v0, u1, v0, u1, v1]);
+                        t.extend_from_slice(&[
+                            bu0, bv0, bu1, bv1, bu0, bv1, bu0, bv0, bu1, bv0, bu1, bv1,
+                        ]);
                         for _ in 0..6 {
                             n.extend_from_slice(&[0.0, -1.0, 0.0]);
                         }
@@ -2199,93 +2211,98 @@ impl ChunkData {
                             0.8,
                         ),
                     ];
+                    let is_cactus = block == BlockType::Cactus;
                     for (i, (neighbor, norm, s_mul)) in neighbors.iter().enumerate() {
-                        if should_draw_face(block, *neighbor) {
+                        if is_cactus || should_draw_face(block, *neighbor) {
                             if i == 0 {
                                 // Z+
+                                let z_coord = if is_cactus { fz + 15.0 / 16.0 } else { max_z };
                                 v.extend_from_slice(&[
                                     min_x,
                                     fy,
-                                    max_z,
+                                    z_coord,
                                     max_x,
                                     fy,
-                                    max_z,
+                                    z_coord,
                                     max_x,
                                     fy + block_top,
-                                    max_z,
+                                    z_coord,
                                     min_x,
                                     fy,
-                                    max_z,
+                                    z_coord,
                                     max_x,
                                     fy + block_top,
-                                    max_z,
+                                    z_coord,
                                     min_x,
                                     fy + block_top,
-                                    max_z,
+                                    z_coord,
                                 ]);
                             } else if i == 1 {
                                 // Z-
+                                let z_coord = if is_cactus { fz + 1.0 / 16.0 } else { min_z };
                                 v.extend_from_slice(&[
                                     max_x,
                                     fy,
-                                    min_z,
+                                    z_coord,
                                     min_x,
                                     fy,
-                                    min_z,
+                                    z_coord,
                                     min_x,
                                     fy + block_top,
-                                    min_z,
+                                    z_coord,
                                     max_x,
                                     fy,
-                                    min_z,
+                                    z_coord,
                                     min_x,
                                     fy + block_top,
-                                    min_z,
+                                    z_coord,
                                     max_x,
                                     fy + block_top,
-                                    min_z,
+                                    z_coord,
                                 ]);
                             } else if i == 2 {
                                 // X+
+                                let x_coord = if is_cactus { fx + 15.0 / 16.0 } else { max_x };
                                 v.extend_from_slice(&[
-                                    max_x,
+                                    x_coord,
                                     fy,
                                     max_z,
-                                    max_x,
+                                    x_coord,
                                     fy,
                                     min_z,
-                                    max_x,
+                                    x_coord,
                                     fy + block_top,
                                     min_z,
-                                    max_x,
+                                    x_coord,
                                     fy,
                                     max_z,
-                                    max_x,
+                                    x_coord,
                                     fy + block_top,
                                     min_z,
-                                    max_x,
+                                    x_coord,
                                     fy + block_top,
                                     max_z,
                                 ]);
                             } else {
                                 // X-
+                                let x_coord = if is_cactus { fx + 1.0 / 16.0 } else { min_x };
                                 v.extend_from_slice(&[
-                                    min_x,
+                                    x_coord,
                                     fy,
                                     min_z,
-                                    min_x,
+                                    x_coord,
                                     fy,
                                     max_z,
-                                    min_x,
+                                    x_coord,
                                     fy + block_top,
                                     max_z,
-                                    min_x,
+                                    x_coord,
                                     fy,
                                     min_z,
-                                    min_x,
+                                    x_coord,
                                     fy + block_top,
                                     max_z,
-                                    min_x,
+                                    x_coord,
                                     fy + block_top,
                                     min_z,
                                 ]);

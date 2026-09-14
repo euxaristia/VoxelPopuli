@@ -148,6 +148,9 @@ impl Player {
     }
 
     pub fn take_damage(&mut self, base_damage: i32) {
+        if self.sandbox {
+            return;
+        }
         let defense = self.total_armor_defense();
         let reduction = (defense as f32 * 0.04).min(0.80);
         let actual_damage = ((base_damage as f32) * (1.0 - reduction)).round() as i32;
@@ -252,7 +255,15 @@ impl Player {
     }
 
     fn is_point_in_block(world: &World, p: Vec3) -> bool {
-        let b = world.get_block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        let bx = p.x.floor() as i32;
+        let by = p.y.floor() as i32;
+        let bz = p.z.floor() as i32;
+        let b = world.get_block(bx, by, bz);
+        if b == BlockType::Cactus {
+            let lx = p.x - bx as f32;
+            let lz = p.z - bz as f32;
+            return lx >= 1.0 / 16.0 && lx <= 15.0 / 16.0 && lz >= 1.0 / 16.0 && lz <= 15.0 / 16.0;
+        }
         b.is_solid()
     }
 
@@ -330,10 +341,36 @@ impl Player {
                 (self.position.y + 0.1).floor() as i32,
                 self.position.z.floor() as i32,
             ) == BlockType::Lava;
+        let touching_cactus = !self.sandbox && {
+            let min_x = (self.position.x - 0.31).floor() as i32;
+            let max_x = (self.position.x + 0.31).floor() as i32;
+            let min_y = (self.position.y - 0.05).floor() as i32;
+            let max_y = (self.position.y + 1.8).floor() as i32;
+            let min_z = (self.position.z - 0.31).floor() as i32;
+            let max_z = (self.position.z + 0.31).floor() as i32;
+            let mut found = false;
+            'check: for bx in min_x..=max_x {
+                for by in min_y..=max_y {
+                    for bz in min_z..=max_z {
+                        if world.get_block(bx, by, bz) == BlockType::Cactus {
+                            found = true;
+                            break 'check;
+                        }
+                    }
+                }
+            }
+            found
+        };
         if in_lava {
             self.damage_cooldown -= dt;
             if self.damage_cooldown <= 0.0 {
                 self.take_damage(2);
+                self.damage_cooldown = 0.5;
+            }
+        } else if touching_cactus {
+            self.damage_cooldown -= dt;
+            if self.damage_cooldown <= 0.0 {
+                self.take_damage(1);
                 self.damage_cooldown = 0.5;
             }
         } else if self.damage_cooldown > 0.0 {
@@ -632,5 +669,51 @@ mod tests {
         assert_eq!(player.exhaustion, 0.0);
         assert_eq!(player.hunger_timer, 0.0);
         assert!(!player.inventory_open);
+    }
+
+    #[test]
+    fn test_cactus_contact_damage() {
+        let mut world = World::simulation(42);
+        world.set_block(10, 63, 10, BlockType::Sand);
+        world.set_block(10, 64, 10, BlockType::Cactus);
+        let mut player = Player::new(65.0);
+        // Position player touching cactus
+        player.position = Vec3::new(10.5, 65.0, 10.5);
+        player.health = 20;
+        player.sandbox = false;
+        player.damage_cooldown = 0.0;
+
+        player.update(&world, Vec3::ZERO, 0.1, false, false, false, 0.0);
+        assert_eq!(
+            player.health, 19,
+            "Player standing on cactus takes 1 damage"
+        );
+        assert_eq!(player.damage_cooldown, 0.5, "Damage cooldown set to 0.5s");
+
+        // Another tick while on cooldown should not apply extra damage
+        player.update(&world, Vec3::ZERO, 0.1, false, false, false, 0.1);
+        assert_eq!(player.health, 19);
+
+        // After cooldown expires, damage applies again
+        player.update(&world, Vec3::ZERO, 0.45, false, false, false, 0.55);
+        assert_eq!(player.health, 18);
+    }
+
+    #[test]
+    fn test_cactus_sandbox_immunity() {
+        let mut world = World::simulation(42);
+        world.set_block(10, 63, 10, BlockType::Sand);
+        world.set_block(10, 64, 10, BlockType::Cactus);
+        let mut player = Player::new(65.0);
+        player.position = Vec3::new(10.5, 65.0, 10.5);
+        player.health = 20;
+        player.sandbox = true;
+        player.damage_cooldown = 0.0;
+
+        player.update(&world, Vec3::ZERO, 0.1, false, false, false, 0.0);
+        assert_eq!(
+            player.health, 20,
+            "Sandbox player is immune to cactus damage"
+        );
     }
 }

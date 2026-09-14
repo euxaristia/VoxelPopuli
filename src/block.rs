@@ -374,6 +374,7 @@ impl BlockType {
                 | BlockType::PistonHead
                 | BlockType::Bell
                 | BlockType::Fire
+                | BlockType::Cactus
         )
     }
 
@@ -570,6 +571,7 @@ mod tests {
         assert!(BlockType::Glass.is_transparent());
         assert!(BlockType::Torch.is_transparent());
         assert!(BlockType::Wheat.is_transparent());
+        assert!(BlockType::Cactus.is_transparent());
     }
 
     #[test]

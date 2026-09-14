@@ -1165,6 +1165,62 @@ impl World {
                 }
             }
         }
+
+        // Cactus stability check
+        let mut check_cacti = Vec::new();
+        if y + 1 < CHUNK_HEIGHT as i32 && self.get_block(x, y + 1, z) == BlockType::Cactus {
+            check_cacti.push((x, y + 1, z));
+        }
+        if block.is_solid() {
+            for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                if self.get_block(x + dx, y, z + dz) == BlockType::Cactus {
+                    check_cacti.push((x + dx, y, z + dz));
+                }
+            }
+        }
+        if block == BlockType::Cactus && !self.is_cactus_supported(x, y, z) {
+            check_cacti.push((x, y, z));
+        }
+        for (cx, cy, cz) in check_cacti {
+            self.pop_unsupported_cacti(cx, cy, cz);
+        }
+    }
+
+    pub fn is_cactus_supported(&self, x: i32, y: i32, z: i32) -> bool {
+        if y <= 0 {
+            return false;
+        }
+        let below = self.get_block(x, y - 1, z);
+        if below != BlockType::Sand && below != BlockType::Cactus {
+            return false;
+        }
+        for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let nb = self.get_block(x + dx, y, z + dz);
+            if nb.is_solid() {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn pop_unsupported_cacti(&mut self, start_x: i32, start_y: i32, start_z: i32) {
+        let mut queue = vec![(start_x, start_y, start_z)];
+        while let Some((cx, cy, cz)) = queue.pop() {
+            if cy < 0 || cy >= CHUNK_HEIGHT as i32 {
+                continue;
+            }
+            if self.get_block(cx, cy, cz) == BlockType::Cactus
+                && !self.is_cactus_supported(cx, cy, cz)
+            {
+                self.set_block(cx, cy, cz, BlockType::Air);
+                self.dropped_items.push(crate::inventory::DroppedItem::new(
+                    crate::inventory::ItemStack::new(BlockType::Cactus, 1),
+                    Vec3::new(cx as f32 + 0.5, cy as f32 + 0.5, cz as f32 + 0.5),
+                    Vec3::new(0.0, 0.5, 0.0),
+                ));
+                queue.push((cx, cy + 1, cz));
+            }
+        }
     }
 
     fn apply_edit_map(chunk: &mut Chunk, edits: &HashMap<(i32, i32, i32), BlockType>) {
@@ -1752,6 +1808,25 @@ impl World {
                 });
             }
         }
+        dropped_items.retain(|drop| {
+            let p = drop.position;
+            let min_x = (p.x - 0.25).floor() as i32;
+            let max_x = (p.x + 0.25).floor() as i32;
+            let min_y = (p.y - 0.2).floor() as i32;
+            let max_y = (p.y + 0.35).floor() as i32;
+            let min_z = (p.z - 0.25).floor() as i32;
+            let max_z = (p.z + 0.25).floor() as i32;
+            for bx in min_x..=max_x {
+                for by in min_y..=max_y {
+                    for bz in min_z..=max_z {
+                        if self.get_block(bx, by, bz) == BlockType::Cactus {
+                            return false;
+                        }
+                    }
+                }
+            }
+            true
+        });
         self.dropped_items = dropped_items;
         for container in self.containers.values_mut() {
             if let crate::container::Container::Furnace(furnace) = container {
@@ -1819,12 +1894,21 @@ impl World {
     }
 
     fn solid_at(&self, x: f32, y: f32, z: f32) -> bool {
-        let (x, y, z) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+        let (ix, iy, iz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
         // Unloaded chunks read as Air from get_block; treat them as solid
         // so mobs can't wander into ungenerated terrain and freeze there.
-        let cx = x.div_euclid(CHUNK_WIDTH as i32);
-        let cz = z.div_euclid(CHUNK_DEPTH as i32);
-        self.get_chunk(cx, cz).is_none() || self.get_block(x, y, z).is_solid()
+        let cx = ix.div_euclid(CHUNK_WIDTH as i32);
+        let cz = iz.div_euclid(CHUNK_DEPTH as i32);
+        if self.get_chunk(cx, cz).is_none() {
+            return true;
+        }
+        let b = self.get_block(ix, iy, iz);
+        if b == BlockType::Cactus {
+            let lx = x - ix as f32;
+            let lz = z - iz as f32;
+            return lx >= 1.0 / 16.0 && lx <= 15.0 / 16.0 && lz >= 1.0 / 16.0 && lz <= 15.0 / 16.0;
+        }
+        b.is_solid()
     }
 
     /// True if a mob-sized box at `pos` (feet center) intersects any solid block.
@@ -2367,6 +2451,32 @@ impl World {
                 mob.velocity.y = 0.0;
             }
             mob.animate_movement(previous, dt);
+
+            // Cactus contact damage
+            if mob.health > 0.0 && mob.animation.hurt_remaining <= 0.0 {
+                let hw = mob.half_width();
+                let height = mob.height();
+                let min_x = (mob.position.x - hw - 0.05).floor() as i32;
+                let max_x = (mob.position.x + hw + 0.05).floor() as i32;
+                let min_y = (mob.position.y - 0.05).floor() as i32;
+                let max_y = (mob.position.y + height).floor() as i32;
+                let min_z = (mob.position.z - hw - 0.05).floor() as i32;
+                let max_z = (mob.position.z + hw + 0.05).floor() as i32;
+                let mut touches_cactus = false;
+                'mob_cactus: for bx in min_x..=max_x {
+                    for by in min_y..=max_y {
+                        for bz in min_z..=max_z {
+                            if self.get_block(bx, by, bz) == BlockType::Cactus {
+                                touches_cactus = true;
+                                break 'mob_cactus;
+                            }
+                        }
+                    }
+                }
+                if touches_cactus {
+                    mob.take_damage(1.0);
+                }
+            }
         }
 
         let mut births = Vec::new();
@@ -2721,6 +2831,25 @@ impl World {
                     if !has_crop && !self.is_farmland_hydrated(x, y, z) {
                         if rand::random::<f32>() < 0.10 {
                             farmland_dehydrates.push((x, y, z));
+                        }
+                    }
+                }
+                BlockType::Cactus => {
+                    if y + 1 < CHUNK_HEIGHT as i32 && self.get_block(x, y + 1, z) == BlockType::Air
+                    {
+                        let mut height = 1;
+                        while y - height >= 0
+                            && self.get_block(x, y - height, z) == BlockType::Cactus
+                        {
+                            height += 1;
+                        }
+                        if height < 3 {
+                            let cardinal_blocked = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                                .iter()
+                                .any(|(dx, dz)| self.get_block(x + dx, y + 1, z + dz).is_solid());
+                            if !cardinal_blocked && rand::random::<f32>() < 0.15 {
+                                crop_advances.push(((x, y + 1, z), BlockType::Cactus));
+                            }
                         }
                     }
                 }
@@ -3844,5 +3973,127 @@ mod tests {
             }
         }
         assert_eq!(world.get_block(40, 60, 40), BlockType::Dirt);
+    }
+
+    #[test]
+    fn test_cactus_destroys_dropped_items() {
+        let mut world = World::simulation(42);
+        world.set_block(10, 63, 10, BlockType::Sand);
+        world.set_block(10, 64, 10, BlockType::Cactus);
+
+        // Item landing on/touching cactus
+        world.dropped_items.push(crate::inventory::DroppedItem::new(
+            crate::inventory::ItemStack::new(BlockType::Diamond, 5),
+            Vec3::new(10.5, 64.5, 10.5),
+            Vec3::ZERO,
+        ));
+        // Item safely away from cactus
+        world.dropped_items.push(crate::inventory::DroppedItem::new(
+            crate::inventory::ItemStack::new(BlockType::GoldIngot, 3),
+            Vec3::new(20.5, 64.5, 20.5),
+            Vec3::ZERO,
+        ));
+
+        world.update(Vec3::new(0.0, 64.0, 0.0), 0.05, BlockType::Air);
+
+        assert_eq!(
+            world.dropped_items.len(),
+            1,
+            "Cactus destroyed the colliding item"
+        );
+        assert_eq!(world.dropped_items[0].stack.block, BlockType::GoldIngot);
+    }
+
+    #[test]
+    fn test_cactus_mob_damage() {
+        let mut world = World::simulation(42);
+        let idx = world.get_pool_index(0, 0);
+        world.chunks[idx] = Some(Box::new(crate::chunk::Chunk::new(0, 0, 42)));
+        world.set_block(10, 63, 10, BlockType::Sand);
+        world.set_block(10, 64, 10, BlockType::Cactus);
+
+        // Spawn a zombie touching the cactus
+        let zombie = crate::mob::Mob::new(
+            crate::mob::MobKind::Zombie,
+            Vec3::new(10.5, 64.0, 10.5),
+            Vec3::ZERO,
+            0,
+        );
+        let max_hp = zombie.health;
+        world.mobs.push(zombie);
+
+        world.update_mobs(Vec3::new(0.0, 64.0, 0.0), 0.05, BlockType::Air);
+
+        assert_eq!(world.mobs.len(), 1);
+        assert_eq!(
+            world.mobs[0].health,
+            max_hp - 1.0,
+            "Mob contacting cactus takes 1.0 damage"
+        );
+        assert!(
+            world.mobs[0].animation.hurt_remaining > 0.0,
+            "Hurt animation triggered"
+        );
+    }
+
+    #[test]
+    fn test_cactus_stability_pop() {
+        let mut world = World::simulation(42);
+
+        // Place sand and 3-tall cactus
+        world.set_block(10, 63, 10, BlockType::Sand);
+        world.set_block(10, 64, 10, BlockType::Cactus);
+        world.set_block(10, 65, 10, BlockType::Cactus);
+        world.set_block(10, 66, 10, BlockType::Cactus);
+
+        assert_eq!(world.get_block(10, 64, 10), BlockType::Cactus);
+        assert_eq!(world.get_block(10, 65, 10), BlockType::Cactus);
+        assert_eq!(world.get_block(10, 66, 10), BlockType::Cactus);
+
+        // Break sand below
+        world.set_block(10, 63, 10, BlockType::Air);
+
+        // Entire cactus pillar should pop to Air and drop 3 cactus items
+        assert_eq!(world.get_block(10, 64, 10), BlockType::Air);
+        assert_eq!(world.get_block(10, 65, 10), BlockType::Air);
+        assert_eq!(world.get_block(10, 66, 10), BlockType::Air);
+
+        let cactus_drops = world
+            .dropped_items
+            .iter()
+            .filter(|d| d.stack.block == BlockType::Cactus)
+            .count();
+        assert_eq!(cactus_drops, 3, "Dropped 3 cactus items upon collapse");
+
+        // Placing a solid block adjacent to a cactus pops it
+        world.set_block(20, 63, 20, BlockType::Sand);
+        world.set_block(20, 64, 20, BlockType::Cactus);
+        assert_eq!(world.get_block(20, 64, 20), BlockType::Cactus);
+
+        world.set_block(21, 64, 20, BlockType::Stone);
+        assert_eq!(
+            world.get_block(20, 64, 20),
+            BlockType::Air,
+            "Adjacent solid block popped cactus"
+        );
+    }
+
+    #[test]
+    fn test_cactus_growth() {
+        let mut world = World::simulation(42);
+        world.set_block(10, 63, 10, BlockType::Sand);
+        world.set_block(10, 64, 10, BlockType::Cactus);
+
+        for _ in 0..100 {
+            world.update_crops(1.0);
+            if world.get_block(10, 65, 10) == BlockType::Cactus {
+                break;
+            }
+        }
+        assert_eq!(
+            world.get_block(10, 65, 10),
+            BlockType::Cactus,
+            "Cactus naturally grew 1 block"
+        );
     }
 }

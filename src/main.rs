@@ -637,7 +637,8 @@ async fn run() {
     let mut inv_slots = create_starting_inventory();
     let mut inv_cursor: Option<ItemStack> = None;
     let mut player = Player::new(spawn_y);
-    if args.iter().any(|arg| arg == "--sandbox") {
+    let is_cli_sandbox = args.iter().any(|arg| arg == "--sandbox");
+    if is_cli_sandbox {
         player.sandbox = true;
         inv_slots = create_sandbox_inventory();
     }
@@ -730,6 +731,10 @@ async fn run() {
             if !world.is_loading {
                 if let Some(save) = loaded_save.take() {
                     player = save.restore_player();
+                    if !is_cli_sandbox {
+                        player.sandbox = false;
+                        player.flying = false;
+                    }
                     inv_slots = save.inventory;
                     inv_cursor = save.cursor;
                     craft_table_slots[..9].copy_from_slice(&save.crafting);
@@ -1277,6 +1282,8 @@ async fn run() {
                                 }
                                 PauseClick::SetDifficulty(difficulty) => {
                                     world.difficulty = difficulty;
+                                    player.sandbox = false;
+                                    player.flying = false;
                                 }
                                 PauseClick::ExportJava => {
                                     #[cfg(target_arch = "wasm32")]

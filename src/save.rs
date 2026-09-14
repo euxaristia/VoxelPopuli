@@ -467,7 +467,7 @@ impl GameSave {
         let mut containers = Vec::new();
         let mut pending_stacks = Vec::new();
         let mut exhaustion = 0.0;
-        let mut sandbox = true; // Preserve the flight controls of version 1 worlds.
+        let mut sandbox = false; // Version 1 worlds default to Normal difficulty (survival), not sandbox.
         let mut day_time = 570.0;
         let mut dropped_items = Vec::new();
         if version >= 2 {
@@ -567,6 +567,9 @@ impl GameSave {
         } else {
             Default::default()
         };
+        if version < 3 {
+            sandbox = false;
+        }
         let mut skeletons = Vec::new();
         if version >= 3 {
             let count = reader.u32()? as usize;
@@ -893,7 +896,7 @@ mod tests {
                 hunger: 12,
                 saturation: 2.5,
                 exhaustion: 0.0,
-                sandbox: true,
+                sandbox: false,
                 hunger_timer: 1.25,
                 equipped_armor: [Some((BlockType::IronHelmet, 99)), None, None, None],
                 xp_level: 4,

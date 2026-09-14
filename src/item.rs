@@ -577,6 +577,7 @@ pub fn atlas_uv_bottom(b: BlockType) -> (u8, u8) {
         Furnace | Chest => (0, 2),    // cobblestone / planks bottom
         Bookshelf => (1, 2),          // planks bottom
         Farmland => (2, 0),           // dirt bottom
+        Cactus => (14, 7),            // pale cut flesh bottom
         _ => atlas_uv(b),
     }
 }
@@ -1189,6 +1190,14 @@ mod tests {
     #[test]
     fn test_is_transparent_snow_layer() {
         assert!(BlockType::SnowLayer.is_transparent());
+    }
+
+    #[test]
+    fn test_is_transparent_cactus() {
+        assert!(BlockType::Cactus.is_transparent());
+        assert_eq!(atlas_uv(BlockType::Cactus), (8, 7));
+        assert_eq!(atlas_uv_top(BlockType::Cactus), (11, 1));
+        assert_eq!(atlas_uv_bottom(BlockType::Cactus), (14, 7));
     }
 
     // ── is_tool for all 25 tool variants + FlintAndSteel ────────────────────

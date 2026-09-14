@@ -516,6 +516,21 @@ pub fn try_place_block_with_lock(
         }
 
         if world.get_block(nx, ny, nz) == BlockType::Air && !player.intersects_block(nx, ny, nz) {
+            if s.block == BlockType::Cactus {
+                if ny <= 0 {
+                    return false;
+                }
+                let below = world.get_block(nx, ny - 1, nz);
+                if below != BlockType::Sand && below != BlockType::Cactus {
+                    return false;
+                }
+                let cardinal_blocked = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                    .iter()
+                    .any(|(dx, dz)| world.get_block(nx + dx, ny, nz + dz).is_solid());
+                if cardinal_blocked {
+                    return false;
+                }
+            }
             world.set_block(nx, ny, nz, s.block);
 
             if lock.is_none() {
@@ -1079,5 +1094,81 @@ mod tests {
         assert!(!placed_on_dirt);
         assert_eq!(inv[0].unwrap().count, 1);
         assert_eq!(world.get_block(2, 61, 2), BlockType::Air);
+    }
+
+    #[test]
+    fn test_cactus_placement_restrictions() {
+        let mut world = World::simulation(1);
+        let player = Player::new(70.0);
+        let mut lock = None;
+
+        let mut inv = [None::<ItemStack>; INVENTORY_SLOT_COUNT];
+        inv[0] = Some(ItemStack::new(BlockType::Cactus, 5));
+
+        // 1. Placing cactus on Sand succeeds
+        world.set_block(10, 60, 10, BlockType::Sand);
+        let placed = try_place_block_with_lock(
+            &mut world,
+            &mut inv,
+            0,
+            Vec3::new(10.5, 62.0, 10.5),
+            Vec3::new(0.0, -1.0, 0.0),
+            &player,
+            &mut lock,
+        );
+        assert!(placed, "Can place cactus on sand");
+        assert_eq!(world.get_block(10, 61, 10), BlockType::Cactus);
+        assert_eq!(inv[0].unwrap().count, 4);
+
+        // 2. Placing cactus on another Cactus succeeds
+        lock = None;
+        let placed_stacked = try_place_block_with_lock(
+            &mut world,
+            &mut inv,
+            0,
+            Vec3::new(10.5, 63.0, 10.5),
+            Vec3::new(0.0, -1.0, 0.0),
+            &player,
+            &mut lock,
+        );
+        assert!(placed_stacked, "Can stack cactus on cactus");
+        assert_eq!(world.get_block(10, 62, 10), BlockType::Cactus);
+        assert_eq!(inv[0].unwrap().count, 3);
+
+        // 3. Placing cactus on Dirt fails
+        world.set_block(20, 60, 20, BlockType::Dirt);
+        lock = None;
+        let placed_on_dirt = try_place_block_with_lock(
+            &mut world,
+            &mut inv,
+            0,
+            Vec3::new(20.5, 62.0, 20.5),
+            Vec3::new(0.0, -1.0, 0.0),
+            &player,
+            &mut lock,
+        );
+        assert!(!placed_on_dirt, "Cannot place cactus on dirt");
+        assert_eq!(world.get_block(20, 61, 20), BlockType::Air);
+        assert_eq!(inv[0].unwrap().count, 3);
+
+        // 4. Placing cactus with adjacent solid neighbor fails
+        world.set_block(30, 60, 30, BlockType::Sand);
+        world.set_block(31, 61, 30, BlockType::Stone); // Cardinal neighbor
+        lock = None;
+        let placed_near_solid = try_place_block_with_lock(
+            &mut world,
+            &mut inv,
+            0,
+            Vec3::new(30.5, 62.0, 30.5),
+            Vec3::new(0.0, -1.0, 0.0),
+            &player,
+            &mut lock,
+        );
+        assert!(
+            !placed_near_solid,
+            "Cannot place cactus next to solid block"
+        );
+        assert_eq!(world.get_block(30, 61, 30), BlockType::Air);
+        assert_eq!(inv[0].unwrap().count, 3);
     }
 }
