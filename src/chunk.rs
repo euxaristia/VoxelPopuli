@@ -132,7 +132,7 @@ impl ChunkRng {
 pub const CHUNK_WIDTH: usize = 16;
 pub const CHUNK_HEIGHT: usize = 256;
 pub const CHUNK_DEPTH: usize = 16;
-pub const WATER_VERTEX_ALPHA: u8 = 180;
+pub const WATER_VERTEX_ALPHA: u8 = 216;
 const SEA_LEVEL: usize = 124;
 const MAX_TERRAIN_HEIGHT: i32 = CHUNK_HEIGHT as i32 - 18;
 

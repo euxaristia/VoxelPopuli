@@ -1977,6 +1977,11 @@ async fn run() {
         } else {
             sky_c
         };
+        let forward_zenith = if deferred {
+            glam::Vec4::from_array(deferred_uniforms.zenith_color)
+        } else {
+            sky_c
+        };
         let cloud_tint = vibrant::frame::cloud_tint(&deferred_uniforms);
         flat_shader.set_vec4(
             flat_shader.get_uniform_location("colDiffuse"),
@@ -2094,6 +2099,10 @@ async fn run() {
         water_shader.set_vec3(water_shader.get_uniform_location("sunDir"), sun_dir);
         water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), eye_pos);
         water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), forward_sky);
+        water_shader.set_vec4(
+            water_shader.get_uniform_location("colDiffuse"),
+            forward_zenith,
+        );
         world.render_water(&water_shader, &frustum);
 
         shader.bind();

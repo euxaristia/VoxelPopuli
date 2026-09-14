@@ -230,9 +230,17 @@ pub fn water_lighting(
     let normals = [0.0, 1.0, 0.0].repeat(6);
     let mut brightness = Vec::new();
     for (name, sun_y, lighting) in [
-        ("day", 1.0, [255, 0, 255, 180]),
-        ("night", -1.0, [255, 0, 255, 180]),
-        ("torch", -1.0, [0, 255, 255, 180]),
+        ("day", 1.0, [255, 0, 255, crate::chunk::WATER_VERTEX_ALPHA]),
+        (
+            "night",
+            -1.0,
+            [255, 0, 255, crate::chunk::WATER_VERTEX_ALPHA],
+        ),
+        (
+            "torch",
+            -1.0,
+            [0, 255, 255, crate::chunk::WATER_VERTEX_ALPHA],
+        ),
     ] {
         target.bind();
         renderer::clear(0.0, 0.0, 0.0, 1.0);
