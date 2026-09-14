@@ -1681,6 +1681,7 @@ async fn run() {
                 .unwrap_or(BlockType::Air);
             world.player_targetable = !player.sandbox && player.health > 0;
             world.player_sneaking = is_sneaking;
+            world.check_enderman_gaze(eye_pos, look_dir);
             let earned_xp = world.update(player.position, delta_time as f32, held);
             profiler.world_update_ms = t_wu.elapsed().as_secs_f32() * 1000.0;
             if earned_xp > 0 {
@@ -1715,8 +1716,13 @@ async fn run() {
                 set_game_cursor_mode(&mut window, smoke_world, glfw::CursorMode::Disabled);
             }
             if world.pending_hurt > 0 {
-                player.take_damage(world.pending_hurt);
+                player.take_damage_from(
+                    world.pending_hurt,
+                    world.pending_hurt_origin,
+                    camera_angle.x,
+                );
                 world.pending_hurt = 0;
+                world.pending_hurt_origin = None;
             }
             if player.health <= 0 {
                 player.respawn(Vec3::new(32.5, spawn_y, 32.5));
@@ -1909,7 +1915,21 @@ async fn run() {
         let aspect = target.texture.width as f32 / target.texture.height as f32;
         // perspective_rh maps depth to wgpu's [0, 1] range (GL used [-1, 1]).
         let projection = Mat4::perspective_rh(fov_setting.to_radians(), aspect, 0.1, 1000.0);
-        let view = Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
+        let (tilt, hurt_angle) = if player.hurt_time > 0.0 {
+            let f = (player.hurt_time / 0.5).clamp(0.0, 1.0);
+            let tilt = (f * f * std::f32::consts::PI).sin() * 14.0f32.to_radians();
+            (tilt, player.hurt_direction)
+        } else {
+            (0.0, 0.0)
+        };
+        let hurt_mat = if tilt != 0.0 {
+            Mat4::from_rotation_y(-hurt_angle)
+                * Mat4::from_rotation_z(-tilt)
+                * Mat4::from_rotation_y(hurt_angle)
+        } else {
+            Mat4::IDENTITY
+        };
+        let view = hurt_mat * Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
         let mvp = projection * view;
 
         // Vibrant Visuals deferred path. Fancy graphics off keeps the
@@ -2146,6 +2166,13 @@ async fn run() {
                 glam::Vec4::new(0.05, 0.05, 0.2, 0.55)
             };
             draw_screen_quad(&color_shader, tint);
+            renderer::set_depth_test(true);
+        }
+        if player.hurt_time > 0.0 {
+            renderer::set_blend(true);
+            renderer::set_depth_test(false);
+            let alpha = (player.hurt_time / 0.5).clamp(0.0, 1.0) * 0.35;
+            draw_screen_quad(&color_shader, glam::Vec4::new(0.8, 0.0, 0.0, alpha));
             renderer::set_depth_test(true);
         }
 

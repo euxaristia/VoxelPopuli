@@ -105,6 +105,8 @@ pub struct Player {
     pub fall_distance: f32,
     pub spawn_point: Option<Vec3>,
     pub attack_cooldown: f32,
+    pub hurt_time: f32,
+    pub hurt_direction: f32,
 }
 
 impl Player {
@@ -134,6 +136,8 @@ impl Player {
             fall_distance: 0.0,
             spawn_point: None,
             attack_cooldown: 0.0,
+            hurt_time: 0.0,
+            hurt_direction: 0.0,
         }
     }
 
@@ -148,6 +152,15 @@ impl Player {
     }
 
     pub fn take_damage(&mut self, base_damage: i32) {
+        self.take_damage_from(base_damage, None, 0.0);
+    }
+
+    pub fn take_damage_from(
+        &mut self,
+        base_damage: i32,
+        source_pos: Option<Vec3>,
+        player_yaw: f32,
+    ) {
         if self.sandbox {
             return;
         }
@@ -156,6 +169,20 @@ impl Player {
         let actual_damage = ((base_damage as f32) * (1.0 - reduction)).round() as i32;
         let actual_damage = actual_damage.max(1);
         self.health = (self.health - actual_damage).max(0);
+        self.hurt_time = 0.5;
+        self.hurt_direction = if let Some(source) = source_pos {
+            let dx = source.x - self.position.x;
+            let dz = source.z - self.position.z;
+            if dx.hypot(dz) > 1e-4 {
+                let h = dx.atan2(dz) - player_yaw;
+                (h + std::f32::consts::PI).rem_euclid(2.0 * std::f32::consts::PI)
+                    - std::f32::consts::PI
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
 
         for slot in &mut self.equipped_armor {
             if let Some((_item, durability)) = slot {
@@ -183,6 +210,8 @@ impl Player {
         self.fall_distance = 0.0;
         self.flying = false;
         self.attack_cooldown = 0.0;
+        self.hurt_time = 0.0;
+        self.hurt_direction = 0.0;
         self.inventory_open = false;
         self.space_was_pressed = false;
         self.last_space_release = f64::NEG_INFINITY;
@@ -380,6 +409,7 @@ impl Player {
         } else if self.damage_cooldown > 0.0 {
             self.damage_cooldown = (self.damage_cooldown - dt).max(0.0);
         }
+        self.hurt_time = (self.hurt_time - dt).max(0.0);
 
         let controls_enabled = !self.inventory_open;
         let is_jumping = is_jumping && controls_enabled;
@@ -719,5 +749,35 @@ mod tests {
             player.health, 20,
             "Sandbox player is immune to cactus damage"
         );
+    }
+
+    #[test]
+    fn test_player_hurt_tilt_and_timer() {
+        let mut player = Player::new(64.0);
+        assert_eq!(player.hurt_time, 0.0);
+        player.take_damage(2);
+        assert_eq!(player.hurt_time, 0.5);
+        assert_eq!(player.hurt_direction, 0.0);
+
+        let world = World::simulation(42);
+        player.update(&world, Vec3::ZERO, 0.2, false, false, false, 0.0);
+        assert!((player.hurt_time - 0.3).abs() < 1e-4);
+
+        // Directional damage test: attacker to the right (+X relative to facing +Z)
+        player.take_damage_from(
+            2,
+            Some(Vec3::new(
+                player.position.x + 5.0,
+                player.position.y,
+                player.position.z,
+            )),
+            0.0,
+        );
+        assert_eq!(player.hurt_time, 0.5);
+        assert!((player.hurt_direction - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+
+        player.respawn(Vec3::new(32.5, 64.0, 32.5));
+        assert_eq!(player.hurt_time, 0.0);
+        assert_eq!(player.hurt_direction, 0.0);
     }
 }

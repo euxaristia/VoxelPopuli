@@ -303,7 +303,10 @@ impl World {
                             .weapon
                             .map_or(2.0, |s| crate::item::melee_damage(s.block).max(2.0));
                         match target.id {
-                            TargetId::Player => self.pending_hurt += damage as i32,
+                            TargetId::Player => {
+                                self.pending_hurt += damage as i32;
+                                self.pending_hurt_origin = Some(mob.position);
+                            }
                             TargetId::Mob(id) => return Some((id, damage, mob.id)),
                         }
                     }

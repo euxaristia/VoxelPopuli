@@ -1423,17 +1423,36 @@ impl MobVisuals {
     pub fn draw(&self, mob: &Mob, shader: &Shader, time: f32, viewer: Vec3) {
         self.texture.bind(0);
         let model = &self.models[mob.kind as usize];
-        let scale = render_height(mob) / model.height;
-        let base = Mat4::from_translation(mob.position)
+        let mut scale = render_height(mob) / model.height;
+        if mob.kind == MobKind::Creeper && mob.creeper_fuse > 0.0 {
+            scale *= 1.0 + (mob.creeper_fuse / 1.5).clamp(0.0, 1.0) * 0.3;
+        }
+        let shake = if mob.kind == MobKind::Enderman && mob.enderman_aggro {
+            Vec3::new((time * 40.0).sin() * 0.03, 0.0, (time * 40.0).cos() * 0.03)
+        } else {
+            Vec3::ZERO
+        };
+        let hurt_tilt = if mob.animation.hurt_remaining > 0.0 && mob.health > 0.0 {
+            -((mob.animation.hurt_remaining / crate::combat_animation::HURT_SECONDS)
+                * std::f32::consts::PI)
+                .sin()
+                * 0.25
+        } else {
+            0.0
+        };
+        let base = Mat4::from_translation(mob.position + shake)
             * facing(mob.yaw)
             * Mat4::from_rotation_z(mob.animation.death_roll())
-            * Mat4::from_rotation_x(if mob.kind == MobKind::Dolphin {
-                mob.swim_pitch - 0.05 - 0.05 * (time * 6.0).cos()
-            } else if mob.kind.species().motion == crate::mob_catalog::Motion::Swim {
-                mob.swim_pitch
-            } else {
-                0.0
-            })
+            * Mat4::from_rotation_x(
+                hurt_tilt
+                    + if mob.kind == MobKind::Dolphin {
+                        mob.swim_pitch - 0.05 - 0.05 * (time * 6.0).cos()
+                    } else if mob.kind.species().motion == crate::mob_catalog::Motion::Swim {
+                        mob.swim_pitch
+                    } else {
+                        0.0
+                    },
+            )
             * Mat4::from_scale(Vec3::splat(scale));
         let transforms = joint_transforms(&model.joints, mob, time, viewer);
         for group in &model.groups {
@@ -1443,7 +1462,12 @@ impl MobVisuals {
             } else {
                 Vec4::ONE
             };
-            let tint = if mob.animation.hurt_remaining > 0.0 || mob.health <= 0.0 {
+            let creeper_flash = mob.kind == MobKind::Creeper
+                && mob.creeper_fuse > 0.0
+                && ((mob.creeper_fuse * 10.0) as i32 % 2 == 1);
+            let tint = if creeper_flash {
+                Vec4::new(1.8, 1.8, 1.8, 1.0)
+            } else if mob.animation.hurt_remaining > 0.0 || mob.health <= 0.0 {
                 tint * Vec4::new(1.0, 0.35, 0.35, 1.0)
             } else {
                 tint
@@ -1472,6 +1496,9 @@ fn joint_transforms(joints: &[Joint], mob: &Mob, time: f32, viewer: Vec3) -> Vec
                 }
                 if mob.kind == MobKind::Sheep && mob.animal.eat_time > 0.0 {
                     rotation.x = 0.55;
+                }
+                if mob.kind == MobKind::Enderman && mob.enderman_aggro {
+                    rotation.x -= 0.25;
                 }
             }
             Action::Stride(sign) => rotation.x = swing * sign * 0.9,

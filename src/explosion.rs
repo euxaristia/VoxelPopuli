@@ -144,7 +144,11 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32, playe
         world.finish_mob_death(mob);
     }
 
-    world.pending_hurt += explosion_entity_damage(player_pos.distance(explosion_center), size);
+    let player_damage = explosion_entity_damage(player_pos.distance(explosion_center), size);
+    if player_damage > 0 {
+        world.pending_hurt += player_damage;
+        world.pending_hurt_origin = Some(explosion_center);
+    }
 
     // 4. Spawn Particles (Shockwave, Flash & Smoke)
     world.particles.push(Particle {

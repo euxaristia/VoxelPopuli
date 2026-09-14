@@ -65,6 +65,9 @@ pub struct Mob {
     pub swim_pitch: f32,
     pub animation: crate::combat_animation::MobAnimation,
     pub last_damage_source: Option<MobKind>,
+    pub creeper_fuse: f32,
+    pub enderman_aggro: bool,
+    pub sun_burn_timer: f32,
 }
 
 impl Mob {
@@ -92,6 +95,9 @@ impl Mob {
             swim_pitch: 0.0,
             animation: Default::default(),
             last_damage_source: None,
+            creeper_fuse: 0.0,
+            enderman_aggro: false,
+            sun_burn_timer: 0.0,
         }
     }
 
@@ -212,7 +218,9 @@ impl Mob {
     }
 
     pub fn is_hostile(&self) -> bool {
-        self.kind.species().temper == Temper::Hostile || self.anger_time > 0.0
+        self.kind.species().temper == Temper::Hostile
+            || self.anger_time > 0.0
+            || (self.kind == MobKind::Enderman && self.enderman_aggro)
     }
 
     pub fn height(&self) -> f32 {
@@ -224,7 +232,11 @@ impl Mob {
     }
 
     pub fn base_speed(&self) -> f32 {
-        self.kind.species().speed
+        if self.kind == MobKind::Enderman && self.enderman_aggro {
+            4.8
+        } else {
+            self.kind.species().speed
+        }
     }
 
     /// How far from home the mob is willing to wander

@@ -225,6 +225,7 @@ pub struct World {
     pub view_distance: i32,
     pub dirty_count: i32,
     pub pending_hurt: i32,
+    pub pending_hurt_origin: Option<Vec3>,
     pub pending_drops: Vec<(BlockType, u32)>,
     pub pending_stacks: Vec<crate::inventory::ItemStack>,
     pub dropped_items: Vec<crate::inventory::DroppedItem>,
@@ -306,6 +307,7 @@ impl World {
             view_distance: DEFAULT_VIEW_DISTANCE,
             dirty_count: 0,
             pending_hurt: 0,
+            pending_hurt_origin: None,
             pending_drops: Vec::new(),
             pending_stacks: Vec::new(),
             dropped_items: Vec::new(),
@@ -700,6 +702,9 @@ impl World {
     // a whole boundary-crossing scan completes and would wrongly gate out
     // every chunk during the initial synchronous load.
     fn sync_gpu_chunk(&self, cx: i32, cz: i32, pcx: i32, pcz: i32) {
+        if self.atlas.is_none() {
+            return;
+        }
         if (cx - pcx).abs() > GPU_POOL_VIEW_DISTANCE || (cz - pcz).abs() > GPU_POOL_VIEW_DISTANCE {
             return;
         }
@@ -912,14 +917,146 @@ impl World {
         let Some((index, _)) = best else {
             return false;
         };
+        let center =
+            self.mobs[index].position + Vec3::new(0.0, self.mobs[index].height() * 0.5, 0.0);
+        for _ in 0..6 {
+            self.particles.push(crate::block::Particle {
+                position: center
+                    + Vec3::new(
+                        (rand::random::<f32>() - 0.5) * 0.3,
+                        (rand::random::<f32>() - 0.5) * 0.3,
+                        (rand::random::<f32>() - 0.5) * 0.3,
+                    ),
+                velocity: Vec3::new(
+                    (rand::random::<f32>() - 0.5) * 2.0 + dir.x * 2.5,
+                    rand::random::<f32>() * 2.0 + 1.0,
+                    (rand::random::<f32>() - 0.5) * 2.0 + dir.z * 2.5,
+                ),
+                color: glam::Vec4::new(0.9, 0.2, 0.2, 0.9),
+                life: 0.3,
+                max_life: 0.3,
+                scale: 0.08,
+            });
+        }
         self.mobs[index]
             .skeleton
             .hurt_by(crate::skeleton_ai::TargetId::Player, None);
+        if self.mobs[index].kind == MobKind::Enderman {
+            self.mobs[index].enderman_aggro = true;
+        }
         if self.mobs[index].take_combat_damage(damage) {
             let mob = self.mobs.swap_remove(index);
             self.finish_mob_death(mob);
+        } else {
+            let knock_h = dir * 7.0;
+            self.mobs[index].velocity.x = knock_h.x;
+            self.mobs[index].velocity.z = knock_h.z;
+            self.mobs[index].velocity.y = 3.5;
+            if self.mobs[index].kind == MobKind::Enderman && rand::random::<f32>() < 0.7 {
+                self.try_teleport_mob(index, 16.0);
+            }
         }
         true
+    }
+
+    pub fn find_teleport_destination(&self, origin: Vec3, max_range: f32) -> Option<Vec3> {
+        for _ in 0..16 {
+            let dx = (rand::random::<f32>() * 2.0 - 1.0) * max_range;
+            let dz = (rand::random::<f32>() * 2.0 - 1.0) * max_range;
+            let tx = (origin.x + dx).floor() as i32;
+            let tz = (origin.z + dz).floor() as i32;
+            let center_y = origin.y.floor() as i32;
+            for dy in -8..=8 {
+                let ty = center_y + dy;
+                if ty <= 1 || ty >= CHUNK_HEIGHT as i32 - 4 {
+                    continue;
+                }
+                let floor = self.get_block(tx, ty - 1, tz);
+                if floor.is_solid()
+                    && floor != BlockType::Cactus
+                    && floor != BlockType::Lava
+                    && floor != BlockType::Water
+                {
+                    let clearance = (0..3).all(|h| {
+                        let b = self.get_block(tx, ty + h, tz);
+                        b == BlockType::Air || b == BlockType::SnowLayer
+                    });
+                    if clearance {
+                        return Some(Vec3::new(tx as f32 + 0.5, ty as f32, tz as f32 + 0.5));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn spawn_teleport_particles(&mut self, pos: Vec3, height: f32) {
+        for _ in 0..8 {
+            self.particles.push(crate::block::Particle {
+                position: pos
+                    + Vec3::new(
+                        (rand::random::<f32>() - 0.5) * 0.6,
+                        rand::random::<f32>() * height,
+                        (rand::random::<f32>() - 0.5) * 0.6,
+                    ),
+                velocity: Vec3::new(
+                    (rand::random::<f32>() - 0.5) * 1.5,
+                    (rand::random::<f32>() - 0.5) * 1.5,
+                    (rand::random::<f32>() - 0.5) * 1.5,
+                ),
+                color: glam::Vec4::new(0.6, 0.1, 0.8, 0.8),
+                life: 0.5,
+                max_life: 0.5,
+                scale: 0.09,
+            });
+        }
+    }
+
+    pub fn try_teleport_mob(&mut self, mob_idx: usize, max_range: f32) -> bool {
+        if mob_idx >= self.mobs.len() {
+            return false;
+        }
+        let old_pos = self.mobs[mob_idx].position;
+        let height = self.mobs[mob_idx].height();
+        if let Some(new_pos) = self.find_teleport_destination(old_pos, max_range) {
+            self.mobs[mob_idx].position = new_pos;
+            self.mobs[mob_idx].velocity = Vec3::ZERO;
+            self.spawn_teleport_particles(old_pos, height);
+            self.spawn_teleport_particles(new_pos, height);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn check_enderman_gaze(&mut self, eye_pos: Vec3, look_dir: Vec3) {
+        if !self.player_targetable || self.difficulty == crate::skeleton_ai::Difficulty::Peaceful {
+            return;
+        }
+        let look = look_dir.normalize_or_zero();
+        if look.length_squared() < 0.01 {
+            return;
+        }
+        for i in 0..self.mobs.len() {
+            if self.mobs[i].kind != MobKind::Enderman || self.mobs[i].health <= 0.0 {
+                continue;
+            }
+            let head_pos =
+                self.mobs[i].position + Vec3::new(0.0, self.mobs[i].height() * 0.85, 0.0);
+            let to_head = head_pos - eye_pos;
+            let dist = to_head.length();
+            if dist > 64.0 || dist < 0.5 {
+                continue;
+            }
+            let dot = look.dot(to_head / dist);
+            if dot > 0.985 {
+                let check_dist = (dist - 0.6).max(0.1);
+                if !self.raycast(eye_pos, to_head, check_dist).hit {
+                    self.mobs[i].enderman_aggro = true;
+                    self.mobs[i].anger_time = 30.0;
+                }
+            }
+        }
     }
 
     // Small collision steps prevent arrows skipping targets at low frame rates.
@@ -985,6 +1122,10 @@ impl World {
 
                         if in_x && in_y && in_z {
                             hit_mob = true;
+                            if self.mobs[m_idx].kind == MobKind::Enderman {
+                                self.try_teleport_mob(m_idx, 16.0);
+                                break;
+                            }
                             for _ in 0..4 {
                                 self.particles.push(crate::block::Particle {
                                     position: next_pos,
@@ -1020,6 +1161,7 @@ impl World {
                         remove_arrow = true;
                     } else if !from_player && Self::player_aabb_hit(player_pos, next_pos) {
                         self.pending_hurt += damage.round() as i32;
+                        self.pending_hurt_origin = Some(next_pos);
                         remove_arrow = true;
                     } else {
                         self.arrows[a_idx].position = next_pos;
@@ -1535,14 +1677,15 @@ impl World {
         if self.meshing_in_flight > 0 {
             while let Ok(result) = self.mesh_result_rx.try_recv() {
                 self.meshing_in_flight -= 1;
-                // The job id check drops stale results when the chunk was
-                // replaced and re-dispatched while this job was in flight.
+                let has_atlas = self.atlas.is_some();
                 let relit = if let Some(chunk) = self.get_chunk_mut(result.x, result.z)
                     && chunk.meshing_in_progress
                     && chunk.mesh_job_id == result.job_id
                 {
                     chunk.light = result.light;
-                    chunk.upload_mesh(result.opaque, result.transparent, result.water);
+                    if has_atlas {
+                        chunk.upload_mesh(result.opaque, result.transparent, result.water);
+                    }
                     true
                 } else {
                     false
@@ -2353,16 +2496,19 @@ impl World {
                     .hit;
             if !skeleton && mob.is_hostile() && target_dist < 16.0 && target_dist > 0.05 {
                 let ranged_shot = mob.track_combat_target(target_pos, can_see_target);
-                if mob.kind == MobKind::Creeper
-                    && target_dist < 2.2
-                    && can_see_target
-                    && is_target_player
-                {
-                    mob.walk_speed = 0.0;
-                    if mob.attack_cooldown <= 0.0 {
-                        self.detonations
-                            .push((mob.position, crate::explosion::CREEPER_BLAST_POWER));
-                        mob.health = 0.0;
+                if mob.kind == MobKind::Creeper && is_target_player {
+                    if (target_dist < 3.0 || (mob.creeper_fuse > 0.0 && target_dist <= 7.0))
+                        && can_see_target
+                    {
+                        mob.walk_speed = 0.0;
+                        mob.creeper_fuse += dt;
+                        if mob.creeper_fuse >= 1.5 {
+                            self.detonations
+                                .push((mob.position, crate::explosion::CREEPER_BLAST_POWER));
+                            mob.health = 0.0;
+                        }
+                    } else if target_dist > 7.0 || !can_see_target {
+                        mob.creeper_fuse = (mob.creeper_fuse - dt * 1.5).max(0.0);
                     }
                 } else if !mob.is_ranged()
                     && target_dist < 1.3 + mob.half_width() + target_id.map(|t| t.2).unwrap_or(0.0)
@@ -2371,6 +2517,7 @@ impl World {
                 {
                     if is_target_player {
                         self.pending_hurt += mob.kind.species().damage;
+                        self.pending_hurt_origin = Some(mob.position);
                     } else if let Some((tid, _, _)) = target_id {
                         mob_hits.push((tid, mob.kind.species().damage as f32, mob.id));
                     }
@@ -2395,6 +2542,10 @@ impl World {
                     mob.attack_cooldown = mob.ranged_attack_interval();
                     mob.animation.attack();
                 }
+            }
+
+            if mob.kind == MobKind::Creeper && (target_dist >= 16.0 || !can_see_target) {
+                mob.creeper_fuse = (mob.creeper_fuse - dt * 1.5).max(0.0);
             }
 
             if mob.kind.species().motion == Motion::Swim {
@@ -2544,6 +2695,84 @@ impl World {
                 }
                 if touches_cactus {
                     mob.take_damage(1.0);
+                }
+            }
+
+            let touches_water = {
+                let p = mob.position;
+                let hw = mob.half_width();
+                let min_x = (p.x - hw).floor() as i32;
+                let max_x = (p.x + hw).floor() as i32;
+                let min_y = (p.y - 0.1).floor() as i32;
+                let max_y = (p.y + mob.height()).floor() as i32;
+                let min_z = (p.z - hw).floor() as i32;
+                let max_z = (p.z + hw).floor() as i32;
+                let mut found = false;
+                'w: for bx in min_x..=max_x {
+                    for by in min_y..=max_y {
+                        for bz in min_z..=max_z {
+                            if self.get_block(bx, by, bz) == BlockType::Water {
+                                found = true;
+                                break 'w;
+                            }
+                        }
+                    }
+                }
+                found
+            };
+
+            // Undead daytime sunlight burning (Zombies, Zombie Villagers, Drowned on land)
+            let is_undead_sun_vulnerable = matches!(
+                mob.kind,
+                MobKind::Zombie | MobKind::ZombieVillager | MobKind::Drowned
+            );
+            if mob.health > 0.0 && is_undead_sun_vulnerable && self.day_time < 600.0 {
+                let bx = mob.position.x.floor() as i32;
+                let bz = mob.position.z.floor() as i32;
+                let head_y = (mob.position.y + mob.height()).floor() as i32;
+                let under_open_sky =
+                    (head_y..CHUNK_HEIGHT as i32).all(|y| !self.get_block(bx, y, bz).is_solid());
+                if !touches_water && under_open_sky {
+                    mob.sun_burn_timer += dt;
+                    if mob.sun_burn_timer >= 1.0 {
+                        mob.sun_burn_timer -= 1.0;
+                        mob.take_damage(1.0);
+                        self.particles.push(crate::block::Particle {
+                            position: mob.position + Vec3::new(0.0, mob.height() * 0.5, 0.0),
+                            velocity: Vec3::new(
+                                (rand::random::<f32>() - 0.5) * 0.8,
+                                rand::random::<f32>() * 1.5 + 0.5,
+                                (rand::random::<f32>() - 0.5) * 0.8,
+                            ),
+                            color: glam::Vec4::new(0.9, 0.5, 0.1, 0.8),
+                            life: 0.4,
+                            max_life: 0.4,
+                            scale: 0.1,
+                        });
+                    }
+                } else {
+                    mob.sun_burn_timer = 0.0;
+                }
+            }
+
+            // Enderman water damage & teleportation
+            if mob.health > 0.0 && mob.kind == MobKind::Enderman {
+                if touches_water {
+                    mob.sun_burn_timer += dt;
+                    if mob.sun_burn_timer >= 1.0 {
+                        mob.sun_burn_timer -= 1.0;
+                        mob.take_damage(1.0);
+                        let old_pos = mob.position;
+                        let h = mob.height();
+                        if let Some(new_pos) = self.find_teleport_destination(old_pos, 16.0) {
+                            mob.position = new_pos;
+                            mob.velocity = Vec3::ZERO;
+                            self.spawn_teleport_particles(old_pos, h);
+                            self.spawn_teleport_particles(new_pos, h);
+                        }
+                    }
+                } else {
+                    mob.sun_burn_timer = 0.0;
                 }
             }
         }
@@ -4302,5 +4531,192 @@ mod tests {
 
         assert!(!world.solid_at(5.5, 64.5, 5.5));
         assert!(!world.solid_at(6.5, 64.5, 5.5));
+    }
+
+    #[test]
+    fn test_mob_melee_knockback_and_particles() {
+        let mut world = World::simulation(42);
+        let idx = world.get_pool_index(0, 0);
+        world.chunks[idx] = Some(Box::new(crate::chunk::Chunk::new(0, 0, 42)));
+        let pos = Vec3::new(0.0, 60.0, 2.0);
+        world.mobs.push(Mob::new(MobKind::Zombie, pos, pos, 0));
+        let origin = Vec3::new(0.0, 61.0, 0.0);
+        let dir = Vec3::Z;
+        let particles_before = world.particles.len();
+        assert!(world.try_melee(origin, dir, 2.0, 4.0));
+        assert!(world.particles.len() > particles_before);
+        assert!(!world.mobs.is_empty());
+        assert_eq!(world.mobs[0].velocity.y, 3.5);
+        assert!((world.mobs[0].velocity.z - 7.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_creeper_fuse_countdown_and_cancellation() {
+        let mut world = World::simulation(42);
+        let idx = world.get_pool_index(0, 0);
+        world.chunks[idx] = Some(Box::new(crate::chunk::Chunk::new(0, 0, 42)));
+        for x in 0..16 {
+            for z in 0..16 {
+                world.set_block(x, 63, z, BlockType::Stone);
+            }
+        }
+        world.difficulty = crate::skeleton_ai::Difficulty::Normal;
+        world.player_targetable = true;
+
+        let player_pos = Vec3::new(8.0, 64.0, 8.0);
+        let creeper_pos = Vec3::new(8.0, 64.0, 9.5);
+        world
+            .mobs
+            .push(Mob::new(MobKind::Creeper, creeper_pos, creeper_pos, 0));
+
+        world.update_mobs(player_pos, 0.05, BlockType::Air);
+        assert!(
+            world.mobs[0].creeper_fuse > 0.0,
+            "Fuse should start ticking"
+        );
+        assert_eq!(world.mobs[0].walk_speed, 0.0, "Creeper stops while hissing");
+
+        // Step away far (> 7 blocks)
+        let far_player_pos = Vec3::new(8.0, 64.0, 20.0);
+        world.update_mobs(far_player_pos, 0.05, BlockType::Air);
+        assert!(
+            world.mobs[0].creeper_fuse < 0.05,
+            "Fuse should wind down when target retreats"
+        );
+
+        // Return close and let it fully fuse to detonation (>= 1.5s)
+        world.mobs[0].creeper_fuse = 1.45;
+        let detonations_before = world.detonations.len();
+        world.update_mobs(player_pos, 0.1, BlockType::Air);
+        assert!(
+            world.detonations.len() > detonations_before,
+            "Creeper detonates when fuse completes"
+        );
+        assert!(
+            !world.mobs.iter().any(|m| m.kind == MobKind::Creeper),
+            "Creeper removed on explosion"
+        );
+    }
+
+    #[test]
+    fn test_enderman_gaze_water_and_arrow_dodge() {
+        let mut world = World::simulation(42);
+        let idx = world.get_pool_index(0, 0);
+        world.chunks[idx] = Some(Box::new(crate::chunk::Chunk::new(0, 0, 42)));
+        for x in 0..16 {
+            for z in 0..16 {
+                world.set_block(x, 63, z, BlockType::Stone);
+            }
+        }
+        world.difficulty = crate::skeleton_ai::Difficulty::Normal;
+        world.player_targetable = true;
+
+        let enderman_pos = Vec3::new(8.0, 64.0, 12.0);
+        world
+            .mobs
+            .push(Mob::new(MobKind::Enderman, enderman_pos, enderman_pos, 0));
+        assert!(!world.mobs[0].enderman_aggro);
+
+        // Player looks directly at Enderman head
+        let eye_pos = Vec3::new(8.0, 65.6, 8.0);
+        let head_pos = enderman_pos + Vec3::new(0.0, world.mobs[0].height() * 0.85, 0.0);
+        let look_dir = (head_pos - eye_pos).normalize();
+        world.check_enderman_gaze(eye_pos, look_dir);
+        assert!(
+            world.mobs[0].enderman_aggro,
+            "Enderman aggroes on direct gaze"
+        );
+        assert!(world.mobs[0].is_hostile());
+        assert_eq!(world.mobs[0].base_speed(), 4.8);
+
+        // Enderman arrow dodge
+        world.arrows.push(crate::block::ArrowEntity {
+            position: enderman_pos + Vec3::new(0.0, 1.0, -0.2),
+            velocity: Vec3::new(0.0, 0.0, 10.0),
+            life: 5.0,
+            in_ground: false,
+            damage: 5.0,
+            is_critical: false,
+            from_player: true,
+            owner: None,
+        });
+        let initial_health = world.mobs[0].health;
+        world.update_arrows(eye_pos, 0.05);
+        assert_eq!(
+            world.mobs[0].health, initial_health,
+            "Enderman avoided arrow damage"
+        );
+        assert!(world.arrows.is_empty(), "Arrow was removed upon dodge");
+
+        // Enderman water damage & teleport
+        let cur = world.mobs[0].position.floor().as_ivec3();
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                world.set_block(cur.x + dx, cur.y, cur.z + dz, BlockType::Water);
+            }
+        }
+        world.mobs[0].sun_burn_timer = 0.95;
+        world.update_mobs(eye_pos, 0.1, BlockType::Air);
+        assert!(
+            world.mobs[0].health < initial_health,
+            "Enderman takes water damage"
+        );
+    }
+
+    #[test]
+    fn test_undead_daytime_sunlight_burning() {
+        let mut world = World::simulation(42);
+        let idx = world.get_pool_index(0, 0);
+        world.chunks[idx] = Some(Box::new(crate::chunk::Chunk::new(0, 0, 42)));
+        for x in 0..16 {
+            for z in 0..16 {
+                world.set_block(x, 63, z, BlockType::Stone);
+            }
+        }
+        world.difficulty = crate::skeleton_ai::Difficulty::Normal;
+        world.player_targetable = true;
+
+        // Daytime (day_time < 600.0)
+        world.day_time = 100.0;
+        let zombie_pos = Vec3::new(8.0, 64.0, 8.0);
+        world
+            .mobs
+            .push(Mob::new(MobKind::Zombie, zombie_pos, zombie_pos, 0));
+        let player_pos = Vec3::new(8.0, 64.0, 8.0);
+
+        // Under open sky during daytime: takes fire damage after 1 second
+        world.mobs[0].sun_burn_timer = 0.95;
+        let hp_before = world.mobs[0].health;
+        world.update_mobs(player_pos, 0.1, BlockType::Air);
+        assert_eq!(
+            world.mobs[0].health,
+            hp_before - 1.0,
+            "Zombie burns in direct sunlight"
+        );
+
+        // At night (day_time = 800.0): does not burn
+        world.day_time = 800.0;
+        world.mobs[0].sun_burn_timer = 0.95;
+        let hp_night = world.mobs[0].health;
+        world.update_mobs(player_pos, 0.1, BlockType::Air);
+        assert_eq!(
+            world.mobs[0].health, hp_night,
+            "Zombie does not burn at night"
+        );
+
+        // In water during daytime: does not burn
+        world.day_time = 100.0;
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                world.set_block(8 + dx, 64, 8 + dz, BlockType::Water);
+            }
+        }
+        world.mobs[0].sun_burn_timer = 0.95;
+        let hp_water = world.mobs[0].health;
+        world.update_mobs(player_pos, 0.1, BlockType::Air);
+        assert_eq!(
+            world.mobs[0].health, hp_water,
+            "Zombie does not burn while in water"
+        );
     }
 }
