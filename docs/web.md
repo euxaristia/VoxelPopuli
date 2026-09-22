@@ -40,8 +40,10 @@ left/right click to mine/place, E for inventory, 1–9 for the hotbar, and Esc
 to release the mouse and pause. Standard-mapped gamepads are supported during
 play. Use **Fullscreen** or F11 to expand the game.
 
-Worlds persist in IndexedDB in the current browser, using the desktop save
-format. The game saves every 30 seconds, on pause, on **Save world**, and on
+Worlds persist in IndexedDB in the current browser using VoxelPopuli's version 4
+save format with 16-bit block/item IDs. Versions 1–3 remain readable. Desktop
+worlds use native Bedrock storage; browser saves do not contain a Bedrock database.
+The game saves every 30 seconds, on pause, on **Save world**, and on
 **Save & Quit**. Wait for the saved confirmation before closing a tab: browsers
 do not guarantee asynchronous saves during page shutdown. A failed write leaves
 the previous save intact; an unreadable save stops startup rather than replacing

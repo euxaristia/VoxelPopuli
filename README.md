@@ -46,11 +46,13 @@ New worlds start in survival with an empty inventory. Gather logs, craft planks
 and a crafting table, make wooden tools, mine cobblestone, then build a furnace
 to turn ore into ingots and raw meat into cooked food.
 
-The game resumes `world.vps` automatically and saves on exit. To keep a separate
-survival world, use the same save path each time:
+Desktop builds use a native Bedrock world directory (`world/`) and save player
+progress on exit. Generated and displaced chunks are persisted while streaming.
+See [Bedrock saves and compatibility limits](docs/bedrock.md). Browser builds retain
+their existing browser save format. To keep a separate survival world:
 
 ```bash
-cargo run --release -- --save survival.vps
+cargo run --release -- --save survival
 ```
 
 If an older build placed you in a dark cave at startup, add `--reset-spawn` once
@@ -58,21 +60,22 @@ to move to the surface above your saved location. This keeps inventory and world
 edits; the new position is saved on exit:
 
 ```bash
-cargo run --release -- --save survival.vps --reset-spawn
+cargo run --release -- --save survival --reset-spawn
 ```
 
 For the original starter kit and double-tap flight controls in a separate world:
 
 ```bash
-cargo run --release -- --sandbox --save sandbox.vps
+cargo run --release -- --sandbox --save sandbox
 ```
 
-Existing saves retain their inventory and original flight controls. Save version
-2 also stores chest contents, furnace fuel/progress, dropped items, cursor and
-crafting-table items, hunger exhaustion, and time of day. Version 1 saves remain
-readable; older game binaries cannot read version 2 saves. An unreadable save
-stops startup rather than being replaced with a new world. `--seed` starts a new
-world, so use a different `--save` path to keep your current world.
+Legacy version 1–3 `.vps` saves remain readable and are retained during migration.
+Current browser saves and desktop supplemental session records use version 4,
+with 16-bit block/item IDs. This adds 64 KiB to each loaded chunk's block array;
+the optional GPU voxel pool also uses 64 KiB more per chunk slot.
+The default `world.vps` migrates to `world/`; an explicit `--save survival.vps`
+migrates to `survival.bedrock/`. An unreadable save stops startup. `--seed` and
+`--import-world` require a new native save directory when one already exists.
 
 Chests hold 27 stacks. Furnaces have input, fuel, and output slots; one item takes
 10 seconds to smelt, and one coal burns for 80 seconds. They continue cooking

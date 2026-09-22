@@ -18,9 +18,9 @@ pub struct AtlasEntry {
 }
 
 pub fn build_atlas_table() -> Vec<AtlasEntry> {
-    (0..BlockType::COUNT as u8)
+    (0..BlockType::COUNT as u16)
         .map(|id| {
-            let block = BlockType::from_u8(id);
+            let block = BlockType::from_u16(id);
             let (dtx, dty) = crate::item::atlas_uv(block);
             let (ttx, tty) = crate::item::atlas_uv_top(block);
             let top_height = match block {

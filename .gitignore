@@ -1,11 +1,14 @@
 *.o
 voxelpopuli
-save/
+/save/
 perf.data
 .gitignore
 perf.data.old
 target/
 window.cfg
 world.vps
+world/
+world.bedrock/
 *.vps
+!tests/fixtures/*.vps
 java17_world/

@@ -8,6 +8,7 @@ mod web_window;
 use glfw::{Action, GamepadAxis, GamepadButton, JoystickId, Key};
 mod atlas;
 mod atlas_table;
+mod bedrock;
 mod block;
 mod chunk;
 mod combat_animation;
@@ -380,6 +381,15 @@ async fn run() {
     // Entry point
     let args: Vec<String> = platform::args();
     #[cfg(not(target_arch = "wasm32"))]
+    match bedrock::cli::run(&args) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("Bedrock world operation failed: {error}");
+            std::process::exit(1);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     if args.iter().any(|arg| arg == "--smoke-test-mobs") {
         if let Err(error) = smoke::mobs() {
             eprintln!("Creature smoke test failed: {error}");
@@ -408,11 +418,40 @@ async fn run() {
             std::process::exit(1);
         }
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    let (native_path, legacy_path) = native_save_paths(&save_path);
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut native_store = if (!smoke_world || smoke_saved) && native_path.exists() {
+        if args_force_new_world(&args) {
+            eprintln!(
+                "A native world already exists at {}. Choose a new --save directory for a new seed or import.",
+                native_path.display()
+            );
+            return;
+        }
+        match bedrock::session::WorldStore::open(&native_path) {
+            Ok(store) => Some(std::sync::Arc::new(store)),
+            Err(error) => {
+                eprintln!("Could not open native world: {error}");
+                return;
+            }
+        }
+    } else {
+        None
+    };
     let mut loaded_save =
         if (smoke_world && !reset_spawn && !smoke_saved) || args_force_new_world(&args) {
             None
         } else {
-            match load_game_save(&save_path).await {
+            #[cfg(not(target_arch = "wasm32"))]
+            let result = if let Some(store) = &native_store {
+                GameSave::read_bedrock(store)
+            } else {
+                GameSave::read_from(&legacy_path)
+            };
+            #[cfg(target_arch = "wasm32")]
+            let result = load_game_save(&save_path).await;
+            match result {
                 Ok(save) => Some(save),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => {
@@ -481,6 +520,34 @@ async fn run() {
                     path.display()
                 );
                 std::process::exit(1);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    if native_store.is_none() && !smoke_world {
+        let result = if let Some(save) = &loaded_save {
+            save.migrate_to_bedrock(&native_path)
+                .and_then(|()| bedrock::session::WorldStore::open(&native_path))
+        } else {
+            bedrock::session::WorldStore::create(&native_path, world_seed as u64)
+        };
+        match result {
+            Ok(store) => {
+                if loaded_save.is_some() {
+                    loaded_save = match GameSave::read_bedrock(&store) {
+                        Ok(save) => Some(save),
+                        Err(error) => {
+                            eprintln!("Could not load migrated world: {error}");
+                            return;
+                        }
+                    };
+                }
+                native_store = Some(std::sync::Arc::new(store));
+            }
+            Err(error) => {
+                eprintln!("Could not prepare native world: {error}. Legacy saves were preserved.");
+                return;
             }
         }
     }
@@ -556,6 +623,10 @@ async fn run() {
         }
     };
     let mut world = World::new(world_seed as u64);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        world.bedrock = native_store;
+    }
     if let Some(path) = import_world_path.clone() {
         world.set_import_world(path);
     }
@@ -693,6 +764,10 @@ async fn run() {
     #[cfg(target_arch = "wasm32")]
     let mut was_paused = false;
     while !window.should_close() {
+        if let Some(error) = &world.storage_error {
+            eprintln!("World storage error: {error}. Stopped to preserve the existing save.");
+            return;
+        }
         #[cfg(target_arch = "wasm32")]
         web::next_frame().await;
 
@@ -3443,7 +3518,13 @@ async fn run() {
         return;
     }
     #[cfg(not(target_arch = "wasm32"))]
-    let result = result.and_then(|save| save.write_to(&save_path));
+    let result = result.and_then(|save| {
+        if world.bedrock.is_some() {
+            save.write_bedrock(&world)
+        } else {
+            save.write_to(&save_path)
+        }
+    });
     #[cfg(not(target_arch = "wasm32"))]
     if let Err(err) = result {
         eprintln!("Failed to save world: {err}");
@@ -3487,14 +3568,19 @@ mod survival_tests {
     }
 }
 
-async fn load_game_save(path: &std::path::Path) -> std::io::Result<GameSave> {
-    #[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
+async fn load_game_save(_path: &std::path::Path) -> std::io::Result<GameSave> {
+    web::load_save().await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_save_paths(requested: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    if requested
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("vps"))
     {
-        GameSave::read_from(path)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = path;
-        web::load_save().await
+        (requested.with_extension("bedrock"), requested.to_path_buf())
+    } else {
+        (requested.to_path_buf(), requested.with_extension("vps"))
     }
 }

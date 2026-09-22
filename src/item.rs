@@ -602,16 +602,16 @@ mod tests {
 
     #[test]
     fn test_block_type_roundtrip() {
-        for i in 0..BlockType::COUNT as u8 {
-            let b = BlockType::from_u8(i);
-            assert_eq!(b as u8, i, "BlockType::from_u8({}) roundtrip failed", i);
+        for i in 0..BlockType::COUNT as u16 {
+            let b = BlockType::from_u16(i);
+            assert_eq!(b as u16, i, "BlockType::from_u16({}) roundtrip failed", i);
         }
     }
 
     #[test]
-    fn test_out_of_range_from_u8() {
-        assert_eq!(BlockType::from_u8(255), BlockType::Air);
-        assert_eq!(BlockType::from_u8(BlockType::COUNT as u8), BlockType::Air);
+    fn test_out_of_range_from_u16() {
+        assert_eq!(BlockType::from_u16(u16::MAX), BlockType::Air);
+        assert_eq!(BlockType::from_u16(BlockType::COUNT as u16), BlockType::Air);
     }
 
     #[test]
@@ -850,8 +850,8 @@ mod tests {
     #[test]
     fn test_atlas_uv_all_blocks_have_mapping() {
         // Ensure no block maps to a nonsensical position
-        for i in 0..BlockType::COUNT as u8 {
-            let b = BlockType::from_u8(i);
+        for i in 0..BlockType::COUNT as u16 {
+            let b = BlockType::from_u16(i);
             let (tx, ty) = atlas_uv(b);
             assert!(
                 tx < 16 && ty < 16,

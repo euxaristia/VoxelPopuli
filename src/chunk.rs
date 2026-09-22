@@ -674,10 +674,11 @@ impl Chunk {
     /// for uploading to the GPU voxel pool (see hashed-splashing-haven plan).
     pub fn gpu_bytes(&self) -> (&[u8], &[u8], &[u8]) {
         const N: usize = CHUNK_WIDTH * CHUNK_HEIGHT * CHUNK_DEPTH;
-        // SAFETY: BlockType is #[repr(u8)] and Copy; light/liquid_levels are
+        // SAFETY: BlockType is #[repr(u16)] and Copy; light/liquid_levels are
         // already u8. All three are fixed-size nested arrays, contiguous in
         // memory, so a flat byte view over the whole array is valid.
-        let blocks = unsafe { std::slice::from_raw_parts(self.blocks.as_ptr() as *const u8, N) };
+        let blocks =
+            unsafe { std::slice::from_raw_parts(self.blocks.as_ptr() as *const u8, N * 2) };
         let light = unsafe { std::slice::from_raw_parts(self.light.as_ptr() as *const u8, N) };
         let liquid =
             unsafe { std::slice::from_raw_parts(self.liquid_levels.as_ptr() as *const u8, N) };
@@ -2501,6 +2502,26 @@ pub fn generate_minable_vein(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gpu_block_uploads_use_two_bytes_per_voxel() {
+        let mut chunk = super::Chunk::new(0, 0, 0);
+        chunk.blocks[1][7][3] = crate::block::BlockType::BoneMeal;
+        chunk.blocks[1][7][4] = crate::block::BlockType::Stone;
+        let (blocks, light, liquid) = chunk.gpu_bytes();
+        assert_eq!(blocks.len(), 16 * 256 * 16 * 2);
+        assert_eq!(light.len(), 16 * 256 * 16);
+        assert_eq!(liquid.len(), light.len());
+        let offset = (4096 + 7 * 16 + 3) * 2;
+        assert_eq!(
+            &blocks[offset..offset + 2],
+            &(crate::block::BlockType::BoneMeal as u16).to_le_bytes()
+        );
+        assert_eq!(
+            &blocks[offset + 2..offset + 4],
+            &(crate::block::BlockType::Stone as u16).to_le_bytes()
+        );
+    }
+
     use super::*;
 
     /// Ground truth for a single snapshot cell, computed directly from the
@@ -2586,7 +2607,7 @@ mod tests {
                         .wrapping_add(cz.wrapping_mul(577))
                         .wrapping_add((x * 13 + y * 3 + z * 41) as i32);
                     c.blocks[x][y][z] =
-                        BlockType::from_u8(mix.rem_euclid(BlockType::COUNT as i32) as u8);
+                        BlockType::from_u16(mix.rem_euclid(BlockType::COUNT as i32) as u16);
                     c.light[x][y][z] = mix.rem_euclid(16) as u8;
                     c.liquid_levels[x][y][z] = mix.rem_euclid(17) as u8;
                 }
@@ -2601,7 +2622,7 @@ mod tests {
 
     fn fallback_pattern(wx: i32, wy: i32, wz: i32) -> BlockType {
         let mix = wx.wrapping_mul(3) ^ wy.wrapping_mul(5) ^ wz.wrapping_mul(7);
-        BlockType::from_u8(mix.rem_euclid(BlockType::COUNT as i32) as u8)
+        BlockType::from_u16(mix.rem_euclid(BlockType::COUNT as i32) as u16)
     }
 
     #[test]

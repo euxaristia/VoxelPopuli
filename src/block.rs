@@ -39,7 +39,7 @@ pub struct XpOrbEntity {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-#[repr(u8)]
+#[repr(u16)]
 #[allow(dead_code, clippy::upper_case_acronyms)]
 pub enum BlockType {
     // === Original blocks (0-21) ===
@@ -210,10 +210,10 @@ pub enum BlockType {
 impl BlockType {
     pub const COUNT: usize = 130;
 
-    pub fn from_u8(value: u8) -> Self {
+    pub fn from_u16(value: u16) -> Self {
         if (value as usize) < Self::COUNT {
-            // SAFETY: BlockType is repr(u8) with contiguous variants 0..COUNT
-            unsafe { std::mem::transmute::<u8, BlockType>(value) }
+            // SAFETY: BlockType is repr(u16) with contiguous variants 0..COUNT
+            unsafe { std::mem::transmute::<u16, BlockType>(value) }
         } else {
             BlockType::Air
         }
@@ -437,18 +437,18 @@ mod tests {
     }
 
     #[test]
-    fn test_from_u8_all_valid() {
-        for i in 0..BlockType::COUNT as u8 {
-            let b = BlockType::from_u8(i);
-            assert_eq!(b as u8, i, "roundtrip failed for {i}");
+    fn test_from_u16_all_valid() {
+        for i in 0..BlockType::COUNT as u16 {
+            let b = BlockType::from_u16(i);
+            assert_eq!(b as u16, i, "roundtrip failed for {i}");
         }
     }
 
     #[test]
-    fn test_from_u8_out_of_range() {
-        assert_eq!(BlockType::from_u8(BlockType::COUNT as u8), BlockType::Air);
-        assert_eq!(BlockType::from_u8(200), BlockType::Air);
-        assert_eq!(BlockType::from_u8(255), BlockType::Air);
+    fn test_from_u16_out_of_range() {
+        assert_eq!(BlockType::from_u16(BlockType::COUNT as u16), BlockType::Air);
+        assert_eq!(BlockType::from_u16(200), BlockType::Air);
+        assert_eq!(BlockType::from_u16(u16::MAX), BlockType::Air);
     }
 
     #[test]

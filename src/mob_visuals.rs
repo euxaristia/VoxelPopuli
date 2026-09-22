@@ -116,7 +116,8 @@ fn design(kind: MobKind) -> Design {
         Shape::Person => {
             let bones = matches!(kind, Skeleton | Stray | Bogged | Parched);
             let tall = kind == Enderman;
-            let hip = if tall { 19.0 } else { 12.0 };
+            // Bedrock limb lengths; translate the Enderman's -4 model origin to feet=0.
+            let hip = if tall { 30.0 } else { 12.0 };
             let neck = hip + 12.0;
             d.leg(
                 -2.0,
@@ -124,7 +125,7 @@ fn design(kind: MobKind) -> Design {
                 hip,
                 if bones || tall { 2.0 } else { 4.0 },
                 1.0,
-                !bones && !tall,
+                false,
             );
             d.leg(
                 2.0,
@@ -132,7 +133,7 @@ fn design(kind: MobKind) -> Design {
                 hip,
                 if bones || tall { 2.0 } else { 4.0 },
                 -1.0,
-                !bones && !tall,
+                false,
             );
             if bones {
                 d.cube(0, [-1.0, hip, -1.0], [2.0, 12.0, 2.0], Body);
@@ -150,20 +151,16 @@ fn design(kind: MobKind) -> Design {
                 d.cube(head, [1.0, neck + 9.0, -1.0], [1.0, 2.0, 1.0], Wood);
                 d.cube(head, [-1.0, neck + 11.0, -3.0], [5.0, 1.0, 5.0], Muzzle);
             }
-            for (x, sign) in [(-5.5, -1.0), (5.5, 1.0)] {
-                let arm = d.joint([x, neck - 1.0, 0.0], Action::Arm(sign));
-                let w = if bones || tall { 2.0 } else { 3.0 };
-                let h = if tall { 24.0 } else { 12.0 };
-                d.cube(
-                    arm,
-                    [x - w / 2.0, neck - 1.0 - h, -w / 2.0],
-                    [w, h, w],
-                    Limb,
-                );
+            for sign in [-1.0, 1.0] {
+                let x = sign * if bones || tall { 5.0 } else { 6.0 };
+                let arm = d.joint([sign * 5.0, neck - 2.0, 0.0], Action::Arm(sign));
+                let w = if bones || tall { 2.0 } else { 4.0 };
+                let h = if tall { 30.0 } else { 12.0 };
+                d.cube(arm, [x - w / 2.0, neck - h, -w / 2.0], [w, h, w], Limb);
                 if !bones && !tall {
                     d.cube(
                         arm,
-                        [x - w / 2.0 - 0.04, neck - 5.0, -w / 2.0 - 0.04],
+                        [x - w / 2.0 - 0.04, neck - 4.0, -w / 2.0 - 0.04],
                         [w + 0.08, 4.0, w + 0.08],
                         Body,
                     );
@@ -491,6 +488,30 @@ fn design(kind: MobKind) -> Design {
         }
         Shape::Cat | Shape::Canine => {
             let cat = kind.species().shape == Shape::Cat;
+            if cat {
+                // Standing pose, +Z forward. Cats are narrower than wolves and foxes.
+                for (x, z, sign) in [
+                    (-1.1, -6.0, 1.0),
+                    (1.1, -6.0, -1.0),
+                    (-1.2, 5.0, -1.0),
+                    (1.2, 5.0, 1.0),
+                ] {
+                    d.leg(x, z, 6.0, 2.0, sign, false);
+                }
+                d.cube(0, [-2.0, 6.0, -8.0], [4.0, 6.0, 16.0], Body);
+                let head = d.joint([0.0, 9.0, 8.0], Action::Head);
+                d.cube(head, [-2.5, 7.0, 7.0], [5.0, 4.0, 5.0], Head);
+                d.cube(head, [-1.5, 7.0, 11.0], [3.0, 2.0, 2.0], Muzzle);
+                for x in [-2.0, 1.0] {
+                    d.cube(head, [x, 11.0, 8.0], [1.0, 1.0, 2.0], Accent);
+                }
+                let tail = d.joint([0.0, 9.0, -8.0], Action::Tail);
+                d.cube(tail, [-0.5, 8.5, -16.0], [1.0, 1.0, 8.0], Body);
+                let tip = d.joint([0.0, 9.0, -16.0], Action::Tail);
+                d.joints[tip].parent = Some(tail);
+                d.cube(tip, [-0.5, 8.5, -24.0], [1.0, 1.0, 8.0], Body);
+                return d;
+            }
             let axolotl = kind == Axolotl;
             let leg = if axolotl { 2.0 } else { 5.0 };
             for (x, z, s) in [
@@ -561,21 +582,21 @@ fn design(kind: MobKind) -> Design {
             }
         }
         Shape::Rabbit => {
-            d.cube(0, [-3.0, 3.0, -4.0], [6.0, 5.0, 8.0], Body);
-            for (x, z, s) in [
-                (-2.0, -2.0, 1.0),
-                (2.0, -2.0, -1.0),
-                (-2.0, 3.0, -1.0),
-                (2.0, 3.0, 1.0),
-            ] {
-                d.leg(x, z, 4.0, 2.0, s, false);
+            d.cube(0, [-3.0, 2.0, -8.0], [6.0, 5.0, 10.0], Body);
+            for sign in [-1.0, 1.0] {
+                let x = sign * 3.0;
+                let hind = d.joint([x, 6.5, -3.7], Action::Stride(sign));
+                d.cube(hind, [x - 1.0, 0.0, -7.0], [2.0, 1.0, 7.0], Limb);
+                d.cube(hind, [x - 1.0, 2.5, -8.7], [2.0, 4.0, 5.0], Body);
+                d.leg(x, 1.0, 7.0, 2.0, -sign, false);
             }
-            let h = d.joint([0.0, 7.0, 3.0], Action::Head);
-            d.cube(h, [-2.5, 7.0, 2.0], [5.0, 5.0, 5.0], Head);
+            let h = d.joint([0.0, 8.0, 1.0], Action::Head);
+            d.cube(h, [-2.5, 8.0, 1.0], [5.0, 4.0, 5.0], Head);
             for x in [-1.5, 1.5] {
-                d.cube(h, [x - 0.6, 12.0, 2.0], [1.2, 6.0, 1.5], Accent);
+                d.cube(h, [x - 1.0, 12.0, 1.0], [2.0, 5.0, 1.0], Accent);
             }
-            d.cube(0, [-1.5, 5.0, -6.0], [3.0, 3.0, 3.0], Accent);
+            d.cube(h, [-0.5, 9.5, 5.5], [1.0, 1.0, 1.0], Muzzle);
+            d.cube(0, [-1.5, 2.5, -9.0], [3.0, 3.0, 2.0], Accent);
         }
         Shape::Bird => {
             d.leg(-1.5, 0.0, 4.0, 1.0, 1.0, false);
@@ -1590,6 +1611,70 @@ fn variant_tint(mob: &Mob) -> Vec4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn humanoid_limb_proportions_follow_bedrock_geometry() {
+        for (kind, leg_height, arm_size) in [
+            (MobKind::Zombie, 12.0, Vec3::new(4.0, 12.0, 4.0)),
+            (MobKind::Skeleton, 12.0, Vec3::new(2.0, 12.0, 2.0)),
+            (MobKind::Enderman, 30.0, Vec3::new(2.0, 30.0, 2.0)),
+        ] {
+            let d = design(kind);
+            for joint in &d.joints {
+                if matches!(joint.action, Action::Stride(_)) {
+                    assert_eq!(joint.pivot.y, leg_height, "{kind:?} leg length");
+                }
+            }
+            let arms: Vec<_> = d
+                .cubes
+                .iter()
+                .filter(|cube| {
+                    cube.surface == Surface::Limb
+                        && matches!(d.joints[cube.joint].action, Action::Arm(_))
+                })
+                .collect();
+            assert_eq!(arms.len(), 2);
+            for arm in arms {
+                assert_eq!(arm.size, arm_size, "{kind:?} arm proportions");
+            }
+        }
+    }
+
+    #[test]
+    fn cats_have_a_slender_torso_and_short_ears() {
+        for kind in [MobKind::Cat, MobKind::Ocelot] {
+            let d = design(kind);
+            let torso = d
+                .cubes
+                .iter()
+                .find(|c| c.joint == 0 && c.surface == Surface::Body)
+                .unwrap();
+            assert_eq!(torso.size, Vec3::new(4.0, 6.0, 16.0));
+            let head = d.cubes.iter().find(|c| c.surface == Surface::Head).unwrap();
+            assert_eq!(head.size, Vec3::new(5.0, 4.0, 5.0));
+            let ears: Vec<_> = d
+                .cubes
+                .iter()
+                .filter(|c| c.surface == Surface::Accent)
+                .collect();
+            assert_eq!(ears.len(), 2);
+            assert!(ears.iter().all(|c| c.size == Vec3::new(1.0, 1.0, 2.0)));
+        }
+    }
+
+    #[test]
+    fn rabbits_have_long_hind_feet_instead_of_four_identical_posts() {
+        let d = design(MobKind::Rabbit);
+        let feet: Vec<_> = d
+            .cubes
+            .iter()
+            .filter(|c| c.min.y == 0.0 && c.size.y == 1.0)
+            .collect();
+        assert_eq!(feet.len(), 2);
+        assert!(feet.iter().all(|c| c.size == Vec3::new(2.0, 1.0, 7.0)));
+        let head = d.cubes.iter().find(|c| c.surface == Surface::Head).unwrap();
+        assert_eq!(head.size, Vec3::new(5.0, 4.0, 5.0));
+    }
 
     #[test]
     fn zombie_attack_changes_both_arm_joints_without_moving_feet() {

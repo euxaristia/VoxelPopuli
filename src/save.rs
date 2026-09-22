@@ -6,14 +6,19 @@ use crate::world::World;
 use glam::{Vec2, Vec3};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+mod bedrock;
 
 const MAGIC: &[u8; 8] = b"VPOPSAV\0";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const MAX_EDITS: usize = 10_000_000;
 const MAX_CONTAINERS: usize = 100_000;
 const MAX_PENDING_STACKS: usize = 1_000_000;
 const MAX_PATH_BYTES: usize = 32 * 1024;
+#[cfg(target_arch = "wasm32")]
 pub const SAVE_FILE: &str = "world.vps";
+#[cfg(not(target_arch = "wasm32"))]
+pub const SAVE_FILE: &str = "world";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkeletonSave {
@@ -333,7 +338,7 @@ impl GameSave {
             put_i32(&mut out, *x);
             put_i32(&mut out, *y);
             put_i32(&mut out, *z);
-            out.push(*block as u8);
+            out.extend_from_slice(&(*block as u16).to_le_bytes());
         }
         put_stack(&mut out, self.cursor)?;
         for stack in self.crafting {
@@ -348,7 +353,7 @@ impl GameSave {
             put_i32(&mut out, *x);
             put_i32(&mut out, *y);
             put_i32(&mut out, *z);
-            out.push(container.block() as u8);
+            out.extend_from_slice(&(container.block() as u16).to_le_bytes());
             for &stack in container.slots() {
                 put_stack(&mut out, stack)?;
             }
@@ -358,7 +363,7 @@ impl GameSave {
                 put_f32(&mut out, furnace.progress);
                 put_bool(&mut out, furnace.cooking.is_some());
                 if let Some(input) = furnace.cooking {
-                    out.push(input as u8);
+                    out.extend_from_slice(&(input as u16).to_le_bytes());
                 }
             }
         }
@@ -414,6 +419,7 @@ impl GameSave {
         if !(1..=VERSION).contains(&version) {
             return Err(invalid("unsupported save version"));
         }
+        reader.wide_blocks = version >= 4;
         let seed = reader.u64()?;
         let position = reader.vec3()?;
         let velocity = reader.vec3()?;
@@ -714,7 +720,7 @@ fn put_optional_vec3(out: &mut Vec<u8>, value: Option<Vec3>) {
 fn put_armor(out: &mut Vec<u8>, armor: Option<(BlockType, u16)>) {
     put_bool(out, armor.is_some());
     if let Some((block, durability)) = armor {
-        out.push(block as u8);
+        out.extend_from_slice(&(block as u16).to_le_bytes());
         out.extend_from_slice(&durability.to_le_bytes());
     }
 }
@@ -730,7 +736,7 @@ fn put_stack(out: &mut Vec<u8>, stack: Option<ItemStack>) -> io::Result<()> {
     }
     put_bool(out, stack.is_some());
     if let Some(stack) = stack {
-        out.push(stack.block as u8);
+        out.extend_from_slice(&(stack.block as u16).to_le_bytes());
         put_u32(out, stack.count);
         put_bool(out, stack.durability.is_some());
         if let Some(durability) = stack.durability {
@@ -758,11 +764,16 @@ fn put_optional_string(out: &mut Vec<u8>, value: Option<&str>) -> io::Result<()>
 struct Reader<'a> {
     bytes: &'a [u8],
     position: usize,
+    wide_blocks: bool,
 }
 
 impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
+        Self {
+            bytes,
+            position: 0,
+            wide_blocks: false,
+        }
     }
 
     fn remaining(&self) -> usize {
@@ -825,11 +836,15 @@ impl<'a> Reader<'a> {
     }
 
     fn block(&mut self) -> io::Result<BlockType> {
-        let value = self.u8()?;
+        let value = if self.wide_blocks {
+            self.u16()?
+        } else {
+            self.u8()? as u16
+        };
         if value as usize >= BlockType::COUNT {
             return Err(invalid("invalid block id in save file"));
         }
-        Ok(BlockType::from_u8(value))
+        Ok(BlockType::from_u16(value))
     }
 
     fn armor(&mut self) -> io::Result<Option<(BlockType, u16)>> {
@@ -935,7 +950,7 @@ mod tests {
     #[test]
     fn version_two_saves_default_to_normal_and_no_saved_skeletons() {
         let save = sample_save();
-        let mut bytes = save.encode().unwrap();
+        let mut bytes = include_bytes!("../tests/fixtures/legacy-save-v3.vps").to_vec();
         bytes.truncate(bytes.len() - 5);
         bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
         assert_eq!(GameSave::decode(&bytes).unwrap(), save);
@@ -1016,7 +1031,7 @@ mod tests {
     #[test]
     fn version_one_saves_still_load() {
         let save = sample_save();
-        let mut bytes = save.encode().unwrap();
+        let mut bytes = include_bytes!("../tests/fixtures/legacy-save-v3.vps").to_vec();
         // Empty version 2 extension: cursor, crafting, counts, and survival state.
         bytes.truncate(bytes.len() - 36);
         bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
@@ -1061,6 +1076,22 @@ mod tests {
         let last = invalid.len() - 1;
         invalid[last] = u8::MAX;
         assert!(GameSave::decode(&invalid).is_err());
+    }
+
+    #[test]
+    fn legacy_version_three_preserves_progress() {
+        let bytes = include_bytes!("../tests/fixtures/legacy-save-v3.vps");
+        assert_eq!(GameSave::decode(bytes).unwrap(), sample_save());
+    }
+
+    #[test]
+    fn version_four_uses_two_byte_item_ids() {
+        let mut encoded = Vec::new();
+        put_stack(&mut encoded, Some(ItemStack::new(BlockType::Stone, 1))).unwrap();
+        assert_eq!(encoded.len(), 8);
+        assert_eq!(&encoded[1..3], &(BlockType::Stone as u16).to_le_bytes());
+        assert_eq!(VERSION, 4);
+        assert_eq!(std::mem::size_of::<BlockType>(), 2);
     }
 
     #[test]

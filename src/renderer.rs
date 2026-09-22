@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// Bytes per chunk slot in the GPU voxel pool (one u8 per voxel, per array).
+// Voxels per chunk slot: blocks use two bytes, light and liquid one each.
 const CHUNK_VOXELS: u64 = (CHUNK_WIDTH * CHUNK_HEIGHT * CHUNK_DEPTH) as u64;
 
 // One uniform layout shared by every shader. Uniform "locations" are byte
@@ -707,7 +707,7 @@ pub fn gpu_pool_init(pool_size: usize) {
         let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let blocks = c.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("gpu_voxel_pool_blocks"),
-            size: voxel_buf_size,
+            size: voxel_buf_size * 2,
             usage,
             mapped_at_creation: false,
         });
@@ -732,7 +732,7 @@ pub fn gpu_pool_init(pool_size: usize) {
         println!(
             "GPU voxel pool: {} slots, {:.1} MiB total",
             pool_size,
-            (voxel_buf_size * 3 + pool_size as u64 * 8) as f64 / (1024.0 * 1024.0)
+            (voxel_buf_size * 4 + pool_size as u64 * 8) as f64 / (1024.0 * 1024.0)
         );
         c.gpu_voxel_pool = Some(GpuVoxelPool {
             blocks,
@@ -757,12 +757,15 @@ pub fn gpu_pool_upload_chunk(
     light: &[u8],
     liquid: &[u8],
 ) {
+    assert_eq!(blocks.len(), CHUNK_VOXELS as usize * 2);
+    assert_eq!(light.len(), CHUNK_VOXELS as usize);
+    assert_eq!(liquid.len(), CHUNK_VOXELS as usize);
     with_ctx(|c| {
         let Some(pool) = c.gpu_voxel_pool.as_mut() else {
             return;
         };
         let offset = slot as u64 * CHUNK_VOXELS;
-        c.queue.write_buffer(&pool.blocks, offset, blocks);
+        c.queue.write_buffer(&pool.blocks, offset * 2, blocks);
         c.queue.write_buffer(&pool.light, offset, light);
         c.queue.write_buffer(&pool.liquid, offset, liquid);
         let meta: [i32; 2] = [chunk_x, chunk_z];

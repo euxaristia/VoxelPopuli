@@ -208,6 +208,10 @@ struct EffectMeshes {
 }
 
 pub struct World {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub bedrock: Option<std::sync::Arc<crate::bedrock::session::WorldStore>>,
+    pub storage_error: Option<String>,
+    pub dimension: i32,
     pub difficulty: crate::skeleton_ai::Difficulty,
     pub player_targetable: bool,
     pub player_sneaking: bool,
@@ -253,8 +257,8 @@ pub struct World {
     next_mesh_job_id: u64,
     mesh_result_tx: std::sync::mpsc::Sender<MeshResult>,
     mesh_result_rx: std::sync::mpsc::Receiver<MeshResult>,
-    gen_result_tx: std::sync::mpsc::Sender<Box<Chunk>>,
-    gen_result_rx: std::sync::mpsc::Receiver<Box<Chunk>>,
+    gen_result_tx: std::sync::mpsc::Sender<Result<Box<Chunk>, (i32, i32, String)>>,
+    gen_result_rx: std::sync::mpsc::Receiver<Result<Box<Chunk>, (i32, i32, String)>>,
     // Chunk coordinates currently being generated on a worker
     gen_in_flight: std::collections::HashSet<(i32, i32)>,
     pub mobs: Vec<Mob>,
@@ -290,6 +294,10 @@ impl World {
         let (mesh_result_tx, mesh_result_rx) = std::sync::mpsc::channel();
         let (gen_result_tx, gen_result_rx) = std::sync::mpsc::channel();
         Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            bedrock: None,
+            storage_error: None,
+            dimension: 0,
             seed,
             difficulty: Default::default(),
             player_targetable: true,
@@ -1544,32 +1552,49 @@ impl World {
         if let Some(src) = self.imported.get(&(x, z)) {
             let mut chunk = Box::new(Chunk::new(x, z, self.seed));
             chunk.copy_terrain_from(src);
-            let _ = self.gen_result_tx.send(chunk);
+            let _ = self.gen_result_tx.send(Ok(chunk));
             return;
         }
         let seed = self.seed;
         let import_world = self.import_world.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let bedrock = self.bedrock.clone();
+        let dimension = self.dimension;
         let tx = self.gen_result_tx.clone();
         crate::platform::spawn(move || {
-            if let Some(path) = import_world {
-                match crate::java_compat::import_classic_java_chunk(&path, x, z) {
-                    Ok(Some(chunk)) => {
-                        let _ = tx.send(Box::new(chunk));
-                        return;
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        eprintln!("Failed to read imported chunk ({x}, {z}): {error}");
+            let result = (|| -> std::io::Result<Box<Chunk>> {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(store) = &bedrock {
+                    if let Some(chunk) = store.read_chunk(x, z, dimension)? {
+                        return Ok(Box::new(chunk));
                     }
                 }
-            }
-            let mut chunk = Box::new(Chunk::new(x, z, seed));
-            chunk.generate();
-            let _ = tx.send(chunk);
+                let imported = import_world
+                    .as_ref()
+                    .map(|path| crate::java_compat::import_classic_java_chunk(path, x, z))
+                    .transpose()?
+                    .flatten();
+                let chunk = if let Some(chunk) = imported {
+                    Box::new(chunk)
+                } else {
+                    let mut chunk = Box::new(Chunk::new(x, z, seed));
+                    chunk.generate();
+                    chunk
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(store) = &bedrock {
+                    store.insert_generated(&chunk, dimension)?;
+                }
+                Ok(chunk)
+            })();
+            let _ = tx.send(result.map_err(|error| (x, z, error.to_string())));
         });
     }
 
     fn request_missing_chunks(&mut self, pcx: i32, pcz: i32, max_in_flight: usize) -> bool {
+        if self.storage_error.is_some() {
+            return false;
+        }
         let max_in_flight = if cfg!(target_arch = "wasm32") {
             1
         } else {
@@ -1625,7 +1650,15 @@ impl World {
         }
 
         // --- Integrate chunks generated in the background ---
-        while let Ok(chunk) = self.gen_result_rx.try_recv() {
+        while let Ok(result) = self.gen_result_rx.try_recv() {
+            let chunk = match result {
+                Ok(chunk) => chunk,
+                Err((x, z, error)) => {
+                    self.gen_in_flight.remove(&(x, z));
+                    self.storage_error = Some(format!("Could not load chunk ({x}, {z}): {error}"));
+                    break;
+                }
+            };
             let (x, z) = (chunk.x, chunk.z);
             self.gen_in_flight.remove(&(x, z));
             // Discard arrivals the player has since moved away from; the
@@ -1634,6 +1667,27 @@ impl World {
                 continue;
             }
             let index = self.get_pool_index(x, z);
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(store) = &self.bedrock {
+                match store.containers(x, z, self.dimension) {
+                    Ok(containers) => {
+                        for (position, container) in containers {
+                            if chunk.get_block(
+                                position.0.rem_euclid(16) as usize,
+                                position.1 as usize,
+                                position.2.rem_euclid(16) as usize,
+                            ) == container.block()
+                            {
+                                self.containers.entry(position).or_insert(container);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.storage_error = Some(format!("Could not load containers: {error}"));
+                        break;
+                    }
+                }
+            }
             if let Some(existing) = &self.chunks[index]
                 && existing.x == x
                 && existing.z == z
@@ -1641,6 +1695,15 @@ impl World {
                 continue;
             }
             // The displaced chunk's dirty flag was counted; drop its count
+            #[cfg(not(target_arch = "wasm32"))]
+            if let (Some(store), Some(old)) = (&self.bedrock, &self.chunks[index]) {
+                if let Err(error) =
+                    store.save_chunks(std::iter::once(old.as_ref()), self.dimension, vec![])
+                {
+                    self.storage_error = Some(format!("Could not save displaced chunk: {error}"));
+                    break;
+                }
+            }
             if let Some(old) = &self.chunks[index]
                 && old.dirty
             {

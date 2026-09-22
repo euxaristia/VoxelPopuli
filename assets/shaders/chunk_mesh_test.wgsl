@@ -84,9 +84,9 @@ fn read_block(wx: i32, wy: i32, wz: i32) -> u32 {
     let lx = u32(rem_euclid(wx, 16));
     let lz = u32(rem_euclid(wz, 16));
     let local_idx = lx * 4096u + u32(wy) * 16u + lz;
-    let word = blocks_pool[u32(slot) * 16384u + local_idx / 4u];
-    let shift = (local_idx % 4u) * 8u;
-    return (word >> shift) & 0xFFu;
+    let word = blocks_pool[u32(slot) * 32768u + local_idx / 2u];
+    let shift = (local_idx % 2u) * 16u;
+    return (word >> shift) & 0xFFFFu;
 }
 
 fn read_light(wx: i32, wy: i32, wz: i32) -> u32 {

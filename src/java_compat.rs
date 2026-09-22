@@ -1486,8 +1486,8 @@ mod tests {
 
     #[test]
     fn every_world_block_has_classic_java_state_mapping() {
-        for id in 0..BlockType::COUNT as u8 {
-            let block = BlockType::from_u8(id);
+        for id in 0..BlockType::COUNT as u16 {
+            let block = BlockType::from_u16(id);
             let expected_world_block = !block.is_item() || matches!(block, BlockType::Wheat);
             assert_eq!(
                 classic_java_block_state(block).is_some(),

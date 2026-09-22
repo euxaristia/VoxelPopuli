@@ -16,8 +16,10 @@ glam = "0.33"
 png = "0.18.1"
 rand = "0.10"
 wgpu = { version = "30.0.0", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "gles", "vulkan", "wgsl"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bedrock-leveldb = { version = "0.2.2", default-features = false, features = ["zlib", "snappy"] }
 glfw = { version = "0.62.0", default-features = false, features = ["raw-window-handle-v0-6", "wayland", "x11", "native-handles", "src-build"] }
 mimalloc = "0.1"
 rayon = "1.11.0"
@@ -31,3 +33,6 @@ web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElemen
 web-time = "1.1"
 getrandom = { version = "0.4", features = ["wasm_js"] }
 console_error_panic_hook = "0.1"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2.189"
