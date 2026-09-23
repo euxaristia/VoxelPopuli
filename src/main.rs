@@ -1,3 +1,6 @@
+// The parallel storage profile checks Chunk's nested wgpu Send/Sync types.
+#![cfg_attr(test, recursion_limit = "256")]
+
 #[cfg(target_arch = "wasm32")]
 use crate::web_window as glfw;
 mod platform;
@@ -728,7 +731,8 @@ async fn run() {
         .as_ref()
         .map(|save| save.settings.clamped())
         .unwrap_or_default();
-    let mut render_dist_setting = if smoke_world {
+    let profile_loading = args.iter().any(|arg| arg == "--profile-loading");
+    let mut render_dist_setting = if smoke_world && !profile_loading {
         4
     } else {
         settings.view_distance
@@ -759,6 +763,7 @@ async fn run() {
     let mut current_fps: f32 = 0.0;
     let mut profiler = FrameProfiler::new();
     let smoke_started = platform::Instant::now();
+    let mut loading_report = platform::Instant::now();
     #[cfg(target_arch = "wasm32")]
     let mut last_save_time = glfw.get_time();
     #[cfg(target_arch = "wasm32")]
@@ -803,6 +808,18 @@ async fn run() {
         if game_state == GameState::Loading {
             // Update world incrementally
             world.update(load_position, 0.0, BlockType::Air);
+            if profile_loading && (loading_report.elapsed().as_secs() >= 1 || !world.is_loading) {
+                println!(
+                    "[LOADING] elapsed={:.3}s chunks={} dirty={} meshes={} update={:.3}ms ready={}",
+                    smoke_started.elapsed().as_secs_f64(),
+                    world.chunks_generated_count,
+                    world.dirty_count,
+                    world.meshing_in_flight,
+                    frame_start.elapsed().as_secs_f64() * 1000.0,
+                    !world.is_loading
+                );
+                loading_report = platform::Instant::now();
+            }
             if !world.is_loading {
                 if let Some(save) = loaded_save.take() {
                     player = save.restore_player();

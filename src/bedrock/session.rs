@@ -77,7 +77,9 @@ impl WorldStore {
             .database
             .lock()
             .map_err(|_| io::Error::other("World storage lock poisoned"))?;
-        terrain::read_chunk(&database, x, z, dimension, self.seed)
+        let records = terrain::read_records(&database, x, z, dimension)?;
+        drop(database);
+        records.decode(x, z, self.seed)
     }
 
     /// The caller supplies generated terrain, including its dimension-specific generator.
@@ -87,7 +89,7 @@ impl WorldStore {
             .database
             .lock()
             .map_err(|_| io::Error::other("World storage lock poisoned"))?;
-        if terrain::read_chunk(&database, chunk.x, chunk.z, dimension, self.seed)?.is_some() {
+        if terrain::read_records(&database, chunk.x, chunk.z, dimension)?.exists() {
             return Ok(());
         }
         let mut records = terrain::chunk_records(&database, chunk, dimension)?;
@@ -132,10 +134,7 @@ impl WorldStore {
             .database
             .lock()
             .map_err(|_| io::Error::other("World storage lock poisoned"))?;
-        database
-            .get(key)
-            .map(|value| value.map(|bytes| bytes.to_vec()))
-            .map_err(io::Error::other)
+        database.get(key)
     }
 }
 
@@ -221,6 +220,60 @@ fn new_chunk_metadata(chunk: &Chunk, dimension: i32) -> Vec<(Vec<u8>, Vec<u8>)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "release-mode storage profile"]
+    fn profile_world_loading() {
+        use std::time::Instant;
+        let path = std::env::temp_dir().join(format!(
+            "voxel-profile-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let store = WorldStore::create(&path, 1074691402050369410).unwrap();
+        let positions: Vec<_> = (-16..=16)
+            .flat_map(|x| (-16..=16).map(move |z| (x, z)))
+            .collect();
+        let start = Instant::now();
+        let mut chunks: Vec<_> = positions
+            .iter()
+            .map(|&(x, z)| Chunk::new(x, z, store.seed))
+            .collect();
+        rayon::scope(|scope| {
+            for chunk in &mut chunks {
+                scope.spawn(move |_| chunk.generate());
+            }
+        });
+        println!(
+            "PROFILE generation {} chunks: {:?}",
+            chunks.len(),
+            start.elapsed()
+        );
+        let start = Instant::now();
+        rayon::scope(|scope| {
+            for chunk in &chunks {
+                let store = &store;
+                scope.spawn(move |_| store.insert_generated(chunk, 0).unwrap());
+            }
+        });
+        println!("PROFILE persist: {:?}", start.elapsed());
+        assert!(
+            start.elapsed().as_secs() < 30,
+            "chunk persistence exceeded the release profiling budget"
+        );
+        let start = Instant::now();
+        rayon::scope(|scope| {
+            for &(x, z) in &positions {
+                let store = &store;
+                scope.spawn(move |_| assert!(store.read_chunk(x, z, 0).unwrap().is_some()));
+            }
+        });
+        println!("PROFILE reload: {:?}", start.elapsed());
+        let start = Instant::now();
+        store.save_chunks(chunks.iter(), 0, vec![]).unwrap();
+        println!("PROFILE unchanged save: {:?}", start.elapsed());
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
     #[test]
     fn new_world_spawn_stands_on_terrain_with_headroom() {
         for seed in [42, 0, u64::MAX] {

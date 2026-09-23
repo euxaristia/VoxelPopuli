@@ -69,6 +69,37 @@ cargo test --locked inspect_real_bedrock_worlds_without_writes -- --ignored --no
 The ignored fixture check expects local copies in `target/bedrock-fixtures/world-1`
 and `target/bedrock-fixtures/world-2`. It must never point at a world open in Minecraft.
 
+## Loading performance checks
+
+Chunk reads and save comparisons batch their subchunk records so each candidate
+database table is decoded once per batch. Reads use the database's existing
+64 MiB block-cache budget with checksum verification enabled. Chunk NBT decoding
+and lighting run after releasing the world storage lock. Writes still use synced
+WAL transactions; generated terrain is durable before it enters the world.
+
+The release-only storage profile covers 1,089 chunks, crossing the database's
+4 MiB flush threshold to exercise table reads as well as the WAL overlay. It
+reports generation, persistence, reload, and unchanged-save times and checks a
+30-second persistence budget. It creates and removes an isolated temporary world.
+
+```sh
+cargo test --release --locked profile_world_loading -- --ignored --nocapture
+```
+
+For full loading and rendering, create a fresh test world (the destination must
+not exist), then run the hidden-window smoke test. Repeat the second command to
+measure reloads. This writes generated chunks only to the selected test world.
+
+```sh
+cargo run --release --locked -- --export-bedrock target/loading-check --export-radius 0 --seed 1074691402050369410
+cargo run --release --locked -- --smoke-test-world --smoke-saved-world --profile-loading --save target/loading-check
+```
+
+`--profile-loading` logs loading-loop elapsed time, loaded chunks, pending meshes,
+and update duration. In smoke tests it uses the saved/default view distance
+(normally 16), rather than the usual smoke-test radius of 4. Timings exclude
+window, shader, and renderer initialization.
+
 ## Dependencies and references
 
 Native storage uses `bedrock-leveldb` with zlib/snappy, `zip` with deflate, and `libc`

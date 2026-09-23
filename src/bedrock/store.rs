@@ -1,6 +1,6 @@
 use super::nbt;
 use crate::java_compat::NbtTag;
-use bedrock_leveldb::{Db, OpenOptions, WriteBatch, WriteOptions};
+use bedrock_leveldb::{CachePolicy, Db, OpenOptions, ReadOptions, WriteBatch, WriteOptions};
 use std::{
     io::{self, Write},
     path::Path,
@@ -20,6 +20,38 @@ impl std::ops::Deref for Database {
 }
 
 impl Database {
+    /// The library defaults to bypassing its cache, even when a cache budget is
+    /// configured. Terrain repeatedly visits the same compressed table blocks.
+    fn read_options() -> ReadOptions {
+        ReadOptions {
+            cache_policy: CachePolicy::Use,
+            ..Default::default()
+        }
+    }
+
+    pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.db
+            .get_with(key, Self::read_options())
+            .map(|value| value.map(|value| value.to_vec()))
+            .map_err(io::Error::other)
+    }
+
+    /// Decode each candidate table once for the entire chunk, not once per key.
+    pub fn get_many(
+        &self,
+        keys: impl IntoIterator<Item = Vec<u8>>,
+    ) -> io::Result<Vec<Option<Vec<u8>>>> {
+        self.db
+            .get_many_owned(keys.into_iter().map(Into::into), Self::read_options())
+            .map(|values| {
+                values
+                    .into_iter()
+                    .map(|value| value.map(|value| value.to_vec()))
+                    .collect()
+            })
+            .map_err(io::Error::other)
+    }
+
     pub fn open_writable(path: &Path) -> io::Result<Self> {
         read_level(path)?;
         open_database(path, false, false)
@@ -144,6 +176,43 @@ mod tests {
     use super::*;
     use bedrock_leveldb::VisitorControl;
     #[test]
+    fn batched_cached_reads_preserve_order_and_observe_newer_writes() {
+        let path = std::env::temp_dir().join(format!(
+            "voxel-batch-read-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let db = Database::create(&path, &NbtTag::Compound(vec![])).unwrap();
+        db.commit([(b"a".to_vec(), vec![1]), (b"c".to_vec(), vec![3])])
+            .unwrap();
+        // Exercise table-backed reads, not just the fast WAL overlay that hid
+        // the loading regression in small worlds.
+        db.flush().unwrap();
+        let keys = || {
+            [
+                b"c".to_vec(),
+                b"missing".to_vec(),
+                b"a".to_vec(),
+                b"c".to_vec(),
+            ]
+        };
+        assert_eq!(
+            db.get_many(keys()).unwrap(),
+            vec![Some(vec![3]), None, Some(vec![1]), Some(vec![3])]
+        );
+        db.commit([(b"c".to_vec(), vec![4])]).unwrap();
+        let expected = vec![Some(vec![4]), None, Some(vec![1]), Some(vec![4])];
+        assert_eq!(db.get_many(keys()).unwrap(), expected);
+        db.flush().unwrap();
+        assert_eq!(db.get_many(keys()).unwrap(), expected);
+        assert_eq!(db.get(b"c").unwrap(), Some(vec![4]));
+        drop(db);
+        let db = Database::open_writable(&path).unwrap();
+        assert_eq!(db.get_many(keys()).unwrap(), expected);
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn native_transactions_survive_reopen_without_replacing_unknown_data() {
         let path = std::env::temp_dir().join(format!(
             "voxel-native-{}-{}",
@@ -169,7 +238,7 @@ mod tests {
             db.commit([(b"player".to_vec(), vec![2]), (vec![], vec![3])])
                 .is_err()
         );
-        assert_eq!(db.get(b"player").unwrap().unwrap().as_ref(), &[1]);
+        assert_eq!(db.get(b"player").unwrap().unwrap().as_slice(), &[1]);
         drop(db);
         let db = Database::open_writable(&path).unwrap();
         db.commit([(b"player".to_vec(), vec![4])]).unwrap();
@@ -177,10 +246,10 @@ mod tests {
         let db = read_database(&path).unwrap();
         assert_eq!(read_level(&path).unwrap(), metadata);
         assert_eq!(
-            db.get(b"future:record").unwrap().unwrap().as_ref(),
+            db.get(b"future:record").unwrap().unwrap().as_slice(),
             &[255, 0, 128]
         );
-        assert_eq!(db.get(b"player").unwrap().unwrap().as_ref(), &[4]);
+        assert_eq!(db.get(b"player").unwrap().unwrap().as_slice(), &[4]);
         assert!(db.commit([(b"player".to_vec(), vec![5])]).is_err());
         drop(db);
         std::fs::remove_dir_all(path).unwrap();
