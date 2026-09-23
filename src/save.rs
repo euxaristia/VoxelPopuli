@@ -889,6 +889,25 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn hunger_state_survives_save_reload_without_resuming_sprint() {
+        let mut player = Player::new(64.0);
+        player.hunger = 9;
+        player.saturation = 1.25;
+        player.exhaustion = 3.75;
+        player.sprinting = true;
+        let mut save = sample_save();
+        save.player = PlayerState::capture(&player);
+        let loaded = GameSave::decode(&save.encode().unwrap())
+            .unwrap()
+            .restore_player();
+        assert_eq!(
+            (loaded.hunger, loaded.saturation, loaded.exhaustion),
+            (9, 1.25, 3.75)
+        );
+        assert!(!loaded.sprinting);
+    }
+
     fn sample_save() -> GameSave {
         let mut inventory = [None; INVENTORY_SLOT_COUNT];
         inventory[0] = Some(ItemStack {

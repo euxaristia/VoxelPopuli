@@ -14,6 +14,11 @@ cargo run --release -- --save playtest.vps
    Full or incompatible output must block another smelt without consuming fresh fuel.
 3. Cook porkchops and beef, sprint until hungry, and eat. Put ingredients into
    the furnace with shift-click and right-click. Its output slot must reject items.
+   Start a sprint with Ctrl+W, then separately with a quick double-tap of W.
+   Release Ctrl while holding W: sprinting should continue. Release W, sneak,
+   walk into a wall, or open inventory: sprinting should stop. At three drumsticks
+   or less, sprinting must be unavailable until food is restored. Pushing into a
+   wall must not drain food; sprint-jumping should drain it faster than running.
 4. Craft and place a chest. Store a worn tool and several stacks. Test left-click,
    right-click, and shift-click transfers. Break the chest and collect its contents.
 5. Drop one item with Q and a stack with Ctrl+Q. Walk away, return, and collect it.

@@ -1,5 +1,6 @@
 use crate::block::BlockType;
 use crate::item;
+use crate::sprint;
 use crate::world::World;
 use glam::Vec3;
 
@@ -98,6 +99,7 @@ pub struct Player {
     pub xp_progress: f32,
     pub total_xp: u32,
     pub flying: bool,
+    pub sprinting: bool,
     pub last_space_release: f64,
     pub space_was_pressed: bool,
     pub damage_cooldown: f32,
@@ -129,6 +131,7 @@ impl Player {
             xp_progress: 0.0,
             total_xp: 0,
             flying: false,
+            sprinting: false,
             last_space_release: 0.0,
             space_was_pressed: false,
             damage_cooldown: 0.0,
@@ -209,6 +212,7 @@ impl Player {
         self.drowning_timer = 1.0;
         self.fall_distance = 0.0;
         self.flying = false;
+        self.sprinting = false;
         self.attack_cooldown = 0.0;
         self.hurt_time = 0.0;
         self.hurt_direction = 0.0;
@@ -218,7 +222,7 @@ impl Player {
     }
 
     pub fn exhaust(&mut self, amount: f32) {
-        if !amount.is_finite() || amount <= 0.0 {
+        if self.sandbox || !amount.is_finite() || amount <= 0.0 {
             return;
         }
         self.exhaustion += amount;
@@ -338,6 +342,7 @@ impl Player {
     pub fn update(
         &mut self,
         world: &World,
+        facing: Vec3,
         move_input: Vec3,
         dt: f32,
         is_sprinting: bool,
@@ -348,20 +353,17 @@ impl Player {
         if self.attack_cooldown > 0.0 {
             self.attack_cooldown = (self.attack_cooldown - dt).max(0.0);
         }
-        self.hunger_timer += dt;
-        if self.hunger_timer >= 4.0 {
-            self.hunger_timer -= 4.0;
-            if self.hunger >= 18 && self.health < 20 {
-                self.health = (self.health + 1).min(20);
-                self.exhaust(6.0);
-            } else if self.hunger == 0 {
-                self.apply_starvation_tick();
+        if !self.sandbox {
+            self.hunger_timer += dt;
+            if self.hunger_timer >= 4.0 {
+                self.hunger_timer -= 4.0;
+                if self.hunger >= 18 && self.health < 20 {
+                    self.health = (self.health + 1).min(20);
+                    self.exhaust(6.0);
+                } else if self.hunger == 0 {
+                    self.apply_starvation_tick();
+                }
             }
-        }
-
-        let effective_sprint = is_sprinting && self.hunger > 6;
-        if effective_sprint && !self.inventory_open && move_input.length_squared() > 0.01 {
-            self.exhaust(0.5 * dt);
         }
 
         let in_lava = world.get_block(
@@ -454,6 +456,17 @@ impl Player {
         ) == BlockType::Water;
         let in_water = waist_in_w || feet_in_w;
 
+        self.sprinting = is_sprinting
+            && controls_enabled
+            && !is_sneaking
+            && !self.flying
+            && !in_water
+            && !in_lava
+            && self.health > 0
+            && (self.sandbox || self.hunger > 6)
+            && move_input.dot(facing) > 0.0;
+        let position_before_move = self.position;
+
         let mut mv = move_input;
         if mv.length_squared() > 0.1 {
             mv = mv.normalize();
@@ -461,10 +474,10 @@ impl Player {
                 10.92
             } else if in_water {
                 2.0
-            } else if effective_sprint {
-                5.612
+            } else if self.sprinting {
+                sprint::SPRINT_SPEED
             } else {
-                4.317
+                sprint::WALK_SPEED
             };
             mv *= speed;
         }
@@ -516,6 +529,15 @@ impl Player {
                 if is_jumping && self.grounded {
                     self.velocity.y = 8.4;
                     self.grounded = false;
+                    if self.sprinting {
+                        let boost =
+                            facing.with_y(0.0).normalize_or_zero() * sprint::SPRINT_JUMP_BOOST;
+                        self.velocity.x += boost.x;
+                        self.velocity.z += boost.z;
+                        self.exhaust(sprint::SPRINT_JUMP_EXHAUSTION);
+                    } else {
+                        self.exhaust(sprint::JUMP_EXHAUSTION);
+                    }
                 }
             }
         }
@@ -540,16 +562,32 @@ impl Player {
             self.grounded = false;
         }
 
+        let sprinted = self.sprinting;
         let dx = self.velocity.x * dt;
         self.position.x += dx;
         if Self::check_collision(world, self.position) {
             self.position.x -= dx;
+            self.velocity.x = 0.0;
+            self.sprinting = false;
         }
 
         let dz = self.velocity.z * dt;
         self.position.z += dz;
         if Self::check_collision(world, self.position) {
             self.position.z -= dz;
+            self.velocity.z = 0.0;
+            self.sprinting = false;
+        }
+
+        // Charge accepted movement, never attempted movement into a wall.
+        let displacement = self.position - position_before_move;
+        if !self.flying && in_water {
+            self.exhaust(displacement.length() * sprint::SWIM_EXHAUSTION_PER_BLOCK);
+        } else if self.grounded && sprinted {
+            self.exhaust(displacement.with_y(0.0).length() * sprint::SPRINT_EXHAUSTION_PER_BLOCK);
+        }
+        if !self.sandbox && self.hunger <= 6 {
+            self.sprinting = false;
         }
 
         if head_in_w {
@@ -571,6 +609,206 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn movement_fixture() -> (World, Player) {
+        let mut world = World::simulation(42);
+        let mut chunk = crate::chunk::Chunk::new(0, 0, 42);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.blocks[x][63][z] = BlockType::Stone;
+            }
+        }
+        world.insert_chunk(chunk);
+        let mut player = Player::new(63.9);
+        player.position = Vec3::new(8.5, 63.9, 8.5);
+        player.grounded = true;
+        (world, player)
+    }
+
+    #[test]
+    fn sprint_exhaustion_tracks_ground_distance() {
+        let (world, mut player) = movement_fixture();
+        let start = player.position;
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, false, false, 0.0);
+        let distance = (player.position - start).with_y(0.0).length();
+        assert!(distance > 0.0);
+        assert!((player.exhaustion - distance * 0.1).abs() < 0.00001);
+    }
+
+    #[test]
+    fn blocked_sprint_does_not_consume_exhaustion() {
+        let (mut world, mut player) = movement_fixture();
+        for y in 64..=66 {
+            world.set_block(9, y, 8, BlockType::Stone);
+        }
+        player.position.x = 8.75;
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, false, false, 0.0);
+        assert_eq!(player.position.x, 8.75);
+        assert_eq!(player.exhaustion, 0.0);
+        assert!(!player.sprinting);
+    }
+
+    #[test]
+    fn jump_exhaustion_is_charged_once_at_takeoff() {
+        let (world, mut player) = movement_fixture();
+        player.update(&world, Vec3::X, Vec3::ZERO, 0.05, false, true, false, 0.0);
+        assert!((player.exhaustion - 0.05).abs() < 0.00001);
+        player.update(&world, Vec3::X, Vec3::ZERO, 0.05, false, true, false, 0.05);
+        assert!((player.exhaustion - 0.05).abs() < 0.00001);
+    }
+
+    #[test]
+    fn sprint_jump_costs_point_two_and_adds_forward_impulse() {
+        let (world, mut player) = movement_fixture();
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, true, false, 0.0);
+        assert!((player.exhaustion - 0.2).abs() < 0.00001);
+        assert!(player.velocity.x > 5.612);
+    }
+
+    #[test]
+    fn sprint_jump_boost_follows_facing_while_strafing() {
+        let (world, mut player) = movement_fixture();
+        player.update(
+            &world,
+            Vec3::Z,
+            Vec3::X + Vec3::Z,
+            0.05,
+            true,
+            true,
+            false,
+            0.0,
+        );
+        assert!((player.velocity.z - player.velocity.x - 4.0).abs() < 0.00001);
+    }
+
+    #[test]
+    fn sideways_and_backward_movement_cannot_sprint() {
+        for movement in [Vec3::X, -Vec3::Z] {
+            let (world, mut player) = movement_fixture();
+            player.update(&world, Vec3::Z, movement, 0.05, true, false, false, 0.0);
+            assert!(!player.sprinting);
+            assert_eq!(player.exhaustion, 0.0);
+        }
+    }
+
+    #[test]
+    fn airborne_sprint_does_not_charge_ground_distance() {
+        let (world, mut player) = movement_fixture();
+        player.position.y = 70.0;
+        player.grounded = false;
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, false, false, 0.0);
+        assert_eq!(player.exhaustion, 0.0);
+    }
+
+    #[test]
+    fn sneaking_cannot_apply_sprint_speed_or_exhaustion() {
+        let (world, mut player) = movement_fixture();
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, false, true, 0.0);
+        assert!(player.velocity.x <= 4.317);
+        assert_eq!(player.exhaustion, 0.0);
+    }
+
+    #[test]
+    fn sandbox_sprinting_does_not_consume_food() {
+        let (world, mut player) = movement_fixture();
+        player.sandbox = true;
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, true, false, 0.0);
+        player.exhaust(8.0);
+        assert_eq!(
+            (player.hunger, player.saturation, player.exhaustion),
+            (20, 5.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn sprint_stops_at_six_food_and_eating_allows_it_again() {
+        let (world, mut player) = movement_fixture();
+        player.hunger = 7;
+        player.saturation = 0.0;
+        player.exhaustion = 3.999;
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, false, false, 0.0);
+        assert_eq!(player.hunger, 6);
+        assert!(!player.sprinting);
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, false, false, 0.05);
+        assert!(!player.sprinting);
+        assert!(player.eat_food(item::food_properties(BlockType::Apple).unwrap()));
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, false, false, 0.1);
+        assert!(player.sprinting);
+    }
+
+    #[test]
+    fn double_tap_forward_reaches_sprint_speed_without_holding_control() {
+        let (world, mut player) = movement_fixture();
+        let mut input = sprint::SprintInput::default();
+        for (time, forward) in [(0.0, 1.0), (0.05, 0.0), (0.1, 1.0)] {
+            let request = input.request(forward, false, player.sprinting, true, time);
+            player.update(
+                &world,
+                Vec3::X,
+                Vec3::X * forward,
+                0.05,
+                request,
+                false,
+                false,
+                time,
+            );
+        }
+        assert!(player.sprinting);
+        for tick in 3..20 {
+            let time = tick as f64 * 0.05;
+            let request = input.request(1.0, false, player.sprinting, true, time);
+            player.update(&world, Vec3::X, Vec3::X, 0.05, request, false, false, time);
+        }
+        assert!((player.velocity.x - sprint::SPRINT_SPEED).abs() < 0.001);
+        let request = input.request(0.0, false, player.sprinting, true, 1.0);
+        player.update(
+            &world,
+            Vec3::X,
+            Vec3::ZERO,
+            0.05,
+            request,
+            false,
+            false,
+            1.0,
+        );
+        assert!(!player.sprinting);
+    }
+
+    #[test]
+    fn inventory_and_flight_cancel_sprint_without_spending_food() {
+        let (world, mut player) = movement_fixture();
+        player.sprinting = true;
+        player.inventory_open = true;
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, true, false, 0.0);
+        assert!(!player.sprinting);
+        assert_eq!(player.exhaustion, 0.0);
+        player.inventory_open = false;
+        player.sandbox = true;
+        player.grounded = false;
+        player.flying = true;
+        player.position.y = 70.0;
+        player.hunger = 0;
+        player.hunger_timer = 3.99;
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, false, false, 0.05);
+        assert!(!player.sprinting);
+        assert_eq!(player.exhaustion, 0.0);
+        assert_eq!(player.health, 20);
+    }
+
+    #[test]
+    fn swimming_uses_swim_exhaustion_instead_of_sprint_exhaustion() {
+        let (mut world, mut player) = movement_fixture();
+        for x in 8..=9 {
+            for y in 64..=65 {
+                world.set_block(x, y, 8, BlockType::Water);
+            }
+        }
+        player.position.y = 64.0;
+        let start = player.position;
+        player.update(&world, Vec3::X, Vec3::X, 0.05, true, false, false, 0.0);
+        assert!(!player.sprinting);
+        assert!((player.exhaustion - player.position.distance(start) * 0.01).abs() < 0.00001);
+    }
 
     #[test]
     fn starvation_can_reach_zero_health() {
@@ -717,7 +955,7 @@ mod tests {
         player.sandbox = false;
         player.damage_cooldown = 0.0;
 
-        player.update(&world, Vec3::ZERO, 0.1, false, false, false, 0.0);
+        player.update(&world, Vec3::X, Vec3::ZERO, 0.1, false, false, false, 0.0);
         assert_eq!(
             player.health, 19,
             "Player standing on cactus takes 1 damage"
@@ -725,11 +963,11 @@ mod tests {
         assert_eq!(player.damage_cooldown, 0.5, "Damage cooldown set to 0.5s");
 
         // Another tick while on cooldown should not apply extra damage
-        player.update(&world, Vec3::ZERO, 0.1, false, false, false, 0.1);
+        player.update(&world, Vec3::X, Vec3::ZERO, 0.1, false, false, false, 0.1);
         assert_eq!(player.health, 19);
 
         // After cooldown expires, damage applies again
-        player.update(&world, Vec3::ZERO, 0.45, false, false, false, 0.55);
+        player.update(&world, Vec3::X, Vec3::ZERO, 0.45, false, false, false, 0.55);
         assert_eq!(player.health, 18);
     }
 
@@ -744,7 +982,7 @@ mod tests {
         player.sandbox = true;
         player.damage_cooldown = 0.0;
 
-        player.update(&world, Vec3::ZERO, 0.1, false, false, false, 0.0);
+        player.update(&world, Vec3::X, Vec3::ZERO, 0.1, false, false, false, 0.0);
         assert_eq!(
             player.health, 20,
             "Sandbox player is immune to cactus damage"
@@ -760,7 +998,7 @@ mod tests {
         assert_eq!(player.hurt_direction, 0.0);
 
         let world = World::simulation(42);
-        player.update(&world, Vec3::ZERO, 0.2, false, false, false, 0.0);
+        player.update(&world, Vec3::X, Vec3::ZERO, 0.2, false, false, false, 0.0);
         assert!((player.hurt_time - 0.3).abs() < 1e-4);
 
         // Directional damage test: attacker to the right (+X relative to facing +Z)

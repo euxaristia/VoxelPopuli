@@ -38,6 +38,7 @@ mod renderer;
 mod save;
 mod skeleton_ai;
 mod smoke;
+mod sprint;
 mod vibrant;
 mod village;
 mod world;
@@ -722,6 +723,7 @@ async fn run() {
     let mut left_mouse_held = false;
     let mut right_mouse_held = false;
     let mut bow_charge = 0.0f32;
+    let mut sprint_input = sprint::SprintInput::default();
     let mut crafting_table_open = false;
     let mut open_container = None;
     let mut craft_table_slots = [None::<ItemStack>; 10]; // 0-8: 3x3 grid, 9: output
@@ -1736,9 +1738,26 @@ async fn run() {
             // Left stick movement
             move_dir += right * gp_lx + forward * (-gp_ly);
         }
-        let is_sprinting = window.get_key(Key::LeftControl) == Action::Press || gp_sprint;
         let is_jumping = window.get_key(Key::Space) == Action::Press || gp_jump;
         let is_sneaking = window.get_key(Key::LeftShift) == Action::Press || gp_sneak;
+        let sprint_controls_enabled = game_state == GameState::Playing
+            && !player.inventory_open
+            && !is_sneaking
+            && player.health > 0
+            && (player.sandbox || player.hunger > 6)
+            && !(right_mouse_held
+                && inv_slots[player.selected_slot]
+                    .is_some_and(|stack| stack.block == BlockType::Bow));
+        let is_sprinting = sprint_input.request(
+            move_dir.dot(forward),
+            window.get_key(Key::LeftControl) == Action::Press || gp_sprint,
+            player.sprinting,
+            sprint_controls_enabled,
+            current_time,
+        );
+        if !sprint_controls_enabled {
+            player.sprinting = false;
+        }
         let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
         let look_dir = Vec3::new(
             camera_angle.y.cos() * camera_angle.x.sin(),
@@ -1760,6 +1779,7 @@ async fn run() {
 
             player.update(
                 &world,
+                forward,
                 move_dir,
                 delta_time,
                 is_sprinting,

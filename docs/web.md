@@ -35,7 +35,7 @@ See [GitHub's custom Pages workflow documentation](https://docs.github.com/en/pa
 ## Controls and saves
 
 Click **Click to play** after terrain loads. Desktop controls work in the
-browser: WASD, mouse look, Space to jump, Shift to sneak, Ctrl to sprint,
+browser: WASD, mouse look, Space to jump, Shift to sneak, Ctrl or double-tap W to sprint,
 left/right click to mine/place, E for inventory, 1–9 for the hotbar, and Esc
 to release the mouse and pause. Standard-mapped gamepads are supported during
 play. Use **Fullscreen** or F11 to expand the game.

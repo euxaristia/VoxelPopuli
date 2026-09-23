@@ -107,7 +107,7 @@ The importer reads Anvil `.mca` region files, decompresses NBT chunk data, unpac
 - `W A S D`: Move
 - `Mouse`: Look
 - `Space`: Jump / Swim up (Double-tap in sandbox worlds for Flight)
-- `Left Ctrl`: Sprint (requires Hunger > 6)
+- `Left Ctrl` while moving forward, or double-tap `W`: Start sprinting (requires hunger > 6 in survival)
 - `Shift`: Sneak / Swim down
 - `Left Click`: Break block / Mine / Attack
 - `Right Click`: Place block / Eat food / Equip armor / Open crafting tables, chests, and furnaces / Use beds & TNT
@@ -117,6 +117,12 @@ The importer reads Anvil `.mca` region files, decompresses NBT chunk data, unpac
 - `F3`: Toggle debug HUD & performance telemetry overlay
 - `F6`: Open the creature catalogue in sandbox worlds
 - `Esc`: Pause menu / Settings
+
+Sprinting continues while moving forward and stops when forward input is released,
+you sneak, hit a wall, open a menu, draw a bow, or run low on food. Gamepads use
+left-stick click or a quick double push forward. Sprinting and jumping consume
+exhaustion, which drains saturation before hunger; eating replenishes food.
+See [sprinting and hunger](docs/sprinting.md) for mechanics and reference examples.
 
 ## Project Layout 📁
 - `src/main.rs`: Entry point, windowing, game loop, input handling, and pause menu.
