@@ -4,6 +4,9 @@ use crate::sprint;
 use crate::world::World;
 use glam::Vec3;
 
+pub const STANDING_EYE_HEIGHT: f32 = 1.62;
+const CROUCHING_EYE_HEIGHT: f32 = 1.27;
+
 fn spawn_clear(block: BlockType) -> bool {
     matches!(block, BlockType::Air | BlockType::SnowLayer)
 }
@@ -82,6 +85,8 @@ pub fn safe_spawn_near(
 }
 
 pub struct Player {
+    pub poison_time: f32,
+    pub poison_tick: f32,
     pub position: Vec3,
     pub velocity: Vec3,
     pub grounded: bool,
@@ -100,6 +105,8 @@ pub struct Player {
     pub total_xp: u32,
     pub flying: bool,
     pub sprinting: bool,
+    pub sneaking: bool,
+    pub crouch_amount: f32,
     pub last_space_release: f64,
     pub space_was_pressed: bool,
     pub damage_cooldown: f32,
@@ -132,6 +139,10 @@ impl Player {
             total_xp: 0,
             flying: false,
             sprinting: false,
+            sneaking: false,
+            crouch_amount: 0.0,
+            poison_time: 0.0,
+            poison_tick: 0.0,
             last_space_release: 0.0,
             space_was_pressed: false,
             damage_cooldown: 0.0,
@@ -213,6 +224,10 @@ impl Player {
         self.fall_distance = 0.0;
         self.flying = false;
         self.sprinting = false;
+        self.sneaking = false;
+        self.crouch_amount = 0.0;
+        self.poison_time = 0.0;
+        self.poison_tick = 0.0;
         self.attack_cooldown = 0.0;
         self.hurt_time = 0.0;
         self.hurt_direction = 0.0;
@@ -304,9 +319,20 @@ impl Player {
         b.is_solid()
     }
 
-    fn check_collision(world: &World, pos: Vec3) -> bool {
+    pub fn eye_position(&self) -> Vec3 {
+        self.position
+            + Vec3::Y
+                * (STANDING_EYE_HEIGHT
+                    + (CROUCHING_EYE_HEIGHT - STANDING_EYE_HEIGHT) * self.crouch_amount)
+    }
+
+    fn body_height(&self) -> f32 {
+        if self.sneaking { 1.5 } else { 1.8 }
+    }
+
+    fn check_collision(world: &World, pos: Vec3, height: f32) -> bool {
         let w = 0.22;
-        let h = 1.75;
+        let h = height - 0.05;
         for x_off in [-w, w] {
             for z_off in [-w, w] {
                 for yi in 0..=2 {
@@ -326,7 +352,7 @@ impl Player {
     pub fn intersects_block(&self, bx: i32, by: i32, bz: i32) -> bool {
         let w = 0.3;
         let player_min = self.position - Vec3::new(w, 0.0, w);
-        let player_max = self.position + Vec3::new(w, 1.8, w);
+        let player_max = self.position + Vec3::new(w, self.body_height(), w);
         let block_min = Vec3::new(bx as f32, by as f32, bz as f32);
         let block_max = block_min + Vec3::ONE;
 
@@ -352,6 +378,17 @@ impl Player {
     ) {
         if self.attack_cooldown > 0.0 {
             self.attack_cooldown = (self.attack_cooldown - dt).max(0.0);
+        }
+        if !self.sandbox && self.poison_time > 0.0 {
+            let elapsed = dt.min(self.poison_time);
+            self.poison_time = (self.poison_time - dt).max(0.0);
+            self.poison_tick += elapsed;
+            while self.poison_tick >= 1.25 {
+                self.poison_tick -= 1.25;
+                self.health = (self.health - 1).max(1).min(self.health);
+            }
+        } else {
+            self.poison_tick = 0.0;
         }
         if !self.sandbox {
             self.hunger_timer += dt;
@@ -380,7 +417,7 @@ impl Player {
             let min_x = (self.position.x - 0.31).floor() as i32;
             let max_x = (self.position.x + 0.31).floor() as i32;
             let min_y = (self.position.y - 0.05).floor() as i32;
-            let max_y = (self.position.y + 1.8).floor() as i32;
+            let max_y = (self.position.y + self.body_height()).floor() as i32;
             let min_z = (self.position.z - 0.31).floor() as i32;
             let max_z = (self.position.z + 0.31).floor() as i32;
             let mut found = false;
@@ -439,6 +476,11 @@ impl Player {
             self.flying = false;
         }
 
+        self.sneaking = !self.flying
+            && (is_sneaking || (self.sneaking && Self::check_collision(world, self.position, 1.8)));
+        let target = if self.sneaking { 1.0 } else { 0.0 };
+        self.crouch_amount += (target - self.crouch_amount) * (1.0 - (-20.0 * dt).exp());
+
         let waist_in_w = world.get_block(
             self.position.x.floor() as i32,
             (self.position.y + 0.9).floor() as i32,
@@ -451,14 +493,14 @@ impl Player {
         ) == BlockType::Water;
         let head_in_w = world.get_block(
             self.position.x.floor() as i32,
-            (self.position.y + 1.6).floor() as i32,
+            self.eye_position().y.floor() as i32,
             self.position.z.floor() as i32,
         ) == BlockType::Water;
         let in_water = waist_in_w || feet_in_w;
 
         self.sprinting = is_sprinting
             && controls_enabled
-            && !is_sneaking
+            && !self.sneaking
             && !self.flying
             && !in_water
             && !in_lava
@@ -476,6 +518,8 @@ impl Player {
                 2.0
             } else if self.sprinting {
                 sprint::SPRINT_SPEED
+            } else if self.sneaking {
+                sprint::WALK_SPEED * 0.3
             } else {
                 sprint::WALK_SPEED
             };
@@ -547,7 +591,7 @@ impl Player {
             self.fall_distance += -dy;
         }
         self.position.y += dy;
-        if Self::check_collision(world, self.position) {
+        if Self::check_collision(world, self.position, self.body_height()) {
             if self.velocity.y <= 0.0 {
                 self.grounded = true;
                 let fall_damage = (self.fall_distance - 3.0).floor() as i32;
@@ -565,7 +609,7 @@ impl Player {
         let sprinted = self.sprinting;
         let dx = self.velocity.x * dt;
         self.position.x += dx;
-        if Self::check_collision(world, self.position) {
+        if Self::check_collision(world, self.position, self.body_height()) {
             self.position.x -= dx;
             self.velocity.x = 0.0;
             self.sprinting = false;
@@ -573,7 +617,7 @@ impl Player {
 
         let dz = self.velocity.z * dt;
         self.position.z += dz;
-        if Self::check_collision(world, self.position) {
+        if Self::check_collision(world, self.position, self.body_height()) {
             self.position.z -= dz;
             self.velocity.z = 0.0;
             self.sprinting = false;
@@ -623,6 +667,42 @@ mod tests {
         player.position = Vec3::new(8.5, 63.9, 8.5);
         player.grounded = true;
         (world, player)
+    }
+
+    #[test]
+    fn bee_poison_uses_one_point_ticks_and_cannot_kill() {
+        let (world, mut p) = movement_fixture();
+        p.health = 3;
+        p.poison_time = 10.0;
+        for i in 0..100 {
+            p.update(
+                &world,
+                Vec3::Z,
+                Vec3::ZERO,
+                0.1,
+                false,
+                false,
+                false,
+                i as f64 * 0.1,
+            );
+        }
+        assert_eq!(p.health, 1);
+        p.sandbox = true;
+        p.health = 20;
+        p.poison_time = 10.0;
+        for i in 0..100 {
+            p.update(
+                &world,
+                Vec3::Z,
+                Vec3::ZERO,
+                0.1,
+                false,
+                false,
+                false,
+                i as f64 * 0.1,
+            );
+        }
+        assert_eq!(p.health, 20);
     }
 
     #[test]
@@ -704,8 +784,58 @@ mod tests {
     fn sneaking_cannot_apply_sprint_speed_or_exhaustion() {
         let (world, mut player) = movement_fixture();
         player.update(&world, Vec3::X, Vec3::X, 0.05, true, false, true, 0.0);
-        assert!(player.velocity.x <= 4.317);
+        assert!(player.velocity.x <= sprint::WALK_SPEED * 0.3);
         assert_eq!(player.exhaustion, 0.0);
+    }
+
+    #[test]
+    fn sneaking_lowers_view_and_releasing_restores_it() {
+        let (world, mut player) = movement_fixture();
+        for i in 0..20 {
+            player.update(
+                &world,
+                Vec3::X,
+                Vec3::ZERO,
+                0.05,
+                false,
+                false,
+                true,
+                i as f64 * 0.05,
+            );
+        }
+        assert!(player.sneaking);
+        assert!((player.eye_position().y - player.position.y - 1.27).abs() < 0.001);
+        assert_eq!(player.body_height(), 1.5);
+        for i in 0..20 {
+            player.update(
+                &world,
+                Vec3::X,
+                Vec3::ZERO,
+                0.05,
+                false,
+                false,
+                false,
+                1.0 + i as f64 * 0.05,
+            );
+        }
+        assert!(!player.sneaking);
+        assert!((player.eye_position().y - player.position.y - 1.62).abs() < 0.001);
+    }
+
+    #[test]
+    fn crouch_remains_when_ceiling_blocks_standing() {
+        let (mut world, mut player) = movement_fixture();
+        player.position.y = 64.4;
+        player.sneaking = true;
+        world.set_block(8, 66, 8, BlockType::Stone);
+        player.update(&world, Vec3::X, Vec3::ZERO, 0.0, true, false, false, 1.0);
+        assert!(player.sneaking);
+        assert!(!player.sprinting);
+        assert!(!Player::check_collision(&world, player.position, 1.5));
+        assert!(Player::check_collision(&world, player.position, 1.8));
+        world.set_block(8, 66, 8, BlockType::Air);
+        player.update(&world, Vec3::X, Vec3::ZERO, 0.0, false, false, false, 1.1);
+        assert!(!player.sneaking);
     }
 
     #[test]

@@ -138,7 +138,10 @@ fn sky_radiance(dir: vec3<f32>) -> vec3<f32> {
     var color = mix(u.horizon_color.rgb, u.zenith_color.rgb, rayleigh);
 
     // Forward-scattering lobes around the sun and moon.
-    let glare = max(u.atmosphere.w, 1.0);
+    // Fractional pack values used directly as an exponent have an unbounded
+    // slope at cosine zero, drawing a visible hemisphere seam. The base
+    // linear falloff keeps the lobe continuous while shape tightens it.
+    let glare = 1.0 + max(u.atmosphere.w, 0.0);
     let sun_cos = max(dot(dir, u.sun_direction_illuminance.xyz), 0.0);
     let moon_cos = max(dot(dir, u.moon_direction_illuminance.xyz), 0.0);
     let mie_fade = smoothstep(stops.z - 0.5, stops.z + 0.5, height + 1.0);

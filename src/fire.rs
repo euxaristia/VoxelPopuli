@@ -13,6 +13,16 @@ pub fn is_flammable(block: BlockType) -> bool {
         block,
         BlockType::OakLog
             | BlockType::SpruceLog
+            | BlockType::BirchLog
+            | BlockType::BirchLeaves
+            | BlockType::BirchPlanks
+            | BlockType::MangroveLog
+            | BlockType::MangroveLeaves
+            | BlockType::MangrovePlanks
+            | BlockType::CherryLog
+            | BlockType::CherryLeaves
+            | BlockType::CherryPlanks
+            | BlockType::MangroveRoots
             | BlockType::OakLeaves
             | BlockType::SpruceLeaves
             | BlockType::OakPlanks

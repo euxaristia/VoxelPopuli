@@ -28,6 +28,73 @@ pub struct Recipe {
 use BlockType::*;
 
 const RECIPES: &[Recipe] = &[
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[BirchLog],
+        },
+        output: BirchPlanks,
+        output_count: 4,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[MangroveLog],
+        },
+        output: MangrovePlanks,
+        output_count: 4,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[CherryLog],
+        },
+        output: CherryPlanks,
+        output_count: 4,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[
+                OakPlanks, OakPlanks, OakPlanks, Honeycomb, Honeycomb, Honeycomb, OakPlanks,
+                OakPlanks, OakPlanks,
+            ],
+        },
+        output: Beehive,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[Glass, Air, Glass, Air, Glass, Air],
+        },
+        output: GlassBottle,
+        output_count: 3,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 2,
+            height: 2,
+            pattern: &[Air, IronIngot, IronIngot, Air],
+        },
+        output: Shears,
+        output_count: 1,
+        mirror: true,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 3,
+            pattern: &[Air, Stick, Air, Stick, Coal, Stick, OakLog, OakLog, OakLog],
+        },
+        output: Campfire,
+        output_count: 1,
+        mirror: false,
+    },
     // === Basic materials ===
     // Oak Log -> 4 Oak Planks (shapeless)
     Recipe {
@@ -1004,7 +1071,7 @@ pub fn smelt_item(input: BlockType) -> Option<(BlockType, u8)> {
         Cobblestone => Some((Stone, 1)),
         Sand => Some((Glass, 1)),
         Clay => Some((Brick, 1)),
-        OakLog | SpruceLog => Some((Coal, 1)),
+        OakLog | SpruceLog | BirchLog | MangroveLog | CherryLog => Some((Coal, 1)),
         Cactus => Some((Sand, 1)),
         _ => None,
     }
@@ -1019,7 +1086,8 @@ pub fn is_furnace_fuel(fuel: BlockType) -> bool {
 pub fn fuel_burn_time(fuel: BlockType) -> f32 {
     match fuel {
         Coal => 80.0,
-        OakLog | SpruceLog | OakPlanks | CraftingTable | Chest | Bookshelf => 15.0,
+        OakLog | SpruceLog | BirchLog | MangroveLog | CherryLog | BirchPlanks | MangrovePlanks
+        | CherryPlanks | MangroveRoots | OakPlanks | CraftingTable | Chest | Bookshelf => 15.0,
         Stick => 5.0,
         WoodPickaxe | WoodAxe | WoodShovel | WoodSword | WoodHoe => 10.0,
         _ => 0.0,
@@ -1128,7 +1196,7 @@ fn matches_shaped(
                 }
             } else {
                 match grid_block {
-                    Some(gb) if gb == recipe_block => {}
+                    Some(gb) if recipe_ingredient_matches(gb, recipe_block) => {}
                     _ => return false,
                 }
             }
@@ -1156,7 +1224,10 @@ fn matches_shapeless(grid: &[Option<BlockType>], ingredients: &[BlockType]) -> b
     }
     let mut remaining: Vec<BlockType> = ingredients.to_vec();
     for item in &grid_items {
-        if let Some(pos) = remaining.iter().position(|&r| r == *item) {
+        if let Some(pos) = remaining
+            .iter()
+            .position(|&r| recipe_ingredient_matches(*item, r))
+        {
             remaining.remove(pos);
         } else {
             return false;
@@ -1165,11 +1236,41 @@ fn matches_shapeless(grid: &[Option<BlockType>], ingredients: &[BlockType]) -> b
     remaining.is_empty()
 }
 
+fn recipe_ingredient_matches(actual: BlockType, expected: BlockType) -> bool {
+    actual == expected
+        || (expected == OakPlanks && matches!(actual, BirchPlanks | MangrovePlanks | CherryPlanks))
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn habitat_woods_make_matching_planks_and_accept_mixed_planks() {
+        for (log, planks) in [
+            (BirchLog, BirchPlanks),
+            (MangroveLog, MangrovePlanks),
+            (CherryLog, CherryPlanks),
+        ] {
+            let result = find_recipe(&[Some(log), None, None, None], 2, 2);
+            assert_eq!(result, Some((planks, 4)));
+            assert_eq!(smelt_item(log), Some((Coal, 1)));
+        }
+        assert_eq!(
+            find_recipe(
+                &[
+                    Some(BirchPlanks),
+                    Some(CherryPlanks),
+                    Some(MangrovePlanks),
+                    Some(OakPlanks)
+                ],
+                2,
+                2
+            ),
+            Some((CraftingTable, 1))
+        );
+    }
 
     fn grid_2x2(
         a: Option<BlockType>,

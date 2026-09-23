@@ -17,8 +17,20 @@ pub fn state(block: BlockType, liquid_depth: u8) -> Option<NbtTag> {
         _ => identity.name,
     };
     let fields: Vec<(&str, NbtTag)> = match block {
-        OakLog | SpruceLog => vec![("pillar_axis", Text("y".into()))],
-        OakLeaves | SpruceLeaves => vec![("persistent_bit", Byte(0)), ("update_bit", Byte(0))],
+        OakLog | SpruceLog | BirchLog | MangroveLog | CherryLog => {
+            vec![("pillar_axis", Text("y".into()))]
+        }
+        OakLeaves | SpruceLeaves | BirchLeaves | MangroveLeaves | CherryLeaves => {
+            vec![("persistent_bit", Byte(0)), ("update_bit", Byte(0))]
+        }
+        Sunflower | SunflowerTop => vec![(
+            "upper_block_bit",
+            Byte(u8::from(block == SunflowerTop) as i8),
+        )],
+        PinkPetals => vec![
+            ("growth", Int(3)),
+            ("minecraft:cardinal_direction", Text("north".into())),
+        ],
         Bedrock => vec![("infiniburn_bit", Byte(0))],
         Water | Lava => vec![("liquid_depth", Int(i32::from(liquid_depth.min(15))))],
         SnowLayer => vec![("covered_bit", Byte(0)), ("height", Int(0))],
@@ -84,6 +96,15 @@ pub fn block(state: &NbtTag) -> Option<BlockType> {
     let NbtTag::String(name) = state.get("name")? else {
         return None;
     };
+    if name == "minecraft:sunflower" {
+        return Some(
+            if state.get("states")?.get("upper_block_bit") == Some(&NbtTag::Byte(1)) {
+                BlockType::SunflowerTop
+            } else {
+                BlockType::Sunflower
+            },
+        );
+    }
     if name == "minecraft:wheat" {
         let growth = state.get("states")?.get("growth")?;
         return Some(match growth {

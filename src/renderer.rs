@@ -76,6 +76,7 @@ pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct StateFlags {
     blend: bool,
+    additive: bool,
     depth_test: bool,
     depth_write: bool,
     cull: bool,
@@ -684,6 +685,7 @@ async fn init_surface(
         // Matches the gl::Enable defaults the GL version set at startup.
         state: StateFlags {
             blend: true,
+            additive: false,
             depth_test: true,
             depth_write: true,
             cull: true,
@@ -1629,6 +1631,9 @@ fn make_texture_bind_group(
 pub fn set_blend(on: bool) {
     with_ctx(|c| c.state.blend = on);
 }
+pub fn set_additive(on: bool) {
+    with_ctx(|c| c.state.additive = on);
+}
 pub fn set_depth_test(on: bool) {
     with_ctx(|c| c.state.depth_test = on);
 }
@@ -2528,7 +2533,18 @@ fn build_pipeline(
         .map(|(i, format)| {
             (i < outputs).then_some(wgpu::ColorTargetState {
                 format: *format,
-                blend: (flags.blend && i == 0).then_some(wgpu::BlendState::ALPHA_BLENDING),
+                blend: (flags.blend && i == 0).then_some(if flags.additive {
+                    wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::OVER,
+                    }
+                } else {
+                    wgpu::BlendState::ALPHA_BLENDING
+                }),
                 write_mask: wgpu::ColorWrites::ALL,
             })
         })

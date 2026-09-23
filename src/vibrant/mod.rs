@@ -173,6 +173,21 @@ impl VibrantPack {
     }
 }
 
+#[cfg(test)]
+#[test]
+fn absent_pack_uses_authored_defaults() {
+    let pack = VibrantPack::load("target/nonexistent-procedural-pack");
+    let lighting = LightingSettings::default();
+    assert_eq!(pack.lighting.identifier, lighting.identifier);
+    for time in [0.0, 0.25, 0.5, 0.75] {
+        assert_eq!(
+            pack.lighting.sun.illuminance.sample(time),
+            lighting.sun.illuminance.sample(time)
+        );
+    }
+    assert!(pack.warnings.is_empty());
+}
+
 fn read_json(path: &Path, warnings: &mut Vec<String>) -> Option<json::Json> {
     if !path.is_file() {
         return None;

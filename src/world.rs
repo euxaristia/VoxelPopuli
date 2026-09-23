@@ -6,6 +6,7 @@ use crate::chunk::{
 };
 use crate::mob::{Mob, MobKind};
 use crate::mob_catalog::Motion;
+mod bees;
 mod mobs;
 mod skeletons;
 pub const MOB_CAP: usize = 48;
@@ -208,6 +209,11 @@ struct EffectMeshes {
 }
 
 pub struct World {
+    pub generator_version: crate::chunk::GeneratorVersion,
+    pub hives: HashMap<crate::bee::BlockPos, u8>,
+    pub raining: bool,
+    pub weather_timer: f32,
+    pub pending_poison: f32,
     #[cfg(not(target_arch = "wasm32"))]
     pub bedrock: Option<std::sync::Arc<crate::bedrock::session::WorldStore>>,
     pub storage_error: Option<String>,
@@ -217,6 +223,7 @@ pub struct World {
     pub player_sneaking: bool,
     pub seed: u64,
     pub day_time: f32,
+    pub day_count: u64,
     pub chunks: Vec<Option<Box<Chunk>>>,
     pub atlas: Option<Texture2D>,
     pub cloud_model: Option<Mesh>,
@@ -298,11 +305,13 @@ impl World {
             bedrock: None,
             storage_error: None,
             dimension: 0,
+            generator_version: crate::chunk::GeneratorVersion::Habitats,
             seed,
             difficulty: Default::default(),
             player_targetable: true,
             player_sneaking: false,
             day_time: 120.0,
+            day_count: 0,
             chunks,
             atlas: None,
             cloud_model: None,
@@ -314,6 +323,10 @@ impl World {
             last_pcz: -999999,
             view_distance: DEFAULT_VIEW_DISTANCE,
             dirty_count: 0,
+            hives: HashMap::new(),
+            raining: false,
+            weather_timer: 900.0,
+            pending_poison: 0.0,
             pending_hurt: 0,
             pending_hurt_origin: None,
             pending_drops: Vec::new(),
@@ -809,6 +822,7 @@ impl World {
 
     pub fn chunk_for_export(&self, cx: i32, cz: i32) -> Chunk {
         let mut chunk = Chunk::new(cx, cz, self.seed);
+        chunk.generator_version = self.generator_version;
         if let Some(loaded) = self.get_chunk(cx, cz) {
             chunk.copy_terrain_from(loaded);
         } else if let Some(imported) = self.imported.get(&(cx, cz)) {
@@ -909,6 +923,9 @@ impl World {
         }
         let mut best: Option<(usize, f32)> = None;
         for (index, mob) in self.mobs.iter().enumerate() {
+            if mob.bee.inside {
+                continue;
+            }
             let center = mob.position + Vec3::new(0.0, mob.height() * 0.5, 0.0);
             let to = center - origin;
             let dist = to.length();
@@ -1116,7 +1133,7 @@ impl World {
                         owner.and_then(|id| self.mobs.iter().find(|m| m.id == id).map(|m| m.kind));
                     while m_idx < self.mobs.len() {
                         let mob = &self.mobs[m_idx];
-                        if Some(mob.id) == owner {
+                        if Some(mob.id) == owner || mob.bee.inside {
                             m_idx += 1;
                             continue;
                         }
@@ -1255,6 +1272,14 @@ impl World {
         if y < 0 || y >= CHUNK_HEIGHT as i32 {
             return;
         }
+        let previous = self.get_block(x, y, z);
+        if self.hives.contains_key(&(x, y, z)) && !crate::bee::is_hive(block) {
+            self.disturb_hive((x, y, z));
+            self.hives.remove(&(x, y, z));
+        }
+        if crate::bee::is_hive(block) {
+            self.hives.entry((x, y, z)).or_insert(0);
+        }
 
         let mut contents = Vec::new();
         crate::container::remove_replaced_container(
@@ -1339,6 +1364,31 @@ impl World {
             }
         }
 
+        // Remove the other sunflower half after the first has changed, avoiding recursion cycles.
+        if previous != block {
+            let other = match previous {
+                BlockType::Sunflower => Some((y + 1, BlockType::SunflowerTop)),
+                BlockType::SunflowerTop => Some((y - 1, BlockType::Sunflower)),
+                _ => None,
+            };
+            if let Some((oy, expected)) = other {
+                if self.get_block(x, oy, z) == expected {
+                    self.set_block(x, oy, z, BlockType::Air);
+                }
+            }
+        }
+        if !matches!(
+            block,
+            BlockType::Grass | BlockType::Dirt | BlockType::Farmland
+        ) && self.get_block(x, y + 1, z) == BlockType::Sunflower
+        {
+            self.set_block(x, y + 1, z, BlockType::Air);
+            self.dropped_items.push(crate::inventory::DroppedItem::new(
+                crate::inventory::ItemStack::new(BlockType::Sunflower, 1),
+                Vec3::new(x as f32 + 0.5, y as f32 + 1.0, z as f32 + 0.5),
+                Vec3::ZERO,
+            ));
+        }
         // Cactus stability check
         let mut check_cacti = Vec::new();
         if y + 1 < CHUNK_HEIGHT as i32 && self.get_block(x, y + 1, z) == BlockType::Cactus {
@@ -1556,6 +1606,7 @@ impl World {
             return;
         }
         let seed = self.seed;
+        let generator_version = self.generator_version;
         let import_world = self.import_world.clone();
         #[cfg(not(target_arch = "wasm32"))]
         let bedrock = self.bedrock.clone();
@@ -1565,7 +1616,8 @@ impl World {
             let result = (|| -> std::io::Result<Box<Chunk>> {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(store) = &bedrock {
-                    if let Some(chunk) = store.read_chunk(x, z, dimension)? {
+                    if let Some(mut chunk) = store.read_chunk(x, z, dimension)? {
+                        chunk.generator_version = generator_version;
                         return Ok(Box::new(chunk));
                     }
                 }
@@ -1578,6 +1630,7 @@ impl World {
                     Box::new(chunk)
                 } else {
                     let mut chunk = Box::new(Chunk::new(x, z, seed));
+                    chunk.generator_version = generator_version;
                     chunk.generate();
                     chunk
                 };
@@ -1625,8 +1678,19 @@ impl World {
         all_present && self.gen_in_flight.is_empty()
     }
 
+    pub fn advance_day_clock(&mut self, seconds: f32) {
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return;
+        }
+        let total = self.day_time as f64 + seconds as f64;
+        self.day_count = self
+            .day_count
+            .saturating_add((total / 1200.0).floor() as u64);
+        self.day_time = total.rem_euclid(1200.0) as f32;
+    }
+
     pub fn update(&mut self, player_pos: Vec3, _time: f32, held: BlockType) -> u32 {
-        self.day_time = (self.day_time + _time).rem_euclid(1200.0);
+        self.advance_day_clock(_time);
         let pcx = (player_pos.x / CHUNK_WIDTH as f32).floor() as i32;
         let pcz = (player_pos.z / CHUNK_DEPTH as f32).floor() as i32;
 
@@ -2374,7 +2438,12 @@ impl World {
         let mut best: Option<usize> = None;
         let mut best_dist = 5.0f32;
         for (index, mob) in self.mobs.iter().enumerate() {
-            if !mob.is_animal() || mob.food_item() != Some(item) {
+            if !((mob.is_animal() && mob.food_item() == Some(item))
+                || (mob.kind == MobKind::Bee
+                    && crate::bee::is_flower(item)
+                    && !mob.bee.inside
+                    && mob.bee.sting_death == 0.0))
+            {
                 continue;
             }
             let center = mob.position + Vec3::new(0.0, mob.height() * 0.5, 0.0);
@@ -2408,6 +2477,15 @@ impl World {
 
     pub fn update_mobs(&mut self, player_pos: Vec3, dt: f32, held: BlockType) {
         let dt = dt.clamp(0.0, 0.1);
+        self.weather_timer -= dt;
+        if self.weather_timer <= 0.0 {
+            self.raining = !self.raining;
+            self.weather_timer = if self.raining {
+                600.0 + rand::random::<f32>() * 600.0
+            } else {
+                300.0 + rand::random::<f32>() * 600.0
+            };
+        }
         self.update_death_animations(dt);
         let mut mobs = std::mem::take(&mut self.mobs);
         let mut despawned_villages = Vec::new();
@@ -2426,7 +2504,7 @@ impl World {
                 );
             }
             // Java animals do not despawn. Village mobs stay farther out.
-            if mob.is_animal() {
+            if mob.is_animal() || mob.kind == MobKind::Bee {
                 return true;
             }
             let max_distance = if matches!(mob.kind, MobKind::Villager | MobKind::Golem) {
@@ -2460,7 +2538,30 @@ impl World {
             .map(|m| (m.kind, m.position.x, m.position.z))
             .collect();
         self.separate_mobs(&mut mobs);
-        let peers: Vec<skeletons::CreatureSnapshot> = mobs.iter().map(Into::into).collect();
+        let alerts: Vec<Vec3> = mobs
+            .iter_mut()
+            .filter_map(|m| {
+                if m.kind == MobKind::Bee && m.bee.alert_pending {
+                    m.bee.alert_pending = false;
+                    if m.health > 0.0 && m.bee.sting_death == 0.0 {
+                        return Some(m.position);
+                    }
+                }
+                None
+            })
+            .collect();
+        for m in &mut mobs {
+            if m.kind == MobKind::Bee
+                && !m.bee.inside
+                && m.bee.sting_death == 0.0
+                && alerts
+                    .iter()
+                    .any(|p| p.distance_squared(m.position) <= 400.0)
+            {
+                m.anger_time = 25.0;
+            }
+        }
+        let mut peers: Vec<skeletons::CreatureSnapshot> = mobs.iter().map(Into::into).collect();
         let mut mob_hits = Vec::new();
         for index in 0..mobs.len() {
             let (before, rest) = mobs.split_at_mut(index);
@@ -2471,6 +2572,11 @@ impl World {
             let mcx = (mob.position.x / CHUNK_WIDTH as f32).floor() as i32;
             let mcz = (mob.position.z / CHUNK_DEPTH as f32).floor() as i32;
             if self.get_chunk(mcx, mcz).is_none() {
+                continue;
+            }
+            if mob.kind == MobKind::Bee {
+                self.tick_bee(mob, &peers, player_pos, held, dt);
+                peers[index] = (&*mob).into();
                 continue;
             }
 
@@ -2852,7 +2958,10 @@ impl World {
             }
         }
         for i in 0..mobs.len() {
-            if !mobs[i].is_animal() || mobs[i].is_baby() || mobs[i].animal.love_time <= 0.0 {
+            if (!mobs[i].is_animal() && mobs[i].kind != MobKind::Bee)
+                || mobs[i].is_baby()
+                || mobs[i].animal.love_time <= 0.0
+            {
                 continue;
             }
             for j in (i + 1)..mobs.len() {
@@ -2862,7 +2971,13 @@ impl World {
                 {
                     continue;
                 }
-                if mobs[i].position.distance(mobs[j].position) > 8.0 {
+                if mobs[i].position.distance(mobs[j].position)
+                    > if mobs[i].kind == MobKind::Bee {
+                        1.5
+                    } else {
+                        8.0
+                    }
+                {
                     continue;
                 }
                 let mid = (mobs[i].position + mobs[j].position) * 0.5;
@@ -4104,6 +4219,20 @@ pub mod combat_smoke {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sunflowers_remove_both_halves_when_broken_or_unsupported() {
+        let mut world = World::simulation(42);
+        world.insert_chunk(Chunk::new(0, 0, 42));
+        for break_y in [63, 64, 65] {
+            world.set_block(8, 63, 8, BlockType::Grass);
+            world.set_block(8, 64, 8, BlockType::Sunflower);
+            world.set_block(8, 65, 8, BlockType::SunflowerTop);
+            world.set_block(8, break_y, 8, BlockType::Air);
+            assert_eq!(world.get_block(8, 64, 8), BlockType::Air);
+            assert_eq!(world.get_block(8, 65, 8), BlockType::Air);
+        }
+        assert_eq!(world.dropped_items.len(), 1);
+    }
 
     #[test]
     fn breaking_storage_returns_contents_once_with_durability() {

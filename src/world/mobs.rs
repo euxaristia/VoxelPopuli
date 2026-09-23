@@ -3,7 +3,7 @@ use crate::mob_catalog::{Temper, can_spawn};
 
 /// Sweep the moving box against another creature, including fast crossings.
 fn crosses_mob(mob: &Mob, start: Vec3, end: Vec3, other: &Mob) -> bool {
-    if other.health <= 0.0 {
+    if other.health <= 0.0 || other.bee.inside || mob.bee.inside {
         return false;
     }
     let radius = mob.half_width() + other.half_width() - 0.001;
@@ -35,6 +35,8 @@ fn resolve_mob_overlaps(mobs: &mut [Mob], allowed: impl Fn(&Mob, Vec3) -> bool) 
                 let (left, right) = mobs.split_at_mut(j);
                 let (a, b) = (&mut left[i], &mut right[0]);
                 if a.health <= 0.0
+                    || a.bee.inside
+                    || b.bee.inside
                     || b.health <= 0.0
                     || a.position.y >= b.position.y + b.height()
                     || b.position.y >= a.position.y + a.height()
@@ -202,7 +204,8 @@ impl World {
         if self.mobs.len() >= MOB_CAP {
             return;
         }
-        let biome = crate::chunk::biome_at(x as f32, z as f32, self.seed);
+        let biome =
+            crate::chunk::biome_at_version(x as f32, z as f32, self.seed, self.generator_version);
         for y in (55..CHUNK_HEIGHT as i32 - 5).rev() {
             let floor = self.get_block(x, y, z);
             if floor == BlockType::Air {
@@ -260,6 +263,40 @@ impl World {
             return;
         }
         self.spawned_natural_chunks.insert((cx, cz));
+        let mut nests = Vec::new();
+        if let Some(chunk) = self.get_chunk(cx, cz) {
+            for x in 0..CHUNK_WIDTH {
+                for z in 0..CHUNK_DEPTH {
+                    for y in 1..CHUNK_HEIGHT {
+                        if crate::bee::is_hive(chunk.blocks[x][y][z]) {
+                            nests.push((
+                                (cx * 16 + x as i32, y as i32, cz * 16 + z as i32),
+                                chunk.blocks[x][y][z],
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        for (pos, block) in nests {
+            if self.hives.contains_key(&pos) {
+                continue;
+            }
+            self.hives.insert(pos, 0);
+            if block == BlockType::BeeNest {
+                for _ in 0..(2 + crate::chunk::chunk_hash(self.seed, pos.0, pos.2, pos.1) % 2) {
+                    if self.mobs.len() >= MOB_CAP {
+                        break;
+                    }
+                    let p = crate::bee::center(pos) + Vec3::new(0.0, 0.2, 1.1);
+                    let mut bee = Mob::new(MobKind::Bee, p, p, 0);
+                    bee.bee.hive = Some(pos);
+                    bee.bee.inside = true;
+                    bee.bee.residence = 30.0;
+                    self.mobs.push(bee);
+                }
+            }
+        }
         let mut random =
             (self.seed ^ (cx as u64).wrapping_mul(0x9e3779b9) ^ (cz as u64).rotate_left(32))
                 .wrapping_add(1);

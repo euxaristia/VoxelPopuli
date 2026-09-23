@@ -73,3 +73,16 @@ test('clicking to capture the pointer does not mine a block', () => {
   assert.deepEqual(runtime.drainEvents(), []);
   assert.equal(document.pointerLockElement, elements.canvas);
 });
+
+test('F5 is routed to perspective switching and suppresses browser reload', () => {
+  runtime.drainEvents();
+  let prevented = false;
+  document.fire('keydown', { code: 'F5', preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.deepEqual(runtime.drainEvents(), [[0, 294, 1, 0]]);
+  document.fire('keydown', { code: 'F5', repeat: true });
+  assert.deepEqual(runtime.drainEvents(), [[0, 294, 2, 0]]);
+  document.fire('keyup', { code: 'F5' });
+  runtime.drainEvents();
+  assert.equal(runtime.keyDown(294), false);
+});

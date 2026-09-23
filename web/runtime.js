@@ -15,7 +15,7 @@ const keyCodes = {
   Space: 32, Digit1: 49, Digit2: 50, Digit3: 51, Digit4: 52, Digit5: 53,
   Digit6: 54, Digit7: 55, Digit8: 56, Digit9: 57,
   KeyA: 65, KeyD: 68, KeyE: 69, KeyQ: 81, KeyS: 83, KeyW: 87,
-  Escape: 256, F3: 292, F6: 295, F11: 300, ShiftLeft: 340, ControlLeft: 341,
+  Escape: 256, F3: 292, F5: 294, F6: 295, F11: 300, ShiftLeft: 340, ControlLeft: 341,
 };
 const mods = event => (event.shiftKey ? 1 : 0) | (event.ctrlKey ? 2 : 0);
 const element = id => document.getElementById(id);
