@@ -39,6 +39,7 @@ pub struct AnimalState {
 }
 
 pub struct Mob {
+    pub bee: crate::bee::BeeState,
     pub id: u32,
     pub skeleton: crate::skeleton_ai::SkeletonState,
     pub kind: MobKind,
@@ -75,6 +76,7 @@ impl Mob {
         static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
         let health = Self::max_health_for(kind);
         Self {
+            bee: Default::default(),
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             skeleton: Default::default(),
             kind,
@@ -110,8 +112,19 @@ impl Mob {
             self.animation.hurt_remaining = crate::combat_animation::HURT_SECONDS;
         }
         self.health = (self.health - damage.max(0.0)).max(0.0);
+        if self.kind == MobKind::Bee
+            && damage > 0.0
+            && self.health > 0.0
+            && self.bee.sting_death == 0.0
+        {
+            self.bee.alert_pending = true;
+        }
         if damage > 0.0 && self.kind.species().temper == Temper::Neutral {
-            self.anger_time = 15.0;
+            self.anger_time = if self.kind == MobKind::Bee && self.bee.sting_death == 0.0 {
+                25.0
+            } else {
+                15.0
+            };
         }
         if self.is_animal() && self.health > 0.0 {
             // PanicGoal lasts 100 ticks after the last hit.
@@ -218,6 +231,9 @@ impl Mob {
     }
 
     pub fn is_hostile(&self) -> bool {
+        if self.kind == MobKind::Bee && (self.bee.sting_death > 0.0 || self.bee.inside) {
+            return false;
+        }
         self.kind.species().temper == Temper::Hostile
             || self.anger_time > 0.0
             || (self.kind == MobKind::Enderman && self.enderman_aggro)

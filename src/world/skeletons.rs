@@ -10,6 +10,8 @@ pub(super) struct CreatureSnapshot {
     pub half_width: f32,
     pub baby: bool,
     pub alive: bool,
+    pub hive: Option<crate::bee::BlockPos>,
+    pub inside: bool,
 }
 
 impl From<&Mob> for CreatureSnapshot {
@@ -21,7 +23,9 @@ impl From<&Mob> for CreatureSnapshot {
             height: m.height(),
             half_width: m.half_width(),
             baby: m.is_baby(),
-            alive: m.health > 0.0,
+            alive: m.health > 0.0 && !m.bee.inside,
+            hive: m.bee.hive,
+            inside: m.bee.inside,
         }
     }
 }

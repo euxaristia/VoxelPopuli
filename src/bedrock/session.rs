@@ -179,6 +179,10 @@ fn new_metadata(seed: u64) -> io::Result<NbtTag> {
         ("baseGameVersion".into(), String("1.26.51".into())),
         ("GameType".into(), Int(0)),
         ("Generator".into(), Int(1)),
+        (
+            "voxelpopuli:generator_version".into(),
+            Int(crate::chunk::GeneratorVersion::Habitats as i32),
+        ),
         ("Difficulty".into(), Int(2)),
         ("SpawnX".into(), Int(spawn.0)),
         ("SpawnY".into(), Int(spawn.1)),
@@ -194,7 +198,7 @@ fn new_metadata(seed: u64) -> io::Result<NbtTag> {
 
 fn new_chunk_metadata(chunk: &Chunk, dimension: i32) -> Vec<(Vec<u8>, Vec<u8>)> {
     let key = |tag| chunk_key(chunk.x, chunk.z, dimension, tag, None);
-    // Data3D: 256 little-endian height values followed by 24 uniform biome storages.
+    // Data3D: 256 little-endian heights followed by 24 runtime-ID biome palettes.
     let mut biomes = Vec::with_capacity(632);
     for z in 0..16 {
         for x in 0..16 {
@@ -205,10 +209,9 @@ fn new_chunk_metadata(chunk: &Chunk, dimension: i32) -> Vec<(Vec<u8>, Vec<u8>)> 
             biomes.extend_from_slice(&((top + 64) as u16).to_le_bytes());
         }
     }
-    let biome: i32 = if dimension == 1 { 8 } else { 1 };
+    let storage = biome_storage(chunk, dimension);
     for _ in 0..24 {
-        biomes.push(1); // zero bits per entry; biome IDs use the runtime flag
-        biomes.extend_from_slice(&biome.to_le_bytes());
+        biomes.extend_from_slice(&storage);
     }
     vec![
         (key(0x2c), vec![42]),
@@ -217,9 +220,108 @@ fn new_chunk_metadata(chunk: &Chunk, dimension: i32) -> Vec<(Vec<u8>, Vec<u8>)> 
     ]
 }
 
+fn biome_storage(chunk: &Chunk, dimension: i32) -> Vec<u8> {
+    use crate::chunk::{Biome, biome_at_version};
+    let mut palette = Vec::<i32>::new();
+    let mut indices = Vec::with_capacity(4096);
+    for x in 0..16 {
+        for z in 0..16 {
+            let id = if dimension == 1 {
+                8
+            } else {
+                match biome_at_version(
+                    (chunk.x * 16 + x) as f32,
+                    (chunk.z * 16 + z) as f32,
+                    chunk.seed,
+                    chunk.generator_version,
+                ) {
+                    Biome::Plains => 1,
+                    Biome::Desert => 2,
+                    Biome::Mountains | Biome::HighHills => 3,
+                    Biome::Forest => 4,
+                    Biome::SnowyTundra => 12,
+                    Biome::BirchForest => 27,
+                    Biome::SnowyTaiga => 30,
+                    Biome::SunflowerPlains => 129,
+                    Biome::FlowerForest => 132,
+                    Biome::Meadow => 186,
+                    Biome::MangroveSwamp => 191,
+                    Biome::CherryGrove => 192,
+                }
+            };
+            let index = palette.iter().position(|&v| v == id).unwrap_or_else(|| {
+                palette.push(id);
+                palette.len() - 1
+            });
+            indices.extend(std::iter::repeat_n(index as u32, 16));
+        }
+    }
+    let width = if palette.len() == 1 {
+        0
+    } else if palette.len() <= 2 {
+        1
+    } else if palette.len() <= 4 {
+        2
+    } else if palette.len() <= 8 {
+        3
+    } else {
+        4
+    };
+    let mut bytes = vec![(width << 1) | 1];
+    if width > 0 {
+        for cells in indices.chunks(32 / width as usize) {
+            let word = cells
+                .iter()
+                .enumerate()
+                .fold(0u32, |v, (i, &index)| v | (index << (i * width as usize)));
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes.extend_from_slice(&(palette.len() as u32).to_le_bytes());
+    }
+    for id in palette {
+        bytes.extend_from_slice(&id.to_le_bytes());
+    }
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generated_biome_palette_contains_cherry_grove_and_valid_indices() {
+        let chunk = Chunk::new(-384, -174, 42);
+        let bytes = biome_storage(&chunk, 0);
+        assert_eq!(bytes[0] & 1, 1);
+        let width = (bytes[0] >> 1) as usize;
+        let words = if width == 0 {
+            0
+        } else {
+            4096usize.div_ceil(32 / width)
+        };
+        let mut offset = 1 + words * 4;
+        let count = if width == 0 {
+            1
+        } else {
+            let n = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+            offset += 4;
+            n
+        };
+        let ids: Vec<_> = bytes[offset..]
+            .chunks_exact(4)
+            .map(|b| i32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        assert_eq!(ids.len(), count);
+        assert!(ids.contains(&192));
+        if width > 0 {
+            for cell in 0..4096 {
+                let word = 1 + (cell / (32 / width)) * 4;
+                let value = u32::from_le_bytes(bytes[word..word + 4].try_into().unwrap());
+                let index = (value >> ((cell % (32 / width)) * width)) & ((1 << width) - 1);
+                assert!((index as usize) < count);
+            }
+        }
+        assert_eq!(biome_storage(&chunk, 1), vec![1, 8, 0, 0, 0]);
+    }
     #[test]
     #[ignore = "release-mode storage profile"]
     fn profile_world_loading() {

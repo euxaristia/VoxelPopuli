@@ -393,6 +393,24 @@ pub fn try_place_block_with_lock(
         return false;
     }
 
+    if let Some(stack) = inv_slots[selected_slot] {
+        if let Some((drop, count)) = world.harvest_hive((res.x, res.y, res.z), stack.block) {
+            if stack.block == BlockType::Shears {
+                damage_selected_tool(inv_slots, selected_slot);
+            } else {
+                inv_slots[selected_slot] = if stack.count > 1 {
+                    Some(ItemStack::new(stack.block, stack.count - 1))
+                } else {
+                    None
+                };
+            }
+            let remaining = inv_add(inv_slots, drop, count);
+            if remaining > 0 {
+                world.pending_stacks.push(ItemStack::new(drop, remaining));
+            }
+            return true;
+        }
+    }
     if try_till_farmland(world, inv_slots, selected_slot, &res) {
         return true;
     }
@@ -516,6 +534,23 @@ pub fn try_place_block_with_lock(
         }
 
         if world.get_block(nx, ny, nz) == BlockType::Air && !player.intersects_block(nx, ny, nz) {
+            if s.block == BlockType::SunflowerTop {
+                return false;
+            }
+            if s.block == BlockType::Sunflower
+                && (ny + 1 >= crate::chunk::CHUNK_HEIGHT as i32
+                    || world.get_block(nx, ny + 1, nz) != BlockType::Air)
+            {
+                return false;
+            }
+            if crate::bee::is_flower(s.block)
+                && !matches!(
+                    world.get_block(nx, ny - 1, nz),
+                    BlockType::Grass | BlockType::Dirt | BlockType::Farmland
+                )
+            {
+                return false;
+            }
             if s.block == BlockType::Cactus {
                 if ny <= 0 {
                     return false;
@@ -532,6 +567,9 @@ pub fn try_place_block_with_lock(
                 }
             }
             world.set_block(nx, ny, nz, s.block);
+            if s.block == BlockType::Sunflower {
+                world.set_block(nx, ny + 1, nz, BlockType::SunflowerTop);
+            }
 
             if lock.is_none() {
                 *lock = Some(LinearPlacementLock::new((nx, ny, nz)));

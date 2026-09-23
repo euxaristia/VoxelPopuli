@@ -1,5 +1,5 @@
 use crate::block::BlockType;
-use crate::chunk::{Biome, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, biome_at};
+use crate::chunk::{Biome, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, biome_at_version};
 use flate2::Compression;
 use flate2::write::{GzEncoder, ZlibEncoder};
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,6 +53,8 @@ impl JavaBlockState {
 
 const GRASS_SNOWY: &[JavaProperty] = &[JavaProperty::new("snowy", "true")];
 const LOG_Y_AXIS: &[JavaProperty] = &[JavaProperty::new("axis", "y")];
+const FLOWER_LOWER: &[JavaProperty] = &[JavaProperty::new("half", "lower")];
+const FLOWER_UPPER: &[JavaProperty] = &[JavaProperty::new("half", "upper")];
 const LEAVES: &[JavaProperty] = &[
     JavaProperty::new("distance", "7"),
     JavaProperty::new("persistent", "false"),
@@ -91,6 +93,29 @@ pub fn classic_chunk_dimensions() -> (usize, usize, usize) {
 pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
     use BlockType::*;
     Some(match block {
+        BirchLog => JavaBlockState::with_properties("minecraft:birch_log", LOG_Y_AXIS),
+        BirchLeaves => JavaBlockState::with_properties("minecraft:birch_leaves", LEAVES),
+        BirchPlanks => JavaBlockState::new("minecraft:birch_planks"),
+        MangroveLog => JavaBlockState::with_properties("minecraft:mangrove_log", LOG_Y_AXIS),
+        MangroveLeaves => JavaBlockState::with_properties("minecraft:mangrove_leaves", LEAVES),
+        MangrovePlanks => JavaBlockState::new("minecraft:mangrove_planks"),
+        CherryLog => JavaBlockState::with_properties("minecraft:cherry_log", LOG_Y_AXIS),
+        CherryLeaves => JavaBlockState::with_properties("minecraft:cherry_leaves", LEAVES),
+        CherryPlanks => JavaBlockState::new("minecraft:cherry_planks"),
+        MangroveRoots => JavaBlockState::new("minecraft:mangrove_roots"),
+        Mud => JavaBlockState::new("minecraft:mud"),
+        PinkPetals => JavaBlockState::new("minecraft:pink_petals"),
+        Cornflower => JavaBlockState::new("minecraft:cornflower"),
+        Allium => JavaBlockState::new("minecraft:allium"),
+        OxeyeDaisy => JavaBlockState::new("minecraft:oxeye_daisy"),
+        Sunflower => JavaBlockState::with_properties("minecraft:sunflower", FLOWER_LOWER),
+        SunflowerTop => JavaBlockState::with_properties("minecraft:sunflower", FLOWER_UPPER),
+        Poppy => JavaBlockState::new("minecraft:poppy"),
+        Dandelion => JavaBlockState::new("minecraft:dandelion"),
+        BeeNest => JavaBlockState::new("minecraft:bee_nest"),
+        Beehive => JavaBlockState::new("minecraft:beehive"),
+        Campfire => JavaBlockState::new("minecraft:campfire"),
+        Honeycomb | GlassBottle | HoneyBottle | Shears => return None,
         Air => JavaBlockState::new("minecraft:air"),
         Stone => JavaBlockState::new("minecraft:stone"),
         Grass => JavaBlockState::new("minecraft:grass_block"),
@@ -245,15 +270,30 @@ where
     }
     let _dimensions = classic_chunk_dimensions();
 
-    std::fs::create_dir_all(&config.output_dir)?;
-    std::fs::create_dir_all(config.output_dir.join("region"))?;
-    write_level_dat(&config.output_dir, seed)?;
-
     let mut regions: BTreeMap<(i32, i32), Vec<(i32, i32, Vec<u8>)>> = BTreeMap::new();
     let mut chunks = 0usize;
     for chunk_x in -config.radius..=config.radius {
         for chunk_z in -config.radius..=config.radius {
             let chunk = chunk_at(chunk_x, chunk_z);
+            if chunk.blocks.iter().flatten().flatten().any(|block| {
+                matches!(
+                    block,
+                    BlockType::MangroveLog
+                        | BlockType::MangroveLeaves
+                        | BlockType::MangrovePlanks
+                        | BlockType::MangroveRoots
+                        | BlockType::Mud
+                        | BlockType::CherryLog
+                        | BlockType::CherryLeaves
+                        | BlockType::CherryPlanks
+                        | BlockType::PinkPetals
+                )
+            }) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Java 1.17 export cannot represent mangrove, cherry, mud, or pink petals; use Bedrock export",
+                ));
+            }
             let nbt = write_nbt_root(NbtTag::Compound(classic_chunk_fields(&chunk)));
             let compressed = zlib_compress(&nbt)?;
             let region = (
@@ -269,6 +309,9 @@ where
     }
 
     let region_count = regions.len();
+    std::fs::create_dir_all(&config.output_dir)?;
+    std::fs::create_dir_all(config.output_dir.join("region"))?;
+    write_level_dat(&config.output_dir, seed)?;
     for ((region_x, region_z), chunks) in regions {
         let path = config
             .output_dir
@@ -821,10 +864,11 @@ fn build_biomes(chunk: &Chunk) -> Vec<i32> {
             for x in 0..4 {
                 let world_x = chunk.x * CHUNK_WIDTH as i32 + x * 4 + 2;
                 let world_z = chunk.z * CHUNK_DEPTH as i32 + z * 4 + 2;
-                biomes.push(java_biome_id(biome_at(
+                biomes.push(java_biome_id(biome_at_version(
                     world_x as f32,
                     world_z as f32,
                     chunk.seed,
+                    chunk.generator_version,
                 )));
             }
         }
@@ -839,6 +883,12 @@ fn java_biome_id(biome: Biome) -> i32 {
         Biome::Mountains | Biome::HighHills => 3,
         Biome::SnowyTundra => 12,
         Biome::SnowyTaiga => 30,
+        Biome::Forest => 4,
+        Biome::BirchForest => 27,
+        Biome::FlowerForest => 132,
+        Biome::SunflowerPlains => 129,
+        Biome::Meadow | Biome::CherryGrove => 3, // unavailable in pre-1.18 Java export
+        Biome::MangroveSwamp => 6,
     }
 }
 
@@ -1238,6 +1288,27 @@ pub fn import_classic_java_chunk(
 pub fn java_block_name_to_block_type(name: &str) -> BlockType {
     use BlockType::*;
     match name {
+        "minecraft:birch_log" => BirchLog,
+        "minecraft:birch_leaves" => BirchLeaves,
+        "minecraft:birch_planks" => BirchPlanks,
+        "minecraft:mangrove_log" => MangroveLog,
+        "minecraft:mangrove_leaves" => MangroveLeaves,
+        "minecraft:mangrove_planks" => MangrovePlanks,
+        "minecraft:cherry_log" => CherryLog,
+        "minecraft:cherry_leaves" => CherryLeaves,
+        "minecraft:cherry_planks" => CherryPlanks,
+        "minecraft:mangrove_roots" => MangroveRoots,
+        "minecraft:mud" => Mud,
+        "minecraft:sunflower" => Sunflower,
+        "minecraft:pink_petals" => PinkPetals,
+        "minecraft:cornflower" => Cornflower,
+        "minecraft:allium" => Allium,
+        "minecraft:oxeye_daisy" => OxeyeDaisy,
+        "minecraft:poppy" => Poppy,
+        "minecraft:dandelion" => Dandelion,
+        "minecraft:bee_nest" => BeeNest,
+        "minecraft:beehive" => Beehive,
+        "minecraft:campfire" => Campfire,
         "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air" => Air,
         "minecraft:stone" => Stone,
         "minecraft:grass_block" => Grass,
@@ -1383,6 +1454,12 @@ pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
                     .map(|t| {
                         if let Some(NbtTag::String(name)) = t.get("Name") {
                             let mut btype = java_block_name_to_block_type(name);
+                            if btype == BlockType::Sunflower
+                                && t.get("Properties").and_then(|p| p.get("half"))
+                                    == Some(&NbtTag::String("upper".into()))
+                            {
+                                btype = BlockType::SunflowerTop;
+                            }
                             if btype == BlockType::Air
                                 && !matches!(
                                     name.as_str(),
@@ -1455,6 +1532,23 @@ pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn java17_rejects_newer_habitat_blocks_before_writing_files() {
+        let destination =
+            std::env::temp_dir().join(format!("voxel-java17-habitat-{}", rand::random::<u64>()));
+        let config = ExportConfig {
+            output_dir: destination.clone(),
+            radius: 0,
+        };
+        let error = export_classic_java_chunks(42, &config, |x, z| {
+            let mut chunk = Chunk::new(x, z, 42);
+            chunk.blocks[1][64][1] = BlockType::CherryLog;
+            chunk
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(!destination.exists());
+    }
 
     #[test]
     fn classic_target_uses_zero_to_255_world_height() {

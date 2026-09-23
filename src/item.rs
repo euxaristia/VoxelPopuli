@@ -49,7 +49,23 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
     };
 
     match b {
+        BirchLog | BirchPlanks => s(2.0, TT::Axe, TM::None, false, b, 1),
+        BirchLeaves => s(0.2, TT::None, TM::None, false, Air, 0),
+        MangroveLog | MangrovePlanks => s(2.0, TT::Axe, TM::None, false, b, 1),
+        MangroveLeaves => s(0.2, TT::None, TM::None, false, Air, 0),
+        CherryLog | CherryPlanks => s(2.0, TT::Axe, TM::None, false, b, 1),
+        CherryLeaves => s(0.2, TT::None, TM::None, false, Air, 0),
+        MangroveRoots => s(0.7, TT::Axe, TM::None, false, b, 1),
+        Mud => s(0.5, TT::Shovel, TM::None, false, b, 1),
+        SunflowerTop => s(0.0, TT::None, TM::None, false, Sunflower, 1),
+        Sunflower | PinkPetals | Cornflower | Allium | OxeyeDaisy => {
+            s(0.0, TT::None, TM::None, false, b, 1)
+        }
         // Instant break
+        Poppy | Dandelion => s(0.0, TT::None, TM::None, false, b, 1),
+        BeeNest => s(0.3, TT::Axe, TM::None, false, Air, 0),
+        Beehive => s(0.6, TT::Axe, TM::None, false, Beehive, 1),
+        Campfire => s(2.0, TT::Axe, TM::None, false, Coal, 2),
         Torch => s(0.0, TT::None, TM::None, false, Torch, 1),
         SnowLayer => s(0.1, TT::Shovel, TM::None, false, SnowLayer, 1),
 
@@ -204,6 +220,7 @@ pub fn tool_properties(b: BlockType) -> Option<ToolProperties> {
 
         // Flint and Steel (durability-based item, not a mining tool)
         FlintAndSteel => t(TT::None, TM::None, 1.0, 64),
+        Shears => t(TT::None, TM::Iron, 1.0, 238),
 
         _ => None,
     }
@@ -375,6 +392,32 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         WheatSeeds => (9, 4),
         Bone => (5, 10),
         BoneMeal => (6, 10),
+        BirchLog => (9, 14),
+        BirchLeaves => (10, 14),
+        BirchPlanks => (11, 14),
+        MangroveLog => (12, 14),
+        MangroveLeaves => (13, 14),
+        MangrovePlanks => (14, 14),
+        CherryLog => (15, 14),
+        CherryLeaves => (0, 15),
+        CherryPlanks => (1, 15),
+        MangroveRoots => (2, 15),
+        Mud => (3, 15),
+        Sunflower => (4, 15),
+        SunflowerTop => (5, 15),
+        PinkPetals => (6, 15),
+        Cornflower => (7, 15),
+        Allium => (8, 15),
+        OxeyeDaisy => (9, 15),
+        Poppy => (0, 14),
+        Dandelion => (1, 14),
+        BeeNest => (2, 14),
+        Beehive => (3, 14),
+        Honeycomb => (4, 14),
+        GlassBottle => (5, 14),
+        HoneyBottle => (6, 14),
+        Shears => (7, 14),
+        Campfire => (8, 14),
 
         // Row 5: wood & stone tools
         WoodPickaxe => (0, 5),
@@ -481,6 +524,7 @@ pub fn food_properties(b: BlockType) -> Option<FoodProperties> {
         RawBeef => f(3, 1.8),
         Steak => f(8, 12.8),
         Bread => f(5, 6.0),
+        HoneyBottle => f(6, 1.2),
         _ => None,
     }
 }
@@ -539,13 +583,13 @@ pub fn armor_properties(b: BlockType) -> Option<ArmorProperties> {
 pub fn atlas_uv_top(b: BlockType) -> (u8, u8) {
     use BlockType::*;
     match b {
-        Grass => (0, 0),              // green grass top
-        SnowyGrass => (9, 0),         // snow top
-        OakLog | SpruceLog => (5, 1), // log cross-section
-        CraftingTable => (2, 2),      // grid pattern top
-        Furnace => (0, 2),            // cobblestone top for furnace
-        Chest => (1, 7),              // chest top
-        Bookshelf => (1, 2),          // planks on top
+        Grass => (0, 0),                                                   // green grass top
+        SnowyGrass => (9, 0),                                              // snow top
+        OakLog | SpruceLog | BirchLog | MangroveLog | CherryLog => (5, 1), // log cross-section
+        CraftingTable => (2, 2),                                           // grid pattern top
+        Furnace => (0, 2),   // cobblestone top for furnace
+        Chest => (1, 7),     // chest top
+        Bookshelf => (1, 2), // planks on top
         Farmland => (10, 7),
         TNT => (10, 1),    // stick-end bundle
         Cactus => (11, 1), // rimmed fleshy top
@@ -572,7 +616,7 @@ pub fn atlas_uv_bottom(b: BlockType) -> (u8, u8) {
     use BlockType::*;
     match b {
         Grass | SnowyGrass => (2, 0), // dirt bottom
-        OakLog | SpruceLog => (5, 1), // log cross-section
+        OakLog | SpruceLog | BirchLog | MangroveLog | CherryLog => (5, 1), // log cross-section
         CraftingTable => (1, 2),      // planks bottom
         Furnace | Chest => (0, 2),    // cobblestone / planks bottom
         Bookshelf => (1, 2),          // planks bottom
@@ -584,6 +628,9 @@ pub fn atlas_uv_bottom(b: BlockType) -> (u8, u8) {
 
 /// Returns the max stack size for a block/item type.
 pub fn max_stack_size(b: BlockType) -> u32 {
+    if b == BlockType::HoneyBottle {
+        return 16;
+    }
     if b.is_tool()
         || matches!(
             b,

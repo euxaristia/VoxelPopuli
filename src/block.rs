@@ -204,11 +204,37 @@ pub enum BlockType {
     WheatSeeds,
     Bone,
     BoneMeal,
+    Poppy,
+    Dandelion,
+    BeeNest,
+    Beehive,
+    Honeycomb,
+    GlassBottle,
+    HoneyBottle,
+    Shears,
+    Campfire,
+    BirchLog,
+    BirchLeaves,
+    BirchPlanks,
+    MangroveLog,
+    MangroveLeaves,
+    MangrovePlanks,
+    CherryLog,
+    CherryLeaves,
+    CherryPlanks,
+    MangroveRoots,
+    Mud,
+    Sunflower,
+    SunflowerTop,
+    PinkPetals,
+    Cornflower,
+    Allium,
+    OxeyeDaisy,
 }
 
 #[allow(dead_code)]
 impl BlockType {
-    pub const COUNT: usize = 130;
+    pub const COUNT: usize = 156;
 
     pub fn from_u16(value: u16) -> Self {
         if (value as usize) < Self::COUNT {
@@ -291,6 +317,10 @@ impl BlockType {
                 | BlockType::WheatSeeds
                 | BlockType::Bone
                 | BlockType::BoneMeal
+                | BlockType::Honeycomb
+                | BlockType::GlassBottle
+                | BlockType::HoneyBottle
+                | BlockType::Shears
         )
     }
 
@@ -314,6 +344,14 @@ impl BlockType {
             | BlockType::WheatStage0
             | BlockType::WheatStage1
             | BlockType::WheatStage2 => false,
+            BlockType::Poppy
+            | BlockType::Dandelion
+            | BlockType::Sunflower
+            | BlockType::SunflowerTop
+            | BlockType::PinkPetals
+            | BlockType::Cornflower
+            | BlockType::Allium
+            | BlockType::OxeyeDaisy => false,
             _ => !self.is_item(),
         }
     }
@@ -348,6 +386,7 @@ impl BlockType {
                 | BlockType::DiamondHoe
                 | BlockType::GoldHoe
                 | BlockType::FlintAndSteel
+                | BlockType::Shears
         )
     }
 
@@ -357,6 +396,9 @@ impl BlockType {
             self,
             BlockType::OakLeaves
                 | BlockType::SpruceLeaves
+                | BlockType::BirchLeaves
+                | BlockType::MangroveLeaves
+                | BlockType::CherryLeaves
                 | BlockType::SnowLayer
                 | BlockType::Glass
                 | BlockType::Torch
@@ -375,6 +417,14 @@ impl BlockType {
                 | BlockType::Bell
                 | BlockType::Fire
                 | BlockType::Cactus
+                | BlockType::Poppy
+                | BlockType::Dandelion
+                | BlockType::Sunflower
+                | BlockType::SunflowerTop
+                | BlockType::PinkPetals
+                | BlockType::Cornflower
+                | BlockType::Allium
+                | BlockType::OxeyeDaisy
         )
     }
 
@@ -399,6 +449,13 @@ impl BlockType {
             | BlockType::LapisBlock => 6.0,
             BlockType::OakLog
             | BlockType::SpruceLog
+            | BlockType::BirchLog
+            | BlockType::BirchPlanks
+            | BlockType::MangroveLog
+            | BlockType::MangrovePlanks
+            | BlockType::CherryLog
+            | BlockType::CherryPlanks
+            | BlockType::MangroveRoots
             | BlockType::OakPlanks
             | BlockType::Chest
             | BlockType::CraftingTable => 3.0,
@@ -409,6 +466,9 @@ impl BlockType {
             | BlockType::Gravel => 0.5,
             BlockType::OakLeaves
             | BlockType::SpruceLeaves
+            | BlockType::BirchLeaves
+            | BlockType::MangroveLeaves
+            | BlockType::CherryLeaves
             | BlockType::Sponge
             | BlockType::Bookshelf
             | BlockType::Wool => 0.2,
@@ -433,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_count() {
-        assert_eq!(BlockType::COUNT, 130);
+        assert_eq!(BlockType::COUNT, 156);
     }
 
     #[test]

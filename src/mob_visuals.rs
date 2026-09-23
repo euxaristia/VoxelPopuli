@@ -970,6 +970,15 @@ impl Atlas {
         w: usize,
         h: usize,
     ) -> [f32; 4] {
+        // Head geometry can be narrower than its two-pixel eye pattern. Keep
+        // texture detail independent of the physical size of the cuboid.
+        // Tiny decorative Head surfaces (frog eye bumps, mushroom caps) do
+        // not carry a face and must not acquire one through upsampling.
+        let (w, h) = if surface == Surface::Head && w >= 4 && h >= 4 {
+            (w.max(8), h.max(8))
+        } else {
+            (w, h)
+        };
         let key = (kind, surface, face, w, h);
         if let Some(rect) = self.cache.get(&key) {
             return *rect;
@@ -1155,7 +1164,11 @@ fn texel(
             _ => false,
         };
         if eye && (2..4).contains(&py) {
-            return [32, 29, 30];
+            return if kind == Horse && py == 2 {
+                [226, 223, 197]
+            } else {
+                [32, 29, 30]
+            };
         }
         return c;
     }
@@ -1217,11 +1230,19 @@ fn texel(
     }
     let eye = (px == 1 || px == 2 || px == 5 || px == 6) && (py == 2 || py == 3);
     if eye {
-        if w < 8 || matches!(kind, Slime | SulfurCube) {
+        if matches!(kind, Slime | SulfurCube) {
             return shade(base, -100);
         }
-        if matches!(kind, Spider | CaveSpider | Golem) {
+        if matches!(kind, Spider | CaveSpider) {
             return [177, 49, 41];
+        }
+        let outer = px == 1 || px == 6;
+        if kind == Golem {
+            return if outer {
+                [226, 223, 197]
+            } else {
+                [177, 49, 41]
+            };
         }
         if kind == ZombieVillager {
             return if px == 1 || px == 6 {
@@ -1231,18 +1252,35 @@ fn texel(
             };
         }
         if kind == Enderman {
-            return [207, 134, 238];
+            return if outer {
+                [207, 134, 238]
+            } else {
+                [133, 70, 172]
+            };
         }
         if kind == Phantom {
             return [167, 215, 90];
         }
-        if matches!(kind, Allay | Vex | GlowSquid) {
+        if kind == Allay {
+            return if outer {
+                [214, 249, 240]
+            } else {
+                [65, 164, 191]
+            };
+        }
+        if matches!(kind, Vex | GlowSquid) {
             return [214, 249, 240];
         }
         if bone || kind == SnowGolem {
             return dark;
         }
-        if px == 1 || px == 6 {
+        if matches!(kind, Cat | Ocelot) {
+            return if outer { [112, 169, 70] } else { dark };
+        }
+        if matches!(kind, Cow | Mooshroom | Pig | Sheep) {
+            return if outer { dark } else { [226, 223, 197] };
+        }
+        if outer {
             return [226, 223, 197];
         }
         return dark;
@@ -1442,6 +1480,9 @@ impl MobVisuals {
         }
     }
     pub fn draw(&self, mob: &Mob, shader: &Shader, time: f32, viewer: Vec3) {
+        if mob.bee.inside {
+            return;
+        }
         self.texture.bind(0);
         let model = &self.models[mob.kind as usize];
         let mut scale = render_height(mob) / model.height;
@@ -1736,6 +1777,68 @@ mod tests {
     }
 
     #[test]
+    fn small_head_atlas_preserves_both_eye_pixels() {
+        for kind in [
+            MobKind::Pig,
+            MobKind::Sheep,
+            MobKind::Wolf,
+            MobKind::Cat,
+            MobKind::Ocelot,
+            MobKind::Llama,
+        ] {
+            let d = design(kind);
+            let head = d.cubes.iter().find(|c| c.surface == Surface::Head).unwrap();
+            let (_, _, _, w, h) = cube_faces(head)[0];
+            let mut atlas = Atlas::new();
+            let [u0, v0, u1, v1] = atlas.face(kind, Surface::Head, Face::Front, w, h);
+            let x0 = (u0 * ATLAS_SIZE as f32).floor() as usize;
+            let y0 = (v0 * ATLAS_SIZE as f32).floor() as usize;
+            let width = (u1 * ATLAS_SIZE as f32).ceil() as usize - x0;
+            let height = (v1 * ATLAS_SIZE as f32).ceil() as usize - y0;
+            assert!(
+                width >= 8 && height >= 8,
+                "{kind:?} loses eye detail at {width}x{height}"
+            );
+            let pixel = |x: usize| {
+                let i = ((y0 + height * 2 / 8) * ATLAS_SIZE + x0 + x * width / 8) * 4;
+                &atlas.pixels[i..i + 3]
+            };
+            assert_ne!(pixel(1), pixel(2), "{kind:?} left eye is solid");
+            assert_ne!(pixel(5), pixel(6), "{kind:?} right eye is solid");
+        }
+    }
+
+    #[test]
+    fn decorative_head_surfaces_do_not_acquire_faces() {
+        for (kind, w, h) in [(MobKind::Frog, 3, 3), (MobKind::Mooshroom, 5, 2)] {
+            let mut atlas = Atlas::new();
+            let [u0, v0, u1, v1] = atlas.face(kind, Surface::Head, Face::Front, w, h);
+            assert!(((u1 - u0) * ATLAS_SIZE as f32 - w as f32).abs() < 0.03);
+            assert!(((v1 - v0) * ATLAS_SIZE as f32 - h as f32).abs() < 0.03);
+        }
+    }
+
+    #[test]
+    fn colored_eyes_retain_contrasting_pupils() {
+        for kind in [MobKind::Golem, MobKind::Enderman, MobKind::Allay] {
+            let outer = texel(kind, Surface::Head, Face::Front, 1, 2, 8, 8);
+            let inner = texel(kind, Surface::Head, Face::Front, 2, 2, 8, 8);
+            assert_ne!(outer, inner, "{kind:?} eye has no pupil contrast");
+        }
+    }
+
+    #[test]
+    fn living_horse_side_eyes_have_sclera_and_pupils() {
+        for face in [Face::Left, Face::Right] {
+            let x = if face == Face::Left { 1 } else { 5 };
+            assert_ne!(
+                texel(MobKind::Horse, Surface::Head, face, x, 2, 8, 8),
+                texel(MobKind::Horse, Surface::Head, face, x, 3, 8, 8)
+            );
+        }
+    }
+
+    #[test]
     fn horses_have_sloping_faces_and_side_eyes_instead_of_a_cow_face() {
         for kind in [MobKind::Horse, MobKind::SkeletonHorse, MobKind::ZombieHorse] {
             let d = design(kind);
@@ -1766,7 +1869,16 @@ mod tests {
                     .flat_map(|y| (0..8).map(move |x| texel(kind, Surface::Head, face, x, y, 8, 8)))
                     .filter(|p| *p == [32, 29, 30])
                     .count();
-                assert_eq!(eyes, if face == Face::Front { 0 } else { 4 });
+                assert_eq!(
+                    eyes,
+                    if face == Face::Front {
+                        0
+                    } else if kind == MobKind::Horse {
+                        2
+                    } else {
+                        4
+                    }
+                );
             }
         }
     }

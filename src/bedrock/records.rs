@@ -32,7 +32,9 @@ pub fn number(value: Option<&NbtTag>) -> Option<f64> {
 pub fn item_name(block: BlockType) -> Option<String> {
     use BlockType::*;
     let special = match block {
-        Air | Fire | PistonHead | WheatStage0 | WheatStage1 | WheatStage2 => return None,
+        Air | Fire | PistonHead | WheatStage0 | WheatStage1 | WheatStage2 | SunflowerTop => {
+            return None;
+        }
         RawPorkchop => Some("porkchop"),
         RawBeef => Some("beef"),
         Steak => Some("cooked_beef"),

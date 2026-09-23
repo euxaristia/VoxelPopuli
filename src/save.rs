@@ -8,9 +8,11 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 mod bedrock;
+mod bees;
+pub use bees::BeeSaveData;
 
 const MAGIC: &[u8; 8] = b"VPOPSAV\0";
-const VERSION: u32 = 4;
+const VERSION: u32 = 7;
 const MAX_EDITS: usize = 10_000_000;
 const MAX_CONTAINERS: usize = 100_000;
 const MAX_PENDING_STACKS: usize = 1_000_000;
@@ -183,10 +185,13 @@ impl PlayerState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameSave {
+    pub generator_version: crate::chunk::GeneratorVersion,
+    pub bees: BeeSaveData,
     pub difficulty: crate::skeleton_ai::Difficulty,
     pub skeletons: Vec<SkeletonSave>,
     pub seed: u64,
     pub day_time: f32,
+    pub day_count: u64,
     player: PlayerState,
     pub inventory: [Option<ItemStack>; INVENTORY_SLOT_COUNT],
     pub camera_angle: Vec2,
@@ -227,8 +232,10 @@ impl GameSave {
             .collect::<Vec<_>>();
         containers.sort_unstable_by_key(|(position, _)| *position);
         Ok(Self {
+            generator_version: world.generator_version,
             seed: world.seed,
             difficulty: world.difficulty,
+            bees: BeeSaveData::capture(world, player),
             skeletons: world
                 .mobs
                 .iter()
@@ -236,6 +243,7 @@ impl GameSave {
                 .map(SkeletonSave::capture)
                 .collect(),
             day_time: world.day_time,
+            day_count: world.day_count,
             player: PlayerState::capture(player),
             inventory: *inventory,
             camera_angle,
@@ -407,6 +415,9 @@ impl GameSave {
             put_f32(&mut out, mob.powder_time);
             put_f32(&mut out, mob.fire_time);
         }
+        self.bees.encode(&mut out)?;
+        put_u32(&mut out, self.generator_version as u32);
+        put_u64(&mut out, self.day_count);
         Ok(out)
     }
 
@@ -636,14 +647,29 @@ impl GameSave {
                 });
             }
         }
+        let bees = if version >= 5 {
+            BeeSaveData::decode(&mut reader)?
+        } else {
+            BeeSaveData::default()
+        };
+        let generator_version = if version >= 6 {
+            crate::chunk::GeneratorVersion::from_u32(reader.u32()?)
+                .ok_or_else(|| invalid("unsupported terrain generator"))?
+        } else {
+            crate::chunk::GeneratorVersion::Legacy
+        };
+        let day_count = if version >= 7 { reader.u64()? } else { 0 };
         if reader.remaining() != 0 {
             return Err(invalid("trailing data in save file"));
         }
         Ok(Self {
+            generator_version,
+            bees,
             seed,
             difficulty,
             skeletons,
             day_time,
+            day_count,
             player: PlayerState {
                 position,
                 velocity,
@@ -916,10 +942,13 @@ mod tests {
             durability: Some(123),
         });
         GameSave {
+            generator_version: crate::chunk::GeneratorVersion::Legacy,
+            bees: BeeSaveData::default(),
             seed: 42,
             difficulty: Default::default(),
             skeletons: Vec::new(),
             day_time: 570.0,
+            day_count: 0,
             player: PlayerState {
                 position: Vec3::new(-2.5, 70.0, 18.25),
                 velocity: Vec3::new(1.0, -2.0, 3.0),
@@ -961,9 +990,66 @@ mod tests {
     }
 
     #[test]
+    fn version_four_loads_without_bee_extension() {
+        let save = sample_save();
+        let mut bytes = save.encode().unwrap();
+        let mut extension = Vec::new();
+        save.bees.encode(&mut extension).unwrap();
+        bytes.truncate(bytes.len() - extension.len() - 12);
+        bytes[8..12].copy_from_slice(&4u32.to_le_bytes());
+        let loaded = GameSave::decode(&bytes).unwrap();
+        assert_eq!(loaded.bees, BeeSaveData::default());
+        assert_eq!(loaded.inventory, save.inventory);
+    }
+
+    #[test]
     fn save_round_trip_preserves_progress_and_durability() {
         let save = sample_save();
         assert_eq!(GameSave::decode(&save.encode().unwrap()).unwrap(), save);
+    }
+
+    #[test]
+    fn lunar_day_round_trip_and_version_six_default() {
+        let mut save = sample_save();
+        save.day_count = 19;
+        let mut bytes = save.encode().unwrap();
+        assert_eq!(GameSave::decode(&bytes).unwrap().day_count, 19);
+        bytes.truncate(bytes.len() - 8);
+        bytes[8..12].copy_from_slice(&6u32.to_le_bytes());
+        assert_eq!(GameSave::decode(&bytes).unwrap().day_count, 0);
+        let mut world = World::simulation(42);
+        world.day_time = 1199.0;
+        world.advance_day_clock(2.0);
+        assert_eq!((world.day_count, world.day_time), (1, 1.0));
+        world.day_time = 800.0;
+        world.advance_day_clock(1260.0 - world.day_time);
+        assert_eq!((world.day_count, world.day_time), (2, 60.0));
+    }
+
+    #[test]
+    fn generator_version_survives_saves_and_old_formats_keep_legacy() {
+        use crate::chunk::GeneratorVersion;
+        let mut save = sample_save();
+        save.generator_version = GeneratorVersion::Habitats;
+        let bytes = save.encode().unwrap();
+        assert_eq!(
+            GameSave::decode(&bytes).unwrap().generator_version,
+            GeneratorVersion::Habitats
+        );
+        let mut old = bytes[..bytes.len() - 12].to_vec();
+        old[8..12].copy_from_slice(&5u32.to_le_bytes());
+        let loaded = GameSave::decode(&old).unwrap();
+        assert_eq!(loaded.generator_version, GeneratorVersion::Legacy);
+        assert_eq!(
+            GameSave::decode(&loaded.encode().unwrap())
+                .unwrap()
+                .generator_version,
+            GeneratorVersion::Legacy
+        );
+        let mut bad = bytes;
+        let end = bad.len();
+        bad[end - 12..end - 8].copy_from_slice(&99u32.to_le_bytes());
+        assert!(GameSave::decode(&bad).is_err());
     }
 
     #[test]
@@ -1092,7 +1178,7 @@ mod tests {
         assert!(GameSave::decode(&bytes[..bytes.len() - 1]).is_err());
 
         let mut invalid = bytes;
-        let last = invalid.len() - 1;
+        let last = invalid.len() - 9; // Last byte of the generator ID, before day_count.
         invalid[last] = u8::MAX;
         assert!(GameSave::decode(&invalid).is_err());
     }
@@ -1109,7 +1195,7 @@ mod tests {
         put_stack(&mut encoded, Some(ItemStack::new(BlockType::Stone, 1))).unwrap();
         assert_eq!(encoded.len(), 8);
         assert_eq!(&encoded[1..3], &(BlockType::Stone as u16).to_le_bytes());
-        assert_eq!(VERSION, 4);
+        assert_eq!(VERSION, 7);
         assert_eq!(std::mem::size_of::<BlockType>(), 2);
     }
 

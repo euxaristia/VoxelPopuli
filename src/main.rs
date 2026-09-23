@@ -12,7 +12,10 @@ use glfw::{Action, GamepadAxis, GamepadButton, JoystickId, Key};
 mod atlas;
 mod atlas_table;
 mod bedrock;
+mod bee;
 mod block;
+mod camera;
+mod celestial;
 mod chunk;
 mod combat_animation;
 mod container;
@@ -255,71 +258,6 @@ fn draw_screen_quad(shader: &Shader, color: glam::Vec4) {
     renderer::set_depth_test(true);
 }
 
-fn draw_sun_moon(shader: &Shader, player_pos: Vec3, time: f32, mvp: Mat4, overlay: bool) {
-    let dist = 450.0;
-    let size = 60.0;
-    let angle = (time / 1200.0) * 2.0 * std::f32::consts::PI;
-    let sun_y = angle.sin();
-    let sun_dir = Vec3::new(0.0, sun_y, angle.cos());
-    let sun_pos = player_pos + sun_dir * dist;
-    let moon_angle = angle + std::f32::consts::PI;
-    let moon_dir = Vec3::new(0.0, moon_angle.sin(), moon_angle.cos());
-    let moon_pos = player_pos + moon_dir * dist;
-    let sunrise_mult = if sun_y > -0.3 && sun_y < 0.3 {
-        0.6
-    } else {
-        1.0
-    };
-    let sun_c = [
-        (255.0 * sunrise_mult) as u8,
-        (200.0 * sunrise_mult) as u8,
-        (150.0 * sunrise_mult) as u8,
-        255,
-    ];
-    let moon_c = [220, 225, 255, 255];
-
-    let create_mesh = |pos: Vec3, color: [u8; 4], q_size: f32| -> renderer::Mesh {
-        let mut v = Vec::new();
-        let mut c = Vec::new();
-        let mut t = Vec::new();
-        let look = (player_pos - pos).normalize();
-        let r = look.cross(Vec3::Y).normalize();
-        let u = r.cross(look).normalize();
-        let v0 = pos + (r * -q_size) + (u * -q_size);
-        let v1 = pos + (r * q_size) + (u * -q_size);
-        let v2 = pos + (r * q_size) + (u * q_size);
-        let v3 = pos + (r * -q_size) + (u * q_size);
-        v.extend_from_slice(&[v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z]);
-        v.extend_from_slice(&[v0.x, v0.y, v0.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z]);
-        for _ in 0..6 {
-            c.extend_from_slice(&color);
-        }
-        t.extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]);
-        renderer::Mesh::new(&v, Some(&t), None, Some(&c))
-    };
-
-    let sun_mesh = create_mesh(sun_pos, sun_c, size);
-    let moon_mesh = create_mesh(moon_pos, moon_c, size * 0.8);
-
-    shader.bind();
-    shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
-
-    // The forward path draws the sky before the world, so it must not
-    // depth test; the deferred path draws it after the resolve and does.
-    renderer::set_depth_test(!overlay);
-    renderer::set_cull(false);
-
-    shader.set_int(shader.get_uniform_location("uBodyType"), 1); // 1 = Sun
-    sun_mesh.draw();
-
-    shader.set_int(shader.get_uniform_location("uBodyType"), 2); // 2 = Moon
-    moon_mesh.draw();
-
-    shader.set_int(shader.get_uniform_location("uBodyType"), 0); // Reset
-    renderer::set_cull(true);
-    renderer::set_depth_test(true);
-}
-
 fn args_force_new_world(args: &[String]) -> bool {
     args.iter().any(|arg| {
         arg == "--seed"
@@ -385,6 +323,14 @@ async fn run() {
     // Entry point
     let args: Vec<String> = platform::args();
     #[cfg(not(target_arch = "wasm32"))]
+    if args.iter().any(|arg| arg == "--smoke-test-celestial-sneak") {
+        if let Err(error) = smoke::celestial_sneak() {
+            eprintln!("Celestial/sneak smoke test failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     match bedrock::cli::run(&args) {
         Ok(true) => return,
         Ok(false) => {}
@@ -392,6 +338,14 @@ async fn run() {
             eprintln!("Bedrock world operation failed: {error}");
             std::process::exit(1);
         }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if args.iter().any(|arg| arg == "--smoke-test-habitats") {
+        if let Err(error) = smoke::habitats() {
+            eprintln!("Habitat smoke test failed: {error}");
+            std::process::exit(1);
+        }
+        return;
     }
     #[cfg(not(target_arch = "wasm32"))]
     if args.iter().any(|arg| arg == "--smoke-test-mobs") {
@@ -637,8 +591,11 @@ async fn run() {
     if let Some(save) = &loaded_save {
         world.install_edits(&save.edits);
         world.day_time = save.day_time;
+        world.day_count = save.day_count;
         world.difficulty = save.difficulty;
         world.restore_skeletons(&save.skeletons);
+        world.generator_version = save.generator_version;
+        world.hives = save.bees.hives.iter().copied().collect();
         world.containers = save.containers.iter().cloned().collect();
         world.pending_stacks = save.pending_stacks.clone();
         world.dropped_items = save.dropped_items.clone();
@@ -665,6 +622,10 @@ async fn run() {
     let gbuffer_shader = Shader::with_outputs_async(&load_shader("gbuffer.wgsl"), 4)
         .await
         .expect("Failed to compile G-buffer shader");
+    let celestial_shader = Shader::new_async(&load_shader("celestial.wgsl"))
+        .await
+        .expect("celestial shader");
+    let celestial = celestial::Celestial::new();
     let vibrant_pack = vibrant::VibrantPack::load_default();
     for warning in &vibrant_pack.warnings {
         eprintln!("Vibrant Visuals pack: {warning}");
@@ -718,6 +679,7 @@ async fn run() {
         inv_slots = create_sandbox_inventory();
     }
     let mut camera_angle = Vec2::new(std::f32::consts::PI, 0.0);
+    let mut perspective = camera::Perspective::default();
     let mut last_cursor_pos = window.get_cursor_pos();
     let mut mining_state = mining::MiningState::new();
     let mut left_mouse_held = false;
@@ -748,6 +710,7 @@ async fn run() {
     let arm_mesh = hand::build_arm_mesh();
     let mut crack_overlay = mining::CrackOverlay::default();
     let torso_mesh = hand::build_torso_mesh();
+    let avatar = hand::Avatar::new();
     let leg_mesh = hand::build_leg_mesh();
     let mut held_item_mesh: Option<(BlockType, renderer::Mesh)> = None;
     let mut hand_swing = hand::SwingAnimation::default();
@@ -825,6 +788,7 @@ async fn run() {
             if !world.is_loading {
                 if let Some(save) = loaded_save.take() {
                     player = save.restore_player();
+                    save.bees.restore(&mut world, &mut player);
                     if !is_cli_sandbox {
                         player.sandbox = false;
                         player.flying = false;
@@ -1070,6 +1034,11 @@ async fn run() {
                                 glfw::CursorMode::Disabled,
                             );
                         }
+                    }
+                }
+                glfw::WindowEvent::Key(Key::F5, _, Action::Press, _) => {
+                    if game_state == GameState::Playing && !player.inventory_open {
+                        perspective = perspective.next();
                     }
                 }
                 glfw::WindowEvent::Key(Key::F6, _, Action::Press, _) => {
@@ -1420,7 +1389,7 @@ async fn run() {
                                 hand_swing.start();
                             }
                             if action == Action::Press && player.attack_cooldown <= 0.0 {
-                                let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
+                                let eye_pos = player.eye_position();
                                 let look_dir = Vec3::new(
                                     camera_angle.y.cos() * camera_angle.x.sin(),
                                     camera_angle.y.sin(),
@@ -1442,7 +1411,7 @@ async fn run() {
                         }
                         if right {
                             if action == Action::Press {
-                                let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
+                                let eye_pos = player.eye_position();
                                 let look_dir = Vec3::new(
                                     camera_angle.y.cos() * camera_angle.x.sin(),
                                     camera_angle.y.sin(),
@@ -1481,7 +1450,7 @@ async fn run() {
                                         if s.count == 0 {
                                             inv_slots[arrow_idx] = None;
                                         }
-                                        let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
+                                        let eye_pos = player.eye_position();
                                         let look_dir = Vec3::new(
                                             camera_angle.y.cos() * camera_angle.x.sin(),
                                             camera_angle.y.sin(),
@@ -1506,7 +1475,7 @@ async fn run() {
                         }
 
                         if right && action == Action::Press {
-                            let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
+                            let eye_pos = player.eye_position();
                             let look_dir = Vec3::new(
                                 camera_angle.y.cos() * camera_angle.x.sin(),
                                 camera_angle.y.sin(),
@@ -1547,13 +1516,29 @@ async fn run() {
                                         res.z as f32,
                                     ));
                                     if world.day_time >= 600.0 {
-                                        world.day_time = 60.0;
+                                        world.advance_day_clock(1260.0 - world.day_time);
                                     }
                                     right_mouse_held = false;
                                     continue;
                                 }
                             }
                             if let Some(s) = &mut inv_slots[player.selected_slot] {
+                                if s.block == BlockType::HoneyBottle {
+                                    player.eat_food(item::food_properties(s.block).unwrap());
+                                    player.poison_time = 0.0;
+                                    player.poison_tick = 0.0;
+                                    s.count -= 1;
+                                    if s.count == 0 {
+                                        inv_slots[player.selected_slot] = None;
+                                    }
+                                    let rem = inv_add(&mut inv_slots, BlockType::GlassBottle, 1);
+                                    if rem > 0 {
+                                        world
+                                            .pending_stacks
+                                            .push(ItemStack::new(BlockType::GlassBottle, rem));
+                                    }
+                                    continue;
+                                }
                                 if let Some(food_props) = item::food_properties(s.block)
                                     && player.eat_food(food_props)
                                 {
@@ -1678,7 +1663,7 @@ async fn run() {
 
                 let gp_place = lt > 0.5 && prev_gp_lt <= 0.5;
                 if gp_place {
-                    let gp_eye = player.position + Vec3::new(0.0, 1.6, 0.0);
+                    let gp_eye = player.eye_position();
                     let gp_look = Vec3::new(
                         camera_angle.y.cos() * camera_angle.x.sin(),
                         camera_angle.y.sin(),
@@ -1758,7 +1743,7 @@ async fn run() {
         if !sprint_controls_enabled {
             player.sprinting = false;
         }
-        let eye_pos = player.position + Vec3::new(0.0, 1.6, 0.0);
+        let mut eye_pos = player.eye_position();
         let look_dir = Vec3::new(
             camera_angle.y.cos() * camera_angle.x.sin(),
             camera_angle.y.sin(),
@@ -1787,12 +1772,13 @@ async fn run() {
                 is_sneaking,
                 current_time,
             );
+            eye_pos = player.eye_position();
             let t_wu = platform::Instant::now();
             let held = inv_slots[player.selected_slot]
                 .map(|s| s.block)
                 .unwrap_or(BlockType::Air);
             world.player_targetable = !player.sandbox && player.health > 0;
-            world.player_sneaking = is_sneaking;
+            world.player_sneaking = player.sneaking;
             world.check_enderman_gaze(eye_pos, look_dir);
             let earned_xp = world.update(player.position, delta_time as f32, held);
             profiler.world_update_ms = t_wu.elapsed().as_secs_f32() * 1000.0;
@@ -1826,6 +1812,12 @@ async fn run() {
                 player.inventory_open = false;
                 return_cursor(&mut inv_slots, &mut inv_cursor);
                 set_game_cursor_mode(&mut window, smoke_world, glfw::CursorMode::Disabled);
+            }
+            if world.pending_poison > 0.0 {
+                if !player.sandbox {
+                    player.poison_time = player.poison_time.max(world.pending_poison);
+                }
+                world.pending_poison = 0.0;
             }
             if world.pending_hurt > 0 {
                 player.take_damage_from(
@@ -2041,7 +2033,12 @@ async fn run() {
         } else {
             Mat4::IDENTITY
         };
-        let view = hurt_mat * Mat4::look_at_rh(eye_pos, eye_pos + look_dir, Vec3::Y);
+        let (camera_pos, camera_look) = perspective.view(eye_pos, look_dir, |p| {
+            world
+                .get_block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)
+                .is_solid()
+        });
+        let view = hurt_mat * Mat4::look_at_rh(camera_pos, camera_pos + camera_look, Vec3::Y);
         let mvp = projection * view;
 
         // Vibrant Visuals deferred path. Fancy graphics off keeps the
@@ -2053,7 +2050,7 @@ async fn run() {
             &vibrant_pack,
             &vibrant::frame::FrameInput {
                 day_fraction: vibrant::frame::day_fraction(dusk_time),
-                camera_pos: eye_pos,
+                camera_pos,
                 view_proj: mvp,
             },
         );
@@ -2111,8 +2108,17 @@ async fn run() {
         } else {
             target.bind();
             renderer::clear(sky_c.x, sky_c.y, sky_c.z, 1.0);
-            world.render_stars(player.position, dusk_time, &flat_shader, &mvp);
-            draw_sun_moon(&flat_shader, player.position, dusk_time, mvp, true);
+            world.render_stars(camera_pos, dusk_time, &flat_shader, &mvp);
+            celestial.draw(
+                &celestial_shader,
+                camera_pos,
+                Vec3::from_slice(&deferred_uniforms.sun_direction_illuminance),
+                world.day_count,
+                mvp,
+                true,
+                hdr_scale,
+                deferred,
+            );
         }
         world_shader.bind();
         world_shader.set_mat4(world_shader.get_uniform_location("uMVP"), &mvp);
@@ -2130,7 +2136,7 @@ async fn run() {
             world_shader.get_uniform_location("colDiffuse"),
             glam::Vec4::ONE,
         );
-        world_shader.set_vec3(world_shader.get_uniform_location("viewPos"), eye_pos);
+        world_shader.set_vec3(world_shader.get_uniform_location("viewPos"), camera_pos);
         world_shader.set_vec4(world_shader.get_uniform_location("skyCol"), forward_sky);
         world_shader.set_vec4(
             world_shader.get_uniform_location("uColor"),
@@ -2147,7 +2153,39 @@ async fn run() {
         world.render_xp_orbs(world_shader, current_time as f32);
         world.render_mobs(world_shader, player.position);
 
-        if game_state == GameState::Playing && !player.inventory_open {
+        if game_state == GameState::Playing && !perspective.first_person() {
+            let held_block = inv_slots[player.selected_slot]
+                .map(|s| s.block)
+                .filter(|b| *b != BlockType::Air);
+            if let Some(block) = held_block {
+                if held_item_mesh
+                    .as_ref()
+                    .is_none_or(|(cached, _)| *cached != block)
+                {
+                    held_item_mesh = Some((block, hand::build_item_mesh(block)));
+                }
+            }
+            if let Some(atlas) = world.atlas.as_ref() {
+                avatar.draw(
+                    world_shader,
+                    atlas,
+                    &mvp,
+                    selected_skin,
+                    player.position,
+                    camera_angle.x,
+                    camera_angle.y,
+                    player.velocity.x.hypot(player.velocity.z),
+                    current_time as f32,
+                    player.crouch_amount,
+                    hand_swing.progress(),
+                    world.entity_lighting(eye_pos),
+                    held_block.and_then(|_| held_item_mesh.as_ref().map(|(_, mesh)| mesh)),
+                );
+            }
+        }
+
+        if game_state == GameState::Playing && !player.inventory_open && perspective.first_person()
+        {
             // The player's own torso and legs, so looking down shows them.
             // Ordinary world geometry, drawn before the view-space arm.
             if let Some(atlas) = world.atlas.as_ref() {
@@ -2162,6 +2200,7 @@ async fn run() {
                     camera_angle.x,
                     player.velocity.x.hypot(player.velocity.z),
                     current_time as f32,
+                    player.crouch_amount,
                     world.entity_lighting(eye_pos),
                 );
             }
@@ -2172,10 +2211,19 @@ async fn run() {
         // forward into the lit HDR target.
         if deferred {
             renderer::deferred_resolve(&deferred_uniforms);
-            world.render_stars(player.position, dusk_time, &flat_shader, &mvp);
+            world.render_stars(camera_pos, dusk_time, &flat_shader, &mvp);
             // Depth-tested here, unlike the forward path where the sky is
             // drawn first and painted over by the terrain.
-            draw_sun_moon(&flat_shader, player.position, dusk_time, mvp, false);
+            celestial.draw(
+                &celestial_shader,
+                camera_pos,
+                Vec3::from_slice(&deferred_uniforms.sun_direction_illuminance),
+                world.day_count,
+                mvp,
+                false,
+                hdr_scale,
+                deferred,
+            );
         }
         shader.bind();
         shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
@@ -2183,7 +2231,7 @@ async fn run() {
         shader.set_float(shader.get_uniform_location("uTime"), current_time as f32);
         shader.set_vec3(shader.get_uniform_location("sunDir"), sun_dir);
         shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
-        shader.set_vec3(shader.get_uniform_location("viewPos"), eye_pos);
+        shader.set_vec3(shader.get_uniform_location("viewPos"), camera_pos);
         shader.set_vec4(shader.get_uniform_location("skyCol"), forward_sky);
         shader.set_vec4(shader.get_uniform_location("uColor"), glam::Vec4::ZERO);
 
@@ -2193,7 +2241,7 @@ async fn run() {
 
         // Transparency render order depends on whether the camera is above or below
         // the cloud layer, so each transparent layer is drawn back-to-front.
-        let above_clouds = eye_pos.y > CLOUD_HEIGHT;
+        let above_clouds = camera_pos.y > CLOUD_HEIGHT;
 
         if fancy_gfx_setting && !above_clouds {
             world.render_clouds(&flat_shader, &mvp);
@@ -2209,7 +2257,7 @@ async fn run() {
             current_time as f32,
         );
         water_shader.set_vec3(water_shader.get_uniform_location("sunDir"), sun_dir);
-        water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), eye_pos);
+        water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), camera_pos);
         water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), forward_sky);
         water_shader.set_vec4(
             water_shader.get_uniform_location("colDiffuse"),
@@ -2226,7 +2274,8 @@ async fn run() {
             world.render_clouds(&flat_shader, &mvp);
         }
         // Viewmodel goes last, after terrain, water and effects, with its own depth.
-        if game_state == GameState::Playing && !player.inventory_open {
+        if game_state == GameState::Playing && !player.inventory_open && perspective.first_person()
+        {
             let held_block = inv_slots[player.selected_slot].map(|s| s.block);
             let item_ref = if let Some(block) = held_block.filter(|b| *b != BlockType::Air) {
                 if held_item_mesh
@@ -2274,9 +2323,9 @@ async fn run() {
 
         // Liquid screen overlay (below HUD)
         let cam_block = world.get_block(
-            eye_pos.x.floor() as i32,
-            eye_pos.y.floor() as i32,
-            eye_pos.z.floor() as i32,
+            camera_pos.x.floor() as i32,
+            camera_pos.y.floor() as i32,
+            camera_pos.z.floor() as i32,
         );
         if cam_block == BlockType::Water || cam_block == BlockType::Lava {
             renderer::set_blend(true);
@@ -2381,8 +2430,8 @@ async fn run() {
                 );
             }
         }
-        // Crosshair (hidden when inventory is open)
-        if !player.inventory_open {
+        // The front camera looks opposite the player's interaction direction.
+        if !player.inventory_open && perspective != camera::Perspective::ThirdPersonFront {
             draw_rect(
                 &ui_shader,
                 sw / 2.0 - 2.0,
@@ -2397,8 +2446,12 @@ async fn run() {
 
         // F3 debug overlay
         if show_debug_overlay {
-            let biome =
-                chunk::terrain_height_and_biome(player.position.x, player.position.z, world.seed).1;
+            let biome = chunk::biome_at_version(
+                player.position.x,
+                player.position.z,
+                world.seed,
+                world.generator_version,
+            );
             let yaw_deg = camera_angle.x.to_degrees().rem_euclid(360.0);
             let pitch_deg = camera_angle.y.to_degrees();
             let compass = [

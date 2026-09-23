@@ -60,7 +60,7 @@ pub enum Habitat {
     Special,
 }
 
-/// The terrain generator has six biomes. Structure-only species stay in the
+/// Structure-only species stay in the
 /// sandbox catalogue until their structures are implemented.
 pub fn can_spawn(
     kind: MobKind,
@@ -70,6 +70,15 @@ pub fn can_spawn(
     night: bool,
 ) -> bool {
     use crate::chunk::Biome;
+    if kind == MobKind::Bee {
+        return !water
+            && !cave
+            && !night
+            && matches!(
+                biome,
+                Biome::Plains | Biome::SunflowerPlains | Biome::FlowerForest
+            );
+    }
     let species = kind.species();
     if species.habitat == Habitat::Special {
         return false;
@@ -88,7 +97,7 @@ pub fn can_spawn(
             || (!water && species.habitat == Habitat::Night && species.temper == Temper::Hostile);
     }
     match species.habitat {
-        Habitat::Grassland => !water && matches!(biome, Biome::Plains | Biome::SnowyTaiga),
+        Habitat::Grassland => !water && (biome.is_bee_habitat() || biome == Biome::SnowyTaiga),
         Habitat::Desert => !water && biome == Biome::Desert,
         Habitat::Snow => !water && matches!(biome, Biome::SnowyTundra | Biome::SnowyTaiga),
         Habitat::Taiga => !water && biome == Biome::SnowyTaiga,
@@ -152,7 +161,7 @@ species! {
     Armadillo, "Armadillo", "armadillo", Armadillo, Walk, Passive, Special, 0.65, 0.7, 12.0, 1.2, 0, [171,124,103], [222,165,145];
     Axolotl, "Axolotl", "axolotl", Canine, Amphibious, Passive, Special, 0.42, 0.6, 14.0, 1.5, 2, [238,175,190], [183,60,110];
     Bat, "Bat", "bat", Bat, Fly, Passive, Cave, 0.8, 0.5, 6.0, 1.6, 0, [87,61,48], [155,116,84];
-    Bee, "Bee", "bee", Bee, Fly, Neutral, Grassland, 0.6, 0.7, 10.0, 1.6, 2, [232,181,58], [79,56,38];
+    Bee, "Bee", "bee", Bee, Fly, Neutral, Grassland, 0.5, 0.55, 10.0, 3.0, 2, [232,181,58], [79,56,38];
     Bogged, "Bogged", "bogged", Person, Walk, Hostile, Special, 1.99, 0.6, 16.0, 1.5, 4, [140,146,102], [76,116,66];
     Breeze, "Breeze", "breeze", Breeze, Hop, Hostile, Special, 1.77, 0.6, 30.0, 2.0, 3, [143,170,169], [89,114,111];
     Camel, "Camel", "camel", Horse, Walk, Passive, Desert, 2.375, 1.7, 32.0, 2.0, 0, [198,160,101], [115,85,55];

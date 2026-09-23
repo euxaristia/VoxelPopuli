@@ -70,9 +70,12 @@ cargo run --release -- --sandbox --save sandbox
 ```
 
 Legacy version 1–3 `.vps` saves remain readable and are retained during migration.
-Current browser saves and desktop supplemental session records use version 4,
+Current browser saves and desktop supplemental session records use version 7,
 with 16-bit block/item IDs. This adds 64 KiB to each loaded chunk's block array;
 the optional GPU voxel pool also uses 64 KiB more per chunk slot.
+New worlds include seven additional bee habitats and birch, mangrove, and cherry
+trees. Existing worlds keep their original generator. See
+[world generation and compatibility](docs/world-generation.md).
 The default `world.vps` migrates to `world/`; an explicit `--save survival.vps`
 migrates to `survival.bedrock/`. An unreadable save stops startup. `--seed` and
 `--import-world` require a new native save directory when one already exists.
@@ -115,6 +118,7 @@ The importer reads Anvil `.mca` region files, decompresses NBT chunk data, unpac
 - `1 - 9` / `Scroll`: Select hotbar slot
 - `E`: Open Inventory / Crafting menu
 - `F3`: Toggle debug HUD & performance telemetry overlay
+- `F5`: Cycle first-person, rear third-person, and front third-person views
 - `F6`: Open the creature catalogue in sandbox worlds
 - `Esc`: Pause menu / Settings
 
@@ -170,8 +174,12 @@ PNG assets and screenshots use `png` directly, with no general-purpose image
 processing dependency. wgpu enables native DirectX 12, Vulkan, Metal and OpenGL
 backends plus WGSL; browser-only WebGPU support is disabled for this GLFW app.
 
-Fancy graphics uses linear-color lighting, ACES tone mapping, directional sun
-and moon light, and subtle distance haze. Water has a muted blue-green tint,
+Fancy graphics uses linear-color lighting, ACES tone mapping, and sun/moon
+textures and lighting curves from the Bedrock Vibrant Visuals samples.
+See [celestial rendering and sneaking](docs/celestials-and-sneaking.md) for
+the reference sources, camera/pose behavior, moon phases and parity limits.
+It also provides directional sunlight, moonlight, and subtle distance haze.
+Water has a muted blue-green tint,
 view-dependent sky reflection, and animated normals that leave block edges in
 place. Empty clicks punch, holding attack repeats the swing, and the arm extends
 past the bottom of the viewport throughout the animation. Its square forearm

@@ -35,6 +35,7 @@ pub fn read(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<u8>> {
         let path = path.as_ref().to_string_lossy().replace('\\', "/");
         let bytes: &[u8] = match path.as_str() {
             "assets/font.png" => include_bytes!("../assets/font.png"),
+            "assets/shaders/celestial.wgsl" => include_bytes!("../assets/shaders/celestial.wgsl"),
             "assets/shaders/ps1.wgsl" => include_bytes!("../assets/shaders/ps1.wgsl"),
             "assets/shaders/gbuffer.wgsl" => include_bytes!("../assets/shaders/gbuffer.wgsl"),
             "assets/shaders/water.wgsl" => include_bytes!("../assets/shaders/water.wgsl"),

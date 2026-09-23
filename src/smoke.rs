@@ -696,6 +696,274 @@ pub fn container_ui() -> Result<(), String> {
     Ok(())
 }
 
+/// Capture generated habitats through the production terrain mesher and shader.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn celestial_sneak() -> Result<(), String> {
+    use glam::{Mat4, Vec3, Vec4};
+    let mut glfw = glfw::init(glfw::log_errors).map_err(|e| e.to_string())?;
+    glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
+    glfw.window_hint(glfw::WindowHint::Visible(false));
+    let (window, _) = glfw
+        .create_window(
+            800,
+            600,
+            "Celestial and sneaking smoke test",
+            glfw::WindowMode::Windowed,
+        )
+        .ok_or("Test window")?;
+    let _renderer = renderer::init(&*window, 800, 600);
+    sky_seam(800, 600)?;
+    let shader = Shader::new(&crate::load_shader("celestial.wgsl"))?;
+    let sky = crate::celestial::Celestial::new();
+    let target = RenderTexture2D::new(800, 600);
+    std::fs::create_dir_all("target/test-artifacts").map_err(|e| e.to_string())?;
+    let mvp = Mat4::perspective_rh(60f32.to_radians(), 4.0 / 3.0, 0.1, 1000.0)
+        * Mat4::look_at_rh(Vec3::ZERO, Vec3::Z, Vec3::Y);
+    for i in 0..9 {
+        target.bind();
+        renderer::clear(0.025, 0.04, 0.075, 1.0);
+        sky.draw(
+            &shader,
+            Vec3::ZERO,
+            if i == 8 { Vec3::Z } else { -Vec3::Z },
+            i % 8,
+            mvp,
+            true,
+            1.0,
+            false,
+        );
+        RenderTexture2D::unbind();
+        renderer::end_frame(800, 600);
+        target.save_png(std::path::Path::new(&format!(
+            "target/test-artifacts/celestial-{i}.png"
+        )))?;
+    }
+    let body_shader = Shader::new(&crate::load_shader("ps1.wgsl"))?;
+    let atlas = Texture2D::from_data(&crate::atlas::generate_atlas_data(), 256, 256);
+    let torso = crate::hand::build_torso_mesh();
+    let leg = crate::hand::build_leg_mesh();
+    for crouched in [false, true] {
+        let mut player = crate::player::Player::new(0.0);
+        player.position = Vec3::ZERO;
+        player.crouch_amount = if crouched { 1.0 } else { 0.0 };
+        let eye = player.eye_position();
+        let mvp = Mat4::perspective_rh(70f32.to_radians(), 4.0 / 3.0, 0.1, 1000.0)
+            * Mat4::look_at_rh(eye, eye + Vec3::new(0.0, -1.0, 0.5), Vec3::Y);
+        target.bind();
+        renderer::clear(0.25, 0.35, 0.4, 1.0);
+        body_shader.set_vec3(body_shader.get_uniform_location("sunDir"), Vec3::Y);
+        body_shader.set_vec3(body_shader.get_uniform_location("viewPos"), eye);
+        body_shader.set_float(body_shader.get_uniform_location("uHdrScale"), 1.0);
+        crate::hand::draw_body(
+            &body_shader,
+            &atlas,
+            &torso,
+            &leg,
+            &mvp,
+            0,
+            player.position,
+            0.0,
+            0.0,
+            0.0,
+            player.crouch_amount,
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+        );
+        RenderTexture2D::unbind();
+        renderer::end_frame(800, 600);
+        target.save_png(std::path::Path::new(&format!(
+            "target/test-artifacts/sneak-{crouched}.png"
+        )))?;
+    }
+    println!("Rendered sun, eight moon phases, and standing/crouching first-person body views.");
+    let avatar = crate::hand::Avatar::new();
+    let held = crate::hand::build_item_mesh(BlockType::Stone);
+    for (name, mode, crouch) in [
+        ("rear", crate::camera::Perspective::ThirdPersonRear, 0.0),
+        ("front", crate::camera::Perspective::ThirdPersonFront, 0.0),
+        (
+            "crouching",
+            crate::camera::Perspective::ThirdPersonFront,
+            1.0,
+        ),
+    ] {
+        let eye = Vec3::new(0.0, 1.62 - 0.35 * crouch, 0.0);
+        let (position, look) = mode.view(eye, Vec3::new(0.0, -0.12, 1.0), |_| false);
+        let mvp = Mat4::perspective_rh(60f32.to_radians(), 4.0 / 3.0, 0.1, 1000.0)
+            * Mat4::look_at_rh(position, position + look, Vec3::Y);
+        target.bind();
+        renderer::clear(0.25, 0.35, 0.4, 1.0);
+        body_shader.set_vec3(body_shader.get_uniform_location("viewPos"), position);
+        avatar.draw(
+            &body_shader,
+            &atlas,
+            &mvp,
+            0,
+            Vec3::ZERO,
+            0.0,
+            -0.12,
+            0.0,
+            0.0,
+            crouch,
+            0.0,
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Some(&held),
+        );
+        RenderTexture2D::unbind();
+        renderer::end_frame(800, 600);
+        target.save_png(std::path::Path::new(&format!(
+            "target/test-artifacts/third-person-{name}.png"
+        )))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sky_seam(width: i32, height: i32) -> Result<(), String> {
+    use glam::{Mat4, Vec3};
+    renderer::deferred_resize(width, height);
+    let target = RenderTexture2D::new(width, height);
+    let uniforms = renderer::DeferredUniforms {
+        inv_view_proj: (Mat4::perspective_rh(
+            70f32.to_radians(),
+            width as f32 / height as f32,
+            0.1,
+            1000.0,
+        ) * Mat4::look_at_rh(Vec3::ZERO, Vec3::Z, Vec3::Y))
+        .inverse()
+        .to_cols_array(),
+        camera_pos_exposure: [0.0, 0.0, 0.0, 1.0],
+        sun_direction_illuminance: [1.0, 0.0, 0.0, std::f32::consts::PI],
+        sun_color: [1.0, 0.5, 0.2, 0.0],
+        moon_direction_illuminance: [0.0; 4],
+        ambient_color_illuminance: [0.0; 4],
+        sky_params: [1.0, 0.0, 0.0, 0.0],
+        horizon_color: [0.2, 0.3, 0.5, 0.0],
+        zenith_color: [0.05, 0.08, 0.2, 0.0],
+        atmosphere: [1.0, 0.75, 0.0, 0.0737705],
+        horizon_stops: [0.0, 0.5, 0.5, 0.25],
+        ..renderer::DeferredUniforms::default()
+    };
+    renderer::deferred_begin_geometry();
+    renderer::deferred_resolve(&uniforms);
+    target.bind();
+    renderer::deferred_tonemap();
+    RenderTexture2D::unbind();
+    renderer::end_frame(width, height);
+    std::fs::create_dir_all("target/test-artifacts").map_err(|e| e.to_string())?;
+    let path = std::path::Path::new("target/test-artifacts/sky-seam.png");
+    target.save_png(path)?;
+    let capture = crate::png_io::load(path)?;
+    let left = capture.get_pixel(width as u32 / 2 - 1, height as u32 / 2);
+    let right = capture.get_pixel(width as u32 / 2, height as u32 / 2);
+    if (0..3).any(|channel| left[channel].abs_diff(right[channel]) > 8) {
+        return Err(format!(
+            "Sky glare has a hemisphere seam: {left:?} vs {right:?}"
+        ));
+    }
+    println!("Sky glare continuity: {left:?} vs {right:?}");
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn habitats() -> Result<(), String> {
+    use crate::chunk::{Biome, Chunk, MeshSnapshot};
+    use crate::renderer::Mesh;
+    use glam::{Mat4, Vec3};
+    let mut glfw = glfw::init(glfw::log_errors).map_err(|e| e.to_string())?;
+    glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
+    glfw.window_hint(glfw::WindowHint::Visible(false));
+    let (window, _) = glfw
+        .create_window(1000, 800, "Habitat smoke test", glfw::WindowMode::Windowed)
+        .ok_or("Could not create test window")?;
+    let _renderer = renderer::init(&*window, 1000, 800);
+    let shader = Shader::new(&crate::load_shader("ps1.wgsl"))?;
+    let atlas = Texture2D::from_data(&crate::atlas::generate_atlas_data(), 256, 256);
+    let target = RenderTexture2D::new(1000, 800);
+    std::fs::create_dir_all("target/test-artifacts").map_err(|e| e.to_string())?;
+    for (biome, expected) in [
+        (Biome::Forest, BlockType::OakLeaves),
+        (Biome::BirchForest, BlockType::BirchLeaves),
+        (Biome::FlowerForest, BlockType::Allium),
+        (Biome::SunflowerPlains, BlockType::SunflowerTop),
+        (Biome::Meadow, BlockType::Cornflower),
+        (Biome::MangroveSwamp, BlockType::MangroveLeaves),
+        (Biome::CherryGrove, BlockType::CherryLeaves),
+    ] {
+        let mut found = None;
+        'search: for x in -64..64 {
+            for z in -64..64 {
+                let (cx, cz) = (x * 6, z * 6);
+                if crate::chunk::biome_at((cx * 16 + 8) as f32, (cz * 16 + 8) as f32, 42) != biome {
+                    continue;
+                }
+                let mut chunk = Chunk::new(cx, cz, 42);
+                chunk.generate();
+                if chunk
+                    .blocks
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .any(|&b| b == expected)
+                {
+                    found = Some(chunk);
+                    break 'search;
+                }
+            }
+        }
+        let chunk = found.ok_or_else(|| format!("No generated example of {biome:?}"))?;
+        let (cx, cz) = (chunk.x, chunk.z);
+        let top = (1..255)
+            .rev()
+            .find(|&y| {
+                chunk
+                    .blocks
+                    .iter()
+                    .any(|column| column[y].contains(&expected))
+            })
+            .unwrap_or(128) as f32;
+        let center = Vec3::new((cx * 16 + 8) as f32, top - 2.0, (cz * 16 + 8) as f32);
+        let eye = center + Vec3::new(23.0, 17.0, 27.0);
+        let mvp = Mat4::perspective_rh(45f32.to_radians(), 1.25, 0.1, 500.0)
+            * Mat4::look_at_rh(eye, center, Vec3::Y);
+        let mut world = crate::world::World::simulation(42);
+        world.insert_chunk(chunk);
+        let snap = MeshSnapshot::capture(&world, cx, cz);
+        let data = world.get_chunk(cx, cz).unwrap().snapshot_data();
+        let (opaque, transparent, water) = data.calculate_mesh_data(&snap);
+        target.bind();
+        renderer::clear(0.47, 0.69, 0.79, 1.0);
+        renderer::set_depth_test(true);
+        renderer::set_depth_write(true);
+        renderer::set_cull(true);
+        renderer::set_blend(false);
+        shader.bind();
+        shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+        shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+        shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
+        shader.set_vec4(shader.get_uniform_location("uColor"), glam::Vec4::ZERO);
+        shader.set_vec3(
+            shader.get_uniform_location("sunDir"),
+            Vec3::new(0.4, 1.0, 0.3).normalize(),
+        );
+        shader.set_vec3(shader.get_uniform_location("viewPos"), eye);
+        shader.set_float(shader.get_uniform_location("uHdrScale"), 1.0);
+        atlas.bind(0);
+        for (i, mesh) in [opaque, transparent, water].into_iter().enumerate() {
+            if mesh.v.is_empty() {
+                continue;
+            }
+            renderer::set_blend(i > 0);
+            Mesh::new(&mesh.v, Some(&mesh.t), Some(&mesh.n), Some(&mesh.c)).draw();
+        }
+        RenderTexture2D::unbind();
+        renderer::end_frame(1000, 800);
+        let path = format!("target/test-artifacts/habitat-{biome:?}.png");
+        target.save_png(std::path::Path::new(&path))?;
+        println!("Rendered {path} at chunk {cx},{cz}, seed 42");
+    }
+    Ok(())
+}
+
 /// Captures every production model with animated and resting poses.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn mobs() -> Result<(), String> {
@@ -1032,8 +1300,8 @@ fn verify_mob_simulation() {
             .unwrap()
             .position
             .y
-            > 128.0,
-        "flying mob fell to the ground"
+            > 111.0,
+        "hovering bee fell through the terrain"
     );
     while world.mobs.len() < MOB_CAP {
         world

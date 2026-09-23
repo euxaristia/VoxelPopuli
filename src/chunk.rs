@@ -3,6 +3,62 @@ use crate::noise::perlin_2d;
 use crate::renderer::Mesh;
 use std::collections::VecDeque;
 
+mod habitats;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum GeneratorVersion {
+    Legacy = 1,
+    Habitats = 2,
+}
+
+impl GeneratorVersion {
+    pub fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Legacy),
+            2 => Some(Self::Habitats),
+            _ => None,
+        }
+    }
+}
+
+pub fn biome_at_version(x: f32, z: f32, seed: u64, version: GeneratorVersion) -> Biome {
+    let original = get_biome_seeded(x, z, seed);
+    if version == GeneratorVersion::Legacy {
+        return original;
+    }
+    let wet = seeded_perlin_2d(x, z, 0.002, 2, seed, 20);
+    let vegetation = seeded_perlin_2d(x, z, 0.003, 2, seed, 510);
+    match original {
+        Biome::HighHills if vegetation > 0.0 => Biome::CherryGrove,
+        Biome::HighHills => Biome::Meadow,
+        Biome::Desert if wet > 0.1 && terrain_height_and_biome(x, z, seed).0 <= SEA_LEVEL + 2 => {
+            Biome::MangroveSwamp
+        }
+        Biome::Plains if wet > 0.12 && vegetation > 0.08 => Biome::FlowerForest,
+        Biome::Plains if wet > 0.0 && vegetation < -0.05 => Biome::BirchForest,
+        Biome::Plains if wet > 0.0 => Biome::Forest,
+        Biome::Plains if vegetation > 0.08 => Biome::SunflowerPlains,
+        _ => original,
+    }
+}
+
+impl Biome {
+    pub fn is_bee_habitat(self) -> bool {
+        matches!(
+            self,
+            Self::Plains
+                | Self::Forest
+                | Self::BirchForest
+                | Self::FlowerForest
+                | Self::SunflowerPlains
+                | Self::Meadow
+                | Self::MangroveSwamp
+                | Self::CherryGrove
+        )
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Biome {
     Plains,
@@ -11,6 +67,13 @@ pub enum Biome {
     SnowyTaiga,
     Mountains,
     HighHills,
+    Forest,
+    BirchForest,
+    FlowerForest,
+    SunflowerPlains,
+    Meadow,
+    MangroveSwamp,
+    CherryGrove,
 }
 
 fn mix64(mut x: u64) -> u64 {
@@ -65,7 +128,79 @@ fn get_biome_seeded(world_x: f32, world_z: f32, seed: u64) -> Biome {
 }
 
 pub fn biome_at(world_x: f32, world_z: f32, seed: u64) -> Biome {
-    get_biome_seeded(world_x, world_z, seed)
+    biome_at_version(world_x, world_z, seed, GeneratorVersion::Habitats)
+}
+
+#[cfg(test)]
+mod habitat_regression {
+    use super::*;
+
+    #[test]
+    fn legacy_generator_keeps_original_biomes_and_vegetation() {
+        for x in -12..12 {
+            for z in -12..12 {
+                assert_eq!(
+                    biome_at_version(
+                        x as f32 * 128.0,
+                        z as f32 * 128.0,
+                        42,
+                        GeneratorVersion::Legacy
+                    ),
+                    get_biome_seeded(x as f32 * 128.0, z as f32 * 128.0, 42)
+                );
+            }
+        }
+        for (x, z, expected) in [
+            (0, 0, 0x674219705672d009),
+            (-80, 43, 0x02457944ec1f5138),
+            (32, -51, 0x5bcde24ab624c63b),
+        ] {
+            let mut chunk = Chunk::new(x, z, 42);
+            chunk.generator_version = GeneratorVersion::Legacy;
+            chunk.generate();
+            assert!(
+                chunk
+                    .blocks
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .all(|b| (*b as u16) < BlockType::Poppy as u16)
+            );
+            let hash = chunk
+                .blocks
+                .iter()
+                .flatten()
+                .flatten()
+                .fold(0xcbf29ce484222325u64, |h, b| {
+                    (h ^ *b as u64).wrapping_mul(0x100000001b3)
+                });
+            assert_eq!(hash, expected, "legacy terrain changed at {x},{z}");
+        }
+    }
+
+    #[test]
+    fn new_generator_reaches_bee_habitats() {
+        let mut found = std::collections::HashSet::new();
+        for x in -48..48 {
+            for z in -48..48 {
+                found.insert(format!(
+                    "{:?}",
+                    biome_at(x as f32 * 96.0, z as f32 * 96.0, 42)
+                ));
+            }
+        }
+        for name in [
+            "Forest",
+            "BirchForest",
+            "FlowerForest",
+            "SunflowerPlains",
+            "Meadow",
+            "MangroveSwamp",
+            "CherryGrove",
+        ] {
+            assert!(found.contains(name), "missing generated habitat: {name}");
+        }
+    }
 }
 
 fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
@@ -607,6 +742,7 @@ impl MeshSnapshot {
 }
 
 pub struct Chunk {
+    pub generator_version: GeneratorVersion,
     pub blocks: Box<[[[BlockType; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
     pub light: Box<[[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
     pub liquid_levels: Box<[[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
@@ -626,6 +762,7 @@ pub struct Chunk {
 impl Chunk {
     pub fn new(x: i32, z: i32, seed: u64) -> Self {
         Self {
+            generator_version: GeneratorVersion::Habitats,
             blocks: Box::new([[[BlockType::Air; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
             light: Box::new([[[0; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
             liquid_levels: Box::new([[[0; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
@@ -782,7 +919,12 @@ impl Chunk {
             for z in 1..CHUNK_DEPTH - 1 {
                 let world_x = self.x * CHUNK_WIDTH as i32 + x as i32;
                 let world_z = self.z * CHUNK_DEPTH as i32 + z as i32;
-                let biome = get_biome_seeded(world_x as f32, world_z as f32, self.seed);
+                let biome = biome_at_version(
+                    world_x as f32,
+                    world_z as f32,
+                    self.seed,
+                    self.generator_version,
+                );
                 let Some(surface_y) = self.surface_y(x, z) else {
                     continue;
                 };
@@ -829,7 +971,8 @@ impl Chunk {
             for z in 0..CHUNK_DEPTH {
                 let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
                 let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
-                let (height, biome) = terrain_height_and_biome(world_x, world_z, self.seed);
+                let (height, _) = terrain_height_and_biome(world_x, world_z, self.seed);
+                let biome = biome_at_version(world_x, world_z, self.seed, self.generator_version);
 
                 for y in 0..CHUNK_HEIGHT {
                     let b = if y == 0 {
@@ -871,7 +1014,8 @@ impl Chunk {
                                     }
                                 }
                                 Biome::HighHills => BlockType::Grass,
-                                Biome::Plains => BlockType::Grass,
+                                Biome::MangroveSwamp => BlockType::Mud,
+                                _ => BlockType::Grass,
                             }
                         }
                     } else if y < SEA_LEVEL {
@@ -1154,7 +1298,7 @@ impl Chunk {
 
             let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
             let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
-            let biome = get_biome_seeded(world_x, world_z, self.seed);
+            let biome = biome_at_version(world_x, world_z, self.seed, self.generator_version);
             let seed = chunk_hash(self.seed, world_x as i32, world_z as i32, 8301 + i) as i32;
 
             // Find surface
@@ -1207,6 +1351,16 @@ impl Chunk {
                                     }
                                 }
                             }
+                        }
+                        if self.generator_version == GeneratorVersion::Habitats
+                            && biome == Biome::Plains
+                            && seed.rem_euclid(20) == 0
+                            && x + 1 < CHUNK_WIDTH
+                            && z + 1 < CHUNK_DEPTH
+                            && surface_y + 3 < CHUNK_HEIGHT
+                            && self.blocks[x + 1][surface_y + 2][z] == BlockType::Air
+                        {
+                            self.blocks[x + 1][surface_y + 2][z] = BlockType::BeeNest;
                         }
                         tree_positions.push((x, z));
                     }
@@ -1265,13 +1419,42 @@ impl Chunk {
         }
 
         self.generate_biome_decorations();
-
+        if self.generator_version == GeneratorVersion::Habitats {
+            habitats::decorate(self);
+            for x in 0..CHUNK_WIDTH {
+                for z in 0..CHUNK_DEPTH {
+                    let hash = self
+                        .seed
+                        .wrapping_add((self.x as i64 as u64).wrapping_mul(734287))
+                        .wrapping_add((self.z as i64 as u64).wrapping_mul(912271))
+                        .wrapping_add((x * 173 + z * 319) as u64);
+                    if hash % 47 != 0 {
+                        continue;
+                    }
+                    for y in (1..CHUNK_HEIGHT - 1).rev() {
+                        if self.blocks[x][y][z] == BlockType::Air {
+                            continue;
+                        }
+                        if self.blocks[x][y][z] == BlockType::Grass
+                            && self.blocks[x][y + 1][z] == BlockType::Air
+                        {
+                            self.blocks[x][y + 1][z] = if hash % 2 == 0 {
+                                BlockType::Poppy
+                            } else {
+                                BlockType::Dandelion
+                            };
+                        }
+                        break;
+                    }
+                }
+            }
+        }
         // PASS 6: Snow layer for snowy biomes
         for x in 0..CHUNK_WIDTH {
             for z in 0..CHUNK_DEPTH {
                 let world_x = (self.x * CHUNK_WIDTH as i32 + x as i32) as f32;
                 let world_z = (self.z * CHUNK_DEPTH as i32 + z as i32) as f32;
-                let biome = get_biome_seeded(world_x, world_z, self.seed);
+                let biome = biome_at_version(world_x, world_z, self.seed, self.generator_version);
                 if biome == Biome::SnowyTundra
                     || biome == Biome::SnowyTaiga
                     || biome == Biome::Mountains
@@ -1808,6 +1991,14 @@ impl ChunkData {
                     let is_crop = matches!(
                         block,
                         BlockType::Wheat
+                            | BlockType::Poppy
+                            | BlockType::Dandelion
+                            | BlockType::Sunflower
+                            | BlockType::SunflowerTop
+                            | BlockType::PinkPetals
+                            | BlockType::Cornflower
+                            | BlockType::Allium
+                            | BlockType::OxeyeDaisy
                             | BlockType::WheatStage0
                             | BlockType::WheatStage1
                             | BlockType::WheatStage2
@@ -1831,6 +2022,7 @@ impl ChunkData {
                         let color = [sky_val, block_val, 255, 255];
                         let y0 = fy;
                         let crop_height = match block {
+                            BlockType::Sunflower | BlockType::SunflowerTop => 1.0,
                             BlockType::WheatStage0 => 0.25,
                             BlockType::WheatStage1 => 0.50,
                             BlockType::WheatStage2 => 0.72,
@@ -1841,10 +2033,18 @@ impl ChunkData {
                         let x1 = fx + 0.88;
                         let z0 = fz + 0.12;
                         let z1 = fz + 0.88;
-                        let planes = [
+                        let mut planes = vec![
                             [[x0, y0, z0], [x1, y0, z1], [x1, y1, z1], [x0, y1, z0]],
                             [[x1, y0, z0], [x0, y0, z1], [x0, y1, z1], [x1, y1, z0]],
                         ];
+                        if block == BlockType::PinkPetals {
+                            planes = vec![[
+                                [fx, fy + 0.025, fz],
+                                [fx + 1.0, fy + 0.025, fz],
+                                [fx + 1.0, fy + 0.025, fz + 1.0],
+                                [fx, fy + 0.025, fz + 1.0],
+                            ]];
+                        }
 
                         for verts in planes {
                             v.extend_from_slice(&[

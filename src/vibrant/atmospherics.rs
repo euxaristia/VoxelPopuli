@@ -129,9 +129,9 @@ impl AtmosphereSettings {
             rayleigh_strength: self.rayleigh_strength.sample(time).max(0.0),
             sun_mie_strength: self.sun_mie_strength.sample(time).max(0.0),
             moon_mie_strength: self.moon_mie_strength.sample(time).max(0.0),
-            // A zero or negative exponent would blow the Mie lobe up to a
-            // flat white sky, so hold it at a sane minimum.
-            sun_glare_shape: self.sun_glare_shape.sample(time).max(1.0),
+            // Vanilla samples include zero and fractional glare shapes.
+            // Preserve them here; the shader guards only the pow endpoint.
+            sun_glare_shape: self.sun_glare_shape.sample(time).max(0.0),
             zenith_color: self.sky_zenith_color.sample(time).to_linear(),
             horizon_color: self.sky_horizon_color.sample(time).to_linear(),
         }
@@ -207,7 +207,7 @@ mod tests {
         let settings = AtmosphereSettings::parse(&json::parse(source).unwrap()).unwrap();
         let frame = settings.sample(0.5);
         assert_eq!(frame.rayleigh_strength, 0.0);
-        assert_eq!(frame.sun_glare_shape, 1.0);
+        assert_eq!(frame.sun_glare_shape, 0.0);
     }
 
     #[test]

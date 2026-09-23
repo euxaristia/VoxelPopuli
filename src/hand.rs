@@ -42,7 +42,7 @@ use crate::combat_animation::SWING_SECONDS as SWING_DURATION;
 pub use crate::combat_animation::Swing as SwingAnimation;
 
 /// Camera height above `player.position`, matching `main`.
-const EYE_HEIGHT: f32 = 1.6;
+const EYE_HEIGHT: f32 = crate::player::STANDING_EYE_HEIGHT;
 /// Hip joint the legs swing from.
 const HIP_HEIGHT: f32 = 0.75;
 /// Top of the torso.
@@ -280,9 +280,183 @@ pub fn build_leg_mesh() -> Mesh {
     Mesh::new(&v, Some(&t), Some(&n), Some(&c))
 }
 
+/// Full-height world-space avatar; the cropped first-person torso cannot be
+/// reused here because it intentionally omits its back and top faces.
+pub struct Avatar {
+    cube: Mesh,
+}
+
+impl Avatar {
+    pub fn new() -> Self {
+        let (mut v, mut n, mut c) = (Vec::new(), Vec::new(), Vec::new());
+        push_box(&mut v, &mut n, &mut c, [-0.5; 3], [1.0; 3], WHITE);
+        let uv = solid_uvs(v.len() / 3);
+        Self {
+            cube: Mesh::new(&v, Some(&uv), Some(&n), Some(&c)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &self,
+        shader: &Shader,
+        atlas: &renderer::Texture2D,
+        mvp: &Mat4,
+        skin: u8,
+        position: Vec3,
+        yaw: f32,
+        pitch: f32,
+        speed: f32,
+        time: f32,
+        crouch: f32,
+        attack: f32,
+        light: glam::Vec4,
+        held: Option<&Mesh>,
+    ) {
+        shader.bind();
+        atlas.bind(0);
+        shader.set_mat4(shader.get_uniform_location("uMVP"), mvp);
+        shader.set_vec4(shader.get_uniform_location("uColor"), light);
+        let base = Mat4::from_translation(position) * Mat4::from_rotation_y(yaw);
+        let (pants, shirt) = body_colors(skin);
+        let skin_color = hud::skin_preview_color(skin);
+        let part = |parent: Mat4, center: Vec3, size: Vec3, color| {
+            shader.set_mat4(
+                shader.get_uniform_location("uModel"),
+                &(parent * Mat4::from_translation(center) * Mat4::from_scale(size)),
+            );
+            shader.set_vec4(shader.get_uniform_location("colDiffuse"), tint(color));
+            self.cube.draw();
+        };
+        let lean = 28.0_f32.to_radians() * crouch;
+        let torso = base
+            * Mat4::from_translation(Vec3::new(0.0, 0.75 - crouch * 0.125, -crouch * 0.08))
+            * Mat4::from_rotation_x(lean);
+        part(
+            torso,
+            Vec3::new(0.0, 0.3, 0.0),
+            Vec3::new(0.5, 0.6, 0.25),
+            shirt,
+        );
+        let head = torso
+            * Mat4::from_translation(Vec3::new(0.0, 0.6, 0.0))
+            * Mat4::from_rotation_x(-pitch - lean);
+        part(
+            head,
+            Vec3::new(0.0, 0.225, 0.0),
+            Vec3::splat(0.45),
+            skin_color,
+        );
+        part(
+            head,
+            Vec3::new(0.0, 0.415, -0.015),
+            Vec3::new(0.455, 0.08, 0.43),
+            [65, 40, 25, 255],
+        );
+        for side in [-1.0, 1.0] {
+            part(
+                head,
+                Vec3::new(side * 0.10, 0.25, 0.228),
+                Vec3::new(0.10, 0.055, 0.012),
+                [240, 240, 235, 255],
+            );
+            part(
+                head,
+                Vec3::new(side * 0.08, 0.25, 0.236),
+                Vec3::new(0.035, 0.055, 0.012),
+                [45, 55, 85, 255],
+            );
+        }
+        part(
+            head,
+            Vec3::new(0.0, 0.11, 0.228),
+            Vec3::new(0.13, 0.035, 0.012),
+            [95, 55, 35, 255],
+        );
+        let stride = leg_swing(speed, time);
+        for side in [-1.0, 1.0] {
+            let leg = base
+                * Mat4::from_translation(Vec3::new(side * 0.13, 0.75, 0.0))
+                * Mat4::from_rotation_x(side * stride);
+            part(
+                leg,
+                Vec3::new(0.0, -0.375, 0.0),
+                Vec3::new(0.24, 0.75, 0.25),
+                pants,
+            );
+            let punch = if side < 0.0 {
+                (attack * std::f32::consts::PI).sin() * 1.5
+            } else {
+                0.0
+            };
+            let arm = torso
+                * Mat4::from_translation(Vec3::new(side * 0.375, 0.53, 0.0))
+                * Mat4::from_rotation_x(
+                    -side * stride
+                        - punch
+                        - lean
+                        - if held.is_some() && side < 0.0 {
+                            0.3
+                        } else {
+                            0.0
+                        },
+                );
+            part(
+                arm,
+                Vec3::new(0.0, -0.1, 0.0),
+                Vec3::new(0.24, 0.2, 0.25),
+                shirt,
+            );
+            part(
+                arm,
+                Vec3::new(0.0, -0.4, 0.0),
+                Vec3::new(0.24, 0.4, 0.25),
+                skin_color,
+            );
+            if side < 0.0 {
+                if let Some(mesh) = held {
+                    shader.set_mat4(
+                        shader.get_uniform_location("uModel"),
+                        &(arm * Mat4::from_translation(Vec3::new(0.0, -0.62, 0.05))),
+                    );
+                    shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
+                    mesh.draw();
+                }
+            }
+        }
+        shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+        shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
+        shader.set_vec4(shader.get_uniform_location("uColor"), glam::Vec4::ZERO);
+    }
+}
+
 /// Hip angle for the walk cycle. Legs are still when the player is.
 pub fn leg_swing(speed: f32, time: f32) -> f32 {
     (time * 8.0).sin() * 0.45 * (speed / 4.0).clamp(0.0, 1.0)
+}
+
+fn crouched_torso(amount: f32) -> Mat4 {
+    // Bedrock's sneak animation bends the body by 28 degrees. Our body
+    // faces +Z, so positive X rotation moves the shoulders forward.
+    let amount = amount.clamp(0.0, 1.0);
+    Mat4::from_translation(Vec3::Y * HIP_HEIGHT)
+        * Mat4::from_rotation_x(28.0_f32.to_radians() * amount)
+        * Mat4::from_translation(Vec3::new(0.0, -HIP_HEIGHT - amount * 2.0 / 16.0, 0.0))
+}
+
+#[cfg(test)]
+#[test]
+fn sneak_pose_bends_torso_and_lowers_shoulder() {
+    let shoulder = Vec3::new(0.0, TORSO_TOP, 0.0);
+    assert_eq!(crouched_torso(0.0), Mat4::IDENTITY);
+    let crouched = crouched_torso(1.0).transform_point3(shoulder);
+    assert!(crouched.y < shoulder.y);
+    assert!(crouched.z > shoulder.z);
+    assert!(
+        (crouched_torso(1.0).transform_vector3(Vec3::Y).dot(Vec3::Y) - 28.0_f32.to_radians().cos())
+            .abs()
+            < 1e-6
+    );
 }
 
 /// Draw the player's own torso and legs in world space, so looking down
@@ -300,6 +474,7 @@ pub fn draw_body(
     yaw: f32,
     speed: f32,
     time: f32,
+    crouch_amount: f32,
     light: glam::Vec4,
 ) {
     atlas.bind(0);
@@ -313,7 +488,7 @@ pub fn draw_body(
     // Body-local +Z is forward, and `look_dir` is (sin yaw, _, cos yaw), so
     // the yaw rotation applies directly rather than negated as for mobs.
     let base = Mat4::from_translation(player_pos) * Mat4::from_rotation_y(yaw);
-    shader.set_mat4(loc_model, &base);
+    shader.set_mat4(loc_model, &(base * crouched_torso(crouch_amount)));
     torso.draw();
     shader.set_vec4(loc_diff, tint(pants));
     let swing = leg_swing(speed, time);

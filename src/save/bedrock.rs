@@ -85,6 +85,7 @@ impl GameSave {
                     .flatten();
                 let mut chunk = imported.unwrap_or_else(|| {
                     let mut chunk = crate::chunk::Chunk::new(x, z, self.seed);
+                    chunk.generator_version = self.generator_version;
                     chunk.generate();
                     chunk
                 });
@@ -135,7 +136,19 @@ impl GameSave {
     }
     fn update_bedrock_metadata(&self, store: &WorldStore) -> io::Result<()> {
         store.update_metadata([
-            ("Time", NbtTag::Long((self.day_time * 20.0) as i64)),
+            (
+                "voxelpopuli:generator_version",
+                NbtTag::Int(self.generator_version as i32),
+            ),
+            (
+                "Time",
+                NbtTag::Long(
+                    self.day_count
+                        .saturating_mul(24000)
+                        .saturating_add((self.day_time * 20.0) as u64)
+                        .min(i64::MAX as u64) as i64,
+                ),
+            ),
             ("GameType", NbtTag::Int(i32::from(self.player.sandbox))),
             ("Difficulty", NbtTag::Int(self.difficulty as i32)),
         ])
@@ -149,8 +162,20 @@ impl GameSave {
                 Player::new(n::number(store.metadata.get("SpawnY")).unwrap_or(160.0) as f32);
             player.position.x = n::number(store.metadata.get("SpawnX")).unwrap_or(0.0) as f32 + 0.5;
             player.position.z = n::number(store.metadata.get("SpawnZ")).unwrap_or(0.0) as f32 + 0.5;
+            let mut world = World::simulation(store.seed);
+            if let Some(NbtTag::Long(ticks)) = store.metadata.get("Time") {
+                let ticks = (*ticks).max(0) as u64;
+                world.day_count = ticks / 24000;
+                world.day_time = (ticks % 24000) as f32 / 20.0;
+            }
+            world.generator_version = match store.metadata.get("voxelpopuli:generator_version") {
+                None => crate::chunk::GeneratorVersion::Legacy,
+                Some(NbtTag::Int(value)) => crate::chunk::GeneratorVersion::from_u32(*value as u32)
+                    .ok_or_else(|| n::invalid("Unsupported terrain generator"))?,
+                _ => return Err(n::invalid("Invalid terrain generator metadata")),
+            };
             Self::capture(
-                &World::simulation(store.seed),
+                &world,
                 &player,
                 &[None; INVENTORY_SLOT_COUNT],
                 Vec2::ZERO,

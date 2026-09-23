@@ -46,6 +46,9 @@ intentionally overwritten. Browser saves continue using the existing browser for
   currently remains in the extra session record.
 - Newly explored chunks use VoxelPopuli terrain generation. Minecraft can generate
   different terrain beyond the saved area; sharing a seed does not imply terrain parity.
+  The world's generator version is preserved during save and migration. New worlds
+  use the [expanded bee habitats](world-generation.md); older worlds keep their
+  original generation rules. Newly generated chunks carry native biome palettes.
 
 ## Validation
 

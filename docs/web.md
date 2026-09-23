@@ -34,14 +34,19 @@ See [GitHub's custom Pages workflow documentation](https://docs.github.com/en/pa
 
 ## Controls and saves
 
+F5 cycles first-person, rear third-person and front third-person while playing.
+With the game canvas focused, it switches perspective instead of reloading the page.
+
 Click **Click to play** after terrain loads. Desktop controls work in the
 browser: WASD, mouse look, Space to jump, Shift to sneak, Ctrl or double-tap W to sprint,
 left/right click to mine/place, E for inventory, 1–9 for the hotbar, and Esc
 to release the mouse and pause. Standard-mapped gamepads are supported during
 play. Use **Fullscreen** or F11 to expand the game.
 
-Worlds persist in IndexedDB in the current browser using VoxelPopuli's version 4
-save format with 16-bit block/item IDs. Versions 1–3 remain readable. Desktop
+Worlds persist in IndexedDB in the current browser using VoxelPopuli's version 7
+save format with 16-bit block/item IDs. Versions 1–6 remain readable. Existing
+worlds keep their original terrain generator; new worlds get the additional
+[bee habitats and trees](world-generation.md). Desktop
 worlds use native Bedrock storage; browser saves do not contain a Bedrock database.
 The game saves every 30 seconds, on pause, on **Save world**, and on
 **Save & Quit**. Wait for the saved confirmation before closing a tab: browsers

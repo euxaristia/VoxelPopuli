@@ -2030,6 +2030,168 @@ pub fn generate_atlas_data() -> Vec<u8> {
         }
     }
 
+    // Bee lifecycle tiles: original pixel art, row 14.
+    for tile in 0..9usize {
+        for y in 0..16usize {
+            for x in 0..16usize {
+                let pixel: [u8; 4] = match tile {
+                    0 | 1 if (6..11).contains(&x) && (2..7).contains(&y) => {
+                        if tile == 0 {
+                            [210, 48, 42, 255]
+                        } else {
+                            [246, 207, 50, 255]
+                        }
+                    }
+                    0 | 1
+                        if ((x == 8 || x == 7) && (6..15).contains(&y))
+                            || (y == 10 && (4..11).contains(&x)) =>
+                    {
+                        [56, 133, 48, 255]
+                    }
+                    0 | 1 => [0, 0, 0, 0],
+                    2 | 3 if y == 8 && (4..12).contains(&x) => [55, 35, 16, 255],
+                    2 | 3 => {
+                        if y % 4 == 0 {
+                            [118, 78, 33, 255]
+                        } else if tile == 2 {
+                            [205, 160, 67, 255]
+                        } else {
+                            [168, 120, 63, 255]
+                        }
+                    }
+                    4 if (2..14).contains(&x) && (3..13).contains(&y) => {
+                        if (x + y) % 4 == 0 {
+                            [133, 75, 20, 255]
+                        } else {
+                            [236, 165, 31, 255]
+                        }
+                    }
+                    5 | 6
+                        if (5..11).contains(&x) && (2..5).contains(&y)
+                            || (3..13).contains(&x) && (5..14).contains(&y) =>
+                    {
+                        if tile == 6 && y > 7 {
+                            [230, 164, 28, 255]
+                        } else {
+                            [169, 210, 214, 210]
+                        }
+                    }
+                    7 if x == y || x + y == 15 || ((3..7).contains(&y) && (x == 3 || x == 12)) => {
+                        [188, 195, 196, 255]
+                    }
+                    8 => {
+                        if y > 10 {
+                            [88, 53, 29, 255]
+                        } else if (5..12).contains(&x) {
+                            [242, 139, 29, 255]
+                        } else {
+                            [92, 69, 43, 255]
+                        }
+                    }
+                    _ => [0, 0, 0, 0],
+                };
+                let i = ((14 * 16 + y) * 256 + tile * 16 + x) * 4;
+                data[i..i + 4].copy_from_slice(&pixel);
+            }
+        }
+    }
+    // Habitat blocks occupy the remaining row 14 tiles and the start of row 15.
+    for tile in 0..17usize {
+        for y in 0..16usize {
+            for x in 0..16usize {
+                let noise = ((x * 17 + y * 31 + tile * 13) % 13) as u8;
+                let color = match tile {
+                    0 => {
+                        if (y == 3 || y == 11) && (x + y) % 7 < 4 {
+                            [45, 43, 40, 255]
+                        } else {
+                            [220 + noise, 217 + noise, 203 + noise, 255]
+                        }
+                    }
+                    3 => [83 + noise, 65 + noise, 42 + noise, 255],
+                    6 => [58 + noise, 38 + noise, 46 + noise, 255],
+                    1 | 4 | 7 => {
+                        if (x * 3 + y * 7) % 11 == 0 {
+                            [0, 0, 0, 0]
+                        } else if tile == 7 {
+                            [225 + noise, 152 + noise, 184 + noise, 255]
+                        } else if tile == 1 {
+                            [75 + noise, 135 + noise, 43 + noise, 255]
+                        } else {
+                            [53 + noise, 110 + noise, 43 + noise, 255]
+                        }
+                    }
+                    2 | 5 | 8 => {
+                        let edge = if y % 4 == 0 || (x + (y / 4) * 7) % 16 == 0 {
+                            25
+                        } else {
+                            0
+                        };
+                        let base: [u8; 3] = match tile {
+                            2 => [210, 190, 139],
+                            5 => [137, 65, 58],
+                            _ => [228, 174, 165],
+                        };
+                        [base[0] - edge, base[1] - edge, base[2] - edge, 255]
+                    }
+                    9 => {
+                        if x % 5 == 0 || y % 7 == 0 {
+                            [98 + noise, 76 + noise, 43 + noise, 255]
+                        } else {
+                            [42, 35, 25, 255]
+                        }
+                    }
+                    10 => [67 + noise, 64 + noise, 59 + noise, 255],
+                    11 => {
+                        if x == 7 || x == 8 || (y == 5 && (3..13).contains(&x)) {
+                            [70, 129, 37, 255]
+                        } else {
+                            [0, 0, 0, 0]
+                        }
+                    }
+                    12 => {
+                        if (3..13).contains(&x) && (1..11).contains(&y) {
+                            if (5..11).contains(&x) && (3..9).contains(&y) {
+                                [93, 63, 22, 255]
+                            } else {
+                                [247, 202, 32, 255]
+                            }
+                        } else if x == 7 || x == 8 {
+                            [70, 129, 37, 255]
+                        } else {
+                            [0, 0, 0, 0]
+                        }
+                    }
+                    13 => {
+                        if (x + y) % 7 < 3 && y > 10 {
+                            [248, 169 + noise, 193, 255]
+                        } else {
+                            [0, 0, 0, 0]
+                        }
+                    }
+                    14..=16 => {
+                        if (5..12).contains(&x) && (2..8).contains(&y) {
+                            match tile {
+                                14 => [69, 107, 230, 255],
+                                15 => [182, 110, 201, 255],
+                                _ => [238, 234, 217, 255],
+                            }
+                        } else if (x == 7 || x == 8) && y >= 7 {
+                            [54, 130, 45, 255]
+                        } else {
+                            [0, 0, 0, 0]
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+                let slot = tile + 9;
+                let px = (slot % 16) * 16 + x;
+                let py = (14 + slot / 16) * 16 + y;
+                let offset = (py * 256 + px) * 4;
+                data[offset..offset + 4].copy_from_slice(&color);
+            }
+        }
+    }
     data
 }
 
