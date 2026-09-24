@@ -24,7 +24,7 @@ jobs:
       - name: Test browser storage and input
         run: node --test web/*.test.mjs
       - name: Install WASM packager
-        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
       - name: Build browser game
         run: python3 scripts/build-web.py
       - uses: actions/upload-pages-artifact@v4

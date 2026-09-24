@@ -110,11 +110,15 @@ impl World {
 
 impl World {
     pub(super) fn mob_in_water(&self, pos: Vec3, hw: f32, height: f32) -> bool {
-        for x in [pos.x - hw * 0.8, pos.x, pos.x + hw * 0.8] {
-            for z in [pos.z - hw * 0.8, pos.z, pos.z + hw * 0.8] {
-                for y in [pos.y + 0.05, pos.y + height * 0.8] {
-                    if self.get_block(x.floor() as i32, y.floor() as i32, z.floor() as i32)
-                        != BlockType::Water
+        let min = pos - Vec3::new(hw, 0.0, hw) + Vec3::splat(0.001);
+        let max = pos + Vec3::new(hw, height, hw) - Vec3::splat(0.001);
+        for x in min.x.floor() as i32..=max.x.floor() as i32 {
+            for z in min.z.floor() as i32..=max.z.floor() as i32 {
+                for y in min.y.floor() as i32..=max.y.floor() as i32 {
+                    let surface = y as f32
+                        + crate::chunk::water_render_height(self.get_liquid_level(x, y, z));
+                    if self.get_block(x, y, z) != BlockType::Water
+                        || max.y.min(y as f32 + 1.0) > surface
                     {
                         return false;
                     }
@@ -368,6 +372,119 @@ impl World {
 #[cfg(test)]
 mod collision_tests {
     use super::*;
+
+    fn pool() -> World {
+        let mut world = World::simulation(42);
+        let mut chunk = Chunk::new(0, 0, 42);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set_block(x, 59, z, BlockType::Stone);
+                for y in 60..64 {
+                    chunk.set_block(x, y, z, BlockType::Water);
+                }
+            }
+        }
+        world.insert_chunk(chunk);
+        world
+    }
+
+    #[test]
+    fn aquatic_spawn_requires_the_entire_body_underwater() {
+        for kind in MobKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| k.species().motion == Motion::Swim)
+        {
+            let mut world = pool();
+            let height = kind.species().height;
+            let pos = Vec3::new(8.0, 64.0 - height * 0.9, 8.0);
+            assert!(world.spawn_mob(kind, pos, 0).is_err(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn partially_submerged_swimmers_sink_back_into_water() {
+        for kind in MobKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| k.species().motion == Motion::Swim)
+        {
+            let mut world = pool();
+            let pos = Vec3::new(8.0, 63.75, 8.0);
+            world.mobs.push(Mob::new(kind, pos, pos, 0));
+            for _ in 0..90 {
+                world.update_mobs(Vec3::new(8.0, 70.0, 8.0), 1.0 / 60.0, BlockType::Air);
+            }
+            let mob = &world.mobs[0];
+            assert!(
+                world.mob_in_water(mob.position, mob.half_width(), mob.height()),
+                "{kind:?}: {:?}",
+                mob.position
+            );
+        }
+    }
+
+    #[test]
+    fn shallow_flow_does_not_count_as_full_water() {
+        let mut world = pool();
+        world.set_liquid_level(8, 63, 8, 8);
+        assert!(!world.mob_in_water(Vec3::new(8.5, 63.5, 8.5), 0.2, 0.3));
+    }
+
+    #[test]
+    fn aquatic_animals_fall_when_their_pool_is_drained() {
+        for kind in MobKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| matches!(k.species().motion, Motion::Swim | Motion::Amphibious))
+        {
+            let mut world = pool();
+            let pos = Vec3::new(8.0, 62.0, 8.0);
+            world.mobs.push(Mob::new(kind, pos, pos, 0));
+            for x in 0..16 {
+                for z in 0..16 {
+                    for y in 60..64 {
+                        world.set_block(x, y, z, BlockType::Air);
+                    }
+                }
+            }
+            for _ in 0..20 {
+                world.update_mobs(Vec3::new(8.0, 70.0, 8.0), 1.0 / 60.0, BlockType::Air);
+            }
+            assert!(world.mobs[0].position.y < 61.0, "{kind:?}");
+            assert!(world.mobs[0].position.y >= 60.0, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn swimmers_stay_submerged_at_the_surface_and_shore() {
+        for kind in MobKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| k.species().motion == Motion::Swim)
+        {
+            let mut world = pool();
+            for x in 10..16 {
+                for z in 0..16 {
+                    for y in 60..64 {
+                        world.set_block(x, y, z, BlockType::Air);
+                    }
+                }
+            }
+            let pos = Vec3::new(8.0, 64.0 - kind.species().height - 0.01, 8.0);
+            world.spawn_mob(kind, pos, 0).unwrap();
+            world.mobs[0].home.y = 70.0;
+            for _ in 0..300 {
+                world.update_mobs(Vec3::new(12.0, 70.0, 8.0), 1.0 / 60.0, BlockType::Air);
+                let mob = &world.mobs[0];
+                assert!(
+                    world.mob_in_water(mob.position, mob.half_width(), mob.height()),
+                    "{kind:?}: {:?}",
+                    mob.position
+                );
+            }
+        }
+    }
     fn cow(p: Vec3) -> Mob {
         Mob::new(MobKind::Cow, p, p, 0)
     }

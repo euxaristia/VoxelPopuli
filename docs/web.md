@@ -12,7 +12,7 @@ dependency once:
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.126 --locked
+cargo install wasm-bindgen-cli --version 0.2.128 --locked
 python scripts/build-web.py
 python -m http.server 8080 --bind 127.0.0.1 --directory target/web
 ```

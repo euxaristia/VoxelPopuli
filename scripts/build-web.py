@@ -6,7 +6,7 @@ import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 OUT = ROOT / "target" / "web"
-VERSION = "0.2.126"
+VERSION = "0.2.128"
 
 
 def run(*args):

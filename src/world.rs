@@ -2202,10 +2202,10 @@ impl World {
     }
 
     fn animal_in_water(&self, mob: &Mob) -> bool {
-        matches!(
-            self.block_at_feet(mob.position + Vec3::new(0.0, 0.2, 0.0)),
-            BlockType::Water
-        )
+        let p = mob.position + Vec3::Y * (mob.height() * 0.5);
+        let (x, y, z) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+        self.get_block(x, y, z) == BlockType::Water
+            && p.y < y as f32 + crate::chunk::water_render_height(self.get_liquid_level(x, y, z))
     }
 
     fn grass_under(&self, pos: Vec3) -> bool {
@@ -2696,8 +2696,11 @@ impl World {
             mob.velocity.x = mob.yaw.cos() * mob.walk_speed;
             mob.velocity.z = mob.yaw.sin() * mob.walk_speed;
             let motion = mob.kind.species().motion;
-            let swimming =
-                matches!(motion, Motion::Swim | Motion::Amphibious) && self.animal_in_water(mob);
+            let swimming = match motion {
+                Motion::Swim => self.mob_in_water(mob.position, mob.half_width(), mob.height()),
+                Motion::Amphibious => self.animal_in_water(mob),
+                _ => false,
+            };
             if swimming || motion == Motion::Fly {
                 let target_y = if mob.is_hostile() && player_dist < 16.0 {
                     player_pos.y + if motion == Motion::Fly { 0.8 } else { 0.0 }
