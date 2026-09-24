@@ -397,10 +397,11 @@ pub fn shader_lighting(
         ("hidden-sun", 1.0, 0, 0.0, 3),
         ("hidden-sun-no-glare", 1.0, 0, 0.0, 4),
     ] {
-        let transform = Mat4::from_translation(Vec3::new(0.0, 130.0, -distance - 0.5));
+        let probe_height = if name == "sealed-cave" { 0.0 } else { 130.0 };
+        let transform = Mat4::from_translation(Vec3::new(0.0, probe_height, -distance - 0.5));
         let mut uniforms = DeferredUniforms {
             inv_view_proj: transform.to_cols_array(),
-            camera_pos_exposure: [0.0, 130.0, 0.0, 1.0],
+            camera_pos_exposure: [0.0, probe_height, 0.0, 1.0],
             sun_direction_illuminance: [0.0, -1.0, 0.0, std::f32::consts::PI],
             moon_direction_illuminance: [0.0; 4],
             ambient_color_illuminance: [1.0, 1.0, 1.0, std::f32::consts::PI],
