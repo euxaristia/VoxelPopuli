@@ -219,6 +219,48 @@ fn body_colors(selected_skin: u8) -> ([u8; 4], [u8; 4]) {
     ([64, 64, 128, 255], shirt)
 }
 
+/// Authentic armor material colors for rendering worn armor layers.
+pub fn armor_color(block: BlockType) -> Option<[u8; 4]> {
+    match block {
+        BlockType::LeatherHelmet
+        | BlockType::LeatherChestplate
+        | BlockType::LeatherLeggings
+        | BlockType::LeatherBoots => Some([145, 95, 55, 255]),
+
+        BlockType::IronHelmet
+        | BlockType::IronChestplate
+        | BlockType::IronLeggings
+        | BlockType::IronBoots => Some([210, 215, 220, 255]),
+
+        BlockType::GoldHelmet
+        | BlockType::GoldChestplate
+        | BlockType::GoldLeggings
+        | BlockType::GoldBoots => Some([255, 215, 50, 255]),
+
+        BlockType::DiamondHelmet
+        | BlockType::DiamondChestplate
+        | BlockType::DiamondLeggings
+        | BlockType::DiamondBoots => Some([75, 220, 225, 255]),
+
+        _ => None,
+    }
+}
+
+/// Compute mouse-aware look angles for the inventory paper doll following Bedrock Edition conventions.
+///
+/// Returns `(body_yaw, head_yaw, head_pitch)` in radians:
+/// - `body_yaw`: turns slightly toward cursor (clamped to ±0.45 rad / ~25°).
+/// - `head_yaw`: turns further toward cursor (clamped to ±0.75 rad / ~43°).
+/// - `head_pitch`: tilts up when cursor is above center, down when below (clamped to ±0.55 rad / ~31°).
+pub fn doll_look_angles(dx: f32, dy: f32) -> (f32, f32, f32) {
+    let look_x = (dx / 50.0).atan();
+    let look_y = (dy / 50.0).atan();
+    let body_yaw = (look_x * 0.35).clamp(-0.45, 0.45);
+    let head_yaw = (look_x * 0.65).clamp(-0.75, 0.75);
+    let head_pitch = (-look_y * 0.55).clamp(-0.55, 0.55);
+    (body_yaw, head_yaw, head_pitch)
+}
+
 /// Front and two sides. No top face: that is the lid you see looking down.
 fn push_torso(v: &mut Vec<f32>, n: &mut Vec<f32>, c: &mut Vec<u8>, color: [u8; 4]) {
     let x0 = -TORSO_HALF_W;
@@ -424,6 +466,227 @@ impl Avatar {
                 }
             }
         }
+        shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
+        shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
+        shader.set_vec4(shader.get_uniform_location("uColor"), glam::Vec4::ZERO);
+    }
+
+    /// Draw the interactive 3D mouse-aware player model for the inventory preview (paper doll).
+    ///
+    /// Following Bedrock Edition `live_player_renderer` / `look_at_target_ui`:
+    /// - Body rotates partially toward cursor (`body_yaw`).
+    /// - Head rotates further toward cursor (`head_yaw`) and tilts vertically (`head_pitch`).
+    /// - Equips worn armor pieces (helmet, chestplate, leggings, boots) on respective limbs.
+    /// - Holds the active hotbar item in the right hand.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_doll(
+        &self,
+        shader: &Shader,
+        atlas: &renderer::Texture2D,
+        mvp: &Mat4,
+        skin: u8,
+        body_yaw: f32,
+        head_yaw: f32,
+        head_pitch: f32,
+        held: Option<&Mesh>,
+        armor: [Option<BlockType>; 4],
+    ) {
+        shader.bind();
+        atlas.bind(0);
+        shader.set_mat4(shader.get_uniform_location("uMVP"), mvp);
+        shader.set_vec4(
+            shader.get_uniform_location("uColor"),
+            glam::Vec4::new(1.0, 1.0, 1.0, 1.0),
+        );
+
+        // Center player feet around -0.92 so the ~1.85m tall model is vertically centered
+        let base =
+            Mat4::from_translation(Vec3::new(0.0, -0.92, 0.0)) * Mat4::from_rotation_y(body_yaw);
+        let (pants, shirt) = body_colors(skin);
+        let skin_color = hud::skin_preview_color(skin);
+
+        let part = |parent: Mat4, center: Vec3, size: Vec3, color| {
+            shader.set_mat4(
+                shader.get_uniform_location("uModel"),
+                &(parent * Mat4::from_translation(center) * Mat4::from_scale(size)),
+            );
+            shader.set_vec4(shader.get_uniform_location("colDiffuse"), tint(color));
+            self.cube.draw();
+        };
+
+        // Torso
+        let torso = base * Mat4::from_translation(Vec3::new(0.0, 0.75, 0.0));
+        part(
+            torso,
+            Vec3::new(0.0, 0.3, 0.0),
+            Vec3::new(0.5, 0.6, 0.25),
+            shirt,
+        );
+
+        // Armor: Chestplate over torso
+        let chest_color = armor[1].and_then(armor_color);
+        if let Some(color) = chest_color {
+            part(
+                torso,
+                Vec3::new(0.0, 0.3, 0.0),
+                Vec3::new(0.55, 0.62, 0.29),
+                color,
+            );
+        }
+
+        // Head: rotates relative to torso
+        let head_yaw_rel = head_yaw - body_yaw;
+        let head = torso
+            * Mat4::from_translation(Vec3::new(0.0, 0.6, 0.0))
+            * Mat4::from_rotation_y(head_yaw_rel)
+            * Mat4::from_rotation_x(-head_pitch);
+
+        part(
+            head,
+            Vec3::new(0.0, 0.225, 0.0),
+            Vec3::splat(0.45),
+            skin_color,
+        );
+        // Hair cap
+        part(
+            head,
+            Vec3::new(0.0, 0.415, -0.015),
+            Vec3::new(0.455, 0.08, 0.43),
+            [65, 40, 25, 255],
+        );
+        // Eyes and mouth
+        for side in [-1.0, 1.0] {
+            part(
+                head,
+                Vec3::new(side * 0.10, 0.25, 0.228),
+                Vec3::new(0.10, 0.055, 0.012),
+                [240, 240, 235, 255],
+            );
+            part(
+                head,
+                Vec3::new(side * 0.08, 0.25, 0.236),
+                Vec3::new(0.035, 0.055, 0.012),
+                [45, 55, 85, 255],
+            );
+        }
+        part(
+            head,
+            Vec3::new(0.0, 0.11, 0.228),
+            Vec3::new(0.13, 0.035, 0.012),
+            [95, 55, 35, 255],
+        );
+
+        // Armor: Helmet on head (cap, back, sides, and brow visor)
+        if let Some(color) = armor[0].and_then(armor_color) {
+            // Helmet crown / top
+            part(
+                head,
+                Vec3::new(0.0, 0.435, 0.0),
+                Vec3::new(0.49, 0.07, 0.49),
+                color,
+            );
+            // Helmet back
+            part(
+                head,
+                Vec3::new(0.0, 0.225, -0.225),
+                Vec3::new(0.49, 0.43, 0.05),
+                color,
+            );
+            // Helmet sides
+            for side in [-1.0, 1.0] {
+                part(
+                    head,
+                    Vec3::new(side * 0.225, 0.225, 0.0),
+                    Vec3::new(0.05, 0.43, 0.49),
+                    color,
+                );
+            }
+            // Helmet visor / forehead brow
+            part(
+                head,
+                Vec3::new(0.0, 0.38, 0.225),
+                Vec3::new(0.49, 0.10, 0.05),
+                color,
+            );
+        }
+
+        // Legs
+        let leg_color = armor[2].and_then(armor_color);
+        let boot_color = armor[3].and_then(armor_color);
+        for side in [-1.0, 1.0] {
+            let leg = base * Mat4::from_translation(Vec3::new(side * 0.13, 0.75, 0.0));
+            part(
+                leg,
+                Vec3::new(0.0, -0.375, 0.0),
+                Vec3::new(0.24, 0.75, 0.25),
+                pants,
+            );
+            // Leggings armor
+            if let Some(color) = leg_color {
+                part(
+                    leg,
+                    Vec3::new(0.0, -0.25, 0.0),
+                    Vec3::new(0.27, 0.50, 0.28),
+                    color,
+                );
+            }
+            // Boots armor
+            if let Some(color) = boot_color {
+                part(
+                    leg,
+                    Vec3::new(0.0, -0.62, 0.02),
+                    Vec3::new(0.28, 0.26, 0.30),
+                    color,
+                );
+            }
+
+            // Arms
+            let arm_rot = if held.is_some() && side < 0.0 {
+                -0.35
+            } else {
+                -0.05
+            };
+            let arm = torso
+                * Mat4::from_translation(Vec3::new(side * 0.375, 0.53, 0.0))
+                * Mat4::from_rotation_z(side * 0.035)
+                * Mat4::from_rotation_x(arm_rot);
+
+            part(
+                arm,
+                Vec3::new(0.0, -0.1, 0.0),
+                Vec3::new(0.24, 0.2, 0.25),
+                shirt,
+            );
+            part(
+                arm,
+                Vec3::new(0.0, -0.4, 0.0),
+                Vec3::new(0.24, 0.4, 0.25),
+                skin_color,
+            );
+
+            // Chestplate pauldrons / shoulder armor
+            if let Some(color) = chest_color {
+                part(
+                    arm,
+                    Vec3::new(0.0, -0.08, 0.0),
+                    Vec3::new(0.27, 0.22, 0.28),
+                    color,
+                );
+            }
+
+            // Held item in right hand (side < 0.0)
+            if side < 0.0
+                && let Some(mesh) = held
+            {
+                shader.set_mat4(
+                    shader.get_uniform_location("uModel"),
+                    &(arm * Mat4::from_translation(Vec3::new(0.0, -0.62, 0.05))),
+                );
+                shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
+                mesh.draw();
+            }
+        }
+
         shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
         shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
         shader.set_vec4(shader.get_uniform_location("uColor"), glam::Vec4::ZERO);
@@ -1281,5 +1544,88 @@ mod tests {
         }
         swing.update(0.1, false);
         assert_eq!(swing.amount(), 0.0);
+    }
+
+    #[test]
+    fn doll_look_angles_track_mouse_direction_and_clamp() {
+        // Center position: straight forward
+        let (body_yaw, head_yaw, head_pitch) = doll_look_angles(0.0, 0.0);
+        assert_eq!(body_yaw, 0.0);
+        assert_eq!(head_yaw, 0.0);
+        assert_eq!(head_pitch, 0.0);
+
+        // Cursor to the right: positive yaw, head turns further than body
+        let (body_r, head_r, _) = doll_look_angles(50.0, 0.0);
+        assert!(body_r > 0.0, "body must turn right");
+        assert!(head_r > body_r, "head must turn further right than body");
+
+        // Cursor to the left: negative yaw, head turns further left than body
+        let (body_l, head_l, _) = doll_look_angles(-50.0, 0.0);
+        assert!(body_l < 0.0, "body must turn left");
+        assert!(head_l < body_l, "head must turn further left than body");
+        assert_eq!(body_r, -body_l);
+        assert_eq!(head_r, -head_l);
+
+        // Cursor above: positive pitch (head tilts up)
+        let (_, _, pitch_up) = doll_look_angles(0.0, -50.0);
+        assert!(pitch_up > 0.0, "head must tilt up when cursor is above");
+
+        // Cursor below: negative pitch (head tilts down)
+        let (_, _, pitch_down) = doll_look_angles(0.0, 50.0);
+        assert!(pitch_down < 0.0, "head must tilt down when cursor is below");
+        assert_eq!(pitch_up, -pitch_down);
+
+        // Extreme offsets: angles must clamp within physiological bounds
+        let (body_max, head_max, pitch_max) = doll_look_angles(10000.0, -10000.0);
+        assert!(
+            (body_max - 0.45).abs() < 1e-4,
+            "body yaw must clamp to ~25 degrees"
+        );
+        assert!(
+            (head_max - 0.75).abs() < 1e-4,
+            "head yaw must clamp to ~43 degrees"
+        );
+        assert!(
+            (pitch_max - 0.55).abs() < 1e-4,
+            "head pitch must clamp to ~31 degrees"
+        );
+    }
+
+    #[test]
+    fn armor_colors_map_all_armor_types() {
+        assert_eq!(
+            armor_color(BlockType::LeatherHelmet),
+            Some([145, 95, 55, 255])
+        );
+        assert_eq!(
+            armor_color(BlockType::LeatherChestplate),
+            Some([145, 95, 55, 255])
+        );
+        assert_eq!(
+            armor_color(BlockType::LeatherLeggings),
+            Some([145, 95, 55, 255])
+        );
+        assert_eq!(
+            armor_color(BlockType::LeatherBoots),
+            Some([145, 95, 55, 255])
+        );
+
+        assert_eq!(
+            armor_color(BlockType::IronHelmet),
+            Some([210, 215, 220, 255])
+        );
+        assert_eq!(
+            armor_color(BlockType::GoldChestplate),
+            Some([255, 215, 50, 255])
+        );
+        assert_eq!(
+            armor_color(BlockType::DiamondLeggings),
+            Some([75, 220, 225, 255])
+        );
+
+        // Non-armor blocks have no armor color
+        assert_eq!(armor_color(BlockType::Dirt), None);
+        assert_eq!(armor_color(BlockType::DiamondSword), None);
+        assert_eq!(armor_color(BlockType::Air), None);
     }
 }

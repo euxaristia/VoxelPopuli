@@ -617,10 +617,25 @@ pub fn inv_click(
         }
         return;
     }
-    // Armor slots: simple swap for now
+    // Armor slots: swap or place if cursor matches expected armor slot
     if (36..40).contains(&slot) {
         if !shift {
-            std::mem::swap(&mut slots[slot], cursor);
+            let expected_slot = match slot {
+                36 => Some(item::ArmorSlot::Helmet),
+                37 => Some(item::ArmorSlot::Chestplate),
+                38 => Some(item::ArmorSlot::Leggings),
+                39 => Some(item::ArmorSlot::Boots),
+                _ => None,
+            };
+            if let Some(c) = *cursor {
+                if let Some(prop) = item::armor_properties(c.block) {
+                    if Some(prop.slot) == expected_slot {
+                        std::mem::swap(&mut slots[slot], cursor);
+                    }
+                }
+            } else {
+                std::mem::swap(&mut slots[slot], cursor);
+            }
         }
         return;
     }
@@ -733,8 +748,7 @@ pub fn slot_rect(slot: usize, px: f32, py: f32) -> (f32, f32, f32, f32) {
 }
 
 pub fn slot_at_pos(mx: f32, my: f32, px: f32, py: f32) -> Option<usize> {
-    for s in (0..45).filter(|&s| !(36..40).contains(&s)) {
-        // skip armor for now
+    for s in 0..45 {
         let (x, y, w, h) = slot_rect(s, px, py);
         if mx >= x && mx < x + w && my >= y && my < y + h {
             return Some(s);
@@ -1208,5 +1222,49 @@ mod tests {
         );
         assert_eq!(world.get_block(30, 61, 30), BlockType::Air);
         assert_eq!(inv[0].unwrap().count, 3);
+    }
+
+    #[test]
+    fn test_armor_slot_detection_and_equipping() {
+        let px = 100.0f32;
+        let py = 50.0f32;
+
+        // Verify armor slots 36..=39 are hit-detected by slot_at_pos
+        for i in 0..4 {
+            let (sx, sy, sw, sh) = slot_rect(36 + i, px, py);
+            let hit = slot_at_pos(sx + sw * 0.5, sy + sh * 0.5, px, py);
+            assert_eq!(hit, Some(36 + i), "armor slot {} must be detected", 36 + i);
+        }
+
+        let mut inv = [None; INVENTORY_SLOT_COUNT];
+        let mut cursor = Some(ItemStack::new(BlockType::DiamondHelmet, 1));
+
+        // Placing matching helmet in helmet slot (36) succeeds
+        inv_click(&mut inv, &mut cursor, 36, false, false);
+        assert_eq!(inv[36].map(|s| s.block), Some(BlockType::DiamondHelmet));
+        assert!(cursor.is_none());
+
+        // Placing non-armor in chestplate slot (37) fails
+        cursor = Some(ItemStack::new(BlockType::Dirt, 64));
+        inv_click(&mut inv, &mut cursor, 37, false, false);
+        assert!(inv[37].is_none());
+        assert_eq!(cursor.map(|s| s.block), Some(BlockType::Dirt));
+
+        // Placing wrong armor type (boots in chestplate slot 37) fails
+        cursor = Some(ItemStack::new(BlockType::IronBoots, 1));
+        inv_click(&mut inv, &mut cursor, 37, false, false);
+        assert!(inv[37].is_none());
+        assert_eq!(cursor.map(|s| s.block), Some(BlockType::IronBoots));
+
+        // Placing correct chestplate in slot 37 succeeds
+        cursor = Some(ItemStack::new(BlockType::IronChestplate, 1));
+        inv_click(&mut inv, &mut cursor, 37, false, false);
+        assert_eq!(inv[37].map(|s| s.block), Some(BlockType::IronChestplate));
+        assert!(cursor.is_none());
+
+        // Clicking equipped slot with empty cursor picks it back up
+        inv_click(&mut inv, &mut cursor, 36, false, false);
+        assert!(inv[36].is_none());
+        assert_eq!(cursor.map(|s| s.block), Some(BlockType::DiamondHelmet));
     }
 }

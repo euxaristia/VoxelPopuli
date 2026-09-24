@@ -2818,94 +2818,155 @@ async fn run() {
                 sh,
             );
 
-            // ── Player silhouette (left side of upper section)
+            let (mx, my) = inventory_cursor(
+                last_cursor_pos,
+                window.get_size(),
+                window.get_framebuffer_size(),
+            );
+
+            // ── 3D Mouse-Aware Player Doll (Bedrock style)
             let plx = px + 50.0;
             let ply = py + 10.0;
-            draw_rect(&ui_shader, plx, ply, 90.0, 140.0, [85, 75, 65, 120], sw, sh); // bg
-            // head
+            let pw_doll = 90.0f32;
+            let ph_doll = 140.0f32;
+
+            // Inset background box with beveled borders
             draw_rect(
                 &ui_shader,
-                plx + 20.0,
-                ply + 4.0,
-                50.0,
-                50.0,
-                [140, 95, 65, 255],
+                plx,
+                ply,
+                pw_doll,
+                ph_doll,
+                [45, 40, 36, 255],
                 sw,
                 sh,
             );
             draw_rect(
                 &ui_shader,
-                plx + 24.0,
-                ply + 14.0,
-                14.0,
-                10.0,
-                [50, 50, 50, 180],
-                sw,
-                sh,
-            ); // eyes
-            draw_rect(
-                &ui_shader,
-                plx + 52.0,
-                ply + 14.0,
-                14.0,
-                10.0,
-                [50, 50, 50, 180],
-                sw,
-                sh,
-            );
-            // torso
-            draw_rect(
-                &ui_shader,
-                plx + 22.0,
-                ply + 56.0,
-                46.0,
-                40.0,
-                [65, 95, 170, 255],
-                sw,
-                sh,
-            );
-            // arms
-            draw_rect(
-                &ui_shader,
-                plx + 6.0,
-                ply + 56.0,
-                14.0,
-                38.0,
-                [65, 95, 170, 255],
+                plx,
+                ply,
+                pw_doll,
+                2.0,
+                [25, 22, 20, 255],
                 sw,
                 sh,
             );
             draw_rect(
                 &ui_shader,
-                plx + 70.0,
-                ply + 56.0,
-                14.0,
-                38.0,
-                [65, 95, 170, 255],
-                sw,
-                sh,
-            );
-            // legs
-            draw_rect(
-                &ui_shader,
-                plx + 22.0,
-                ply + 98.0,
-                20.0,
-                40.0,
-                [50, 60, 140, 255],
+                plx,
+                ply,
+                2.0,
+                ph_doll,
+                [25, 22, 20, 255],
                 sw,
                 sh,
             );
             draw_rect(
                 &ui_shader,
-                plx + 48.0,
-                ply + 98.0,
-                20.0,
-                40.0,
-                [50, 60, 140, 255],
+                plx,
+                ply + ph_doll - 1.0,
+                pw_doll,
+                1.0,
+                [85, 75, 68, 255],
                 sw,
                 sh,
             );
+            draw_rect(
+                &ui_shader,
+                plx + pw_doll - 1.0,
+                ply,
+                1.0,
+                ph_doll,
+                [85, 75, 68, 255],
+                sw,
+                sh,
+            );
+
+            // Compute mouse-aware look angles (Bedrock live_player_renderer / look_at_target_ui)
+            let doll_head_x = plx + pw_doll * 0.5;
+            let doll_head_y = ply + 42.0;
+            let dx = mx - doll_head_x;
+            let dy = my - doll_head_y;
+            let (body_yaw, head_yaw, head_pitch) = hand::doll_look_angles(dx, dy);
+
+            // Set up orthographic view-projection mapping onto [plx, ply, pw_doll, ph_doll]
+            let aspect = pw_doll / ph_doll;
+            let ortho = Mat4::orthographic_rh(-aspect * 1.05, aspect * 1.05, -1.05, 1.05, 0.5, 6.0);
+            let view =
+                Mat4::look_at_rh(Vec3::new(0.0, 0.0, 3.0), Vec3::new(0.0, 0.0, 0.0), Vec3::Y);
+            let proj_view = ortho * view;
+            let ndc_cx = ((plx + pw_doll * 0.5) / sw) * 2.0 - 1.0;
+            let ndc_cy = 1.0 - ((ply + ph_doll * 0.5) / sh) * 2.0;
+            let doll_mvp = Mat4::from_translation(Vec3::new(ndc_cx, ndc_cy, 0.0))
+                * Mat4::from_scale(Vec3::new(pw_doll / sw, ph_doll / sh, 1.0))
+                * proj_view;
+
+            // Prepare held item mesh from active hotbar slot
+            let held_block = inv_slots[player.selected_slot].map(|s| s.block);
+            let held_mesh = if let Some(block) = held_block.filter(|b| *b != BlockType::Air) {
+                if held_item_mesh
+                    .as_ref()
+                    .is_none_or(|(cached, _)| *cached != block)
+                {
+                    held_item_mesh = Some((block, hand::build_item_mesh(block)));
+                }
+                held_item_mesh.as_ref().map(|(_, mesh)| mesh)
+            } else {
+                None
+            };
+
+            let armor_pieces = [
+                inv_slots[36].map(|s| s.block),
+                inv_slots[37].map(|s| s.block),
+                inv_slots[38].map(|s| s.block),
+                inv_slots[39].map(|s| s.block),
+            ];
+
+            // Render 3D player doll with depth testing and viewmodel lighting
+            if let Some(atlas) = world.atlas.as_ref() {
+                renderer::clear_viewmodel_depth();
+                renderer::set_depth_test(true);
+                renderer::set_depth_write(true);
+                renderer::set_blend(false);
+                renderer::set_cull(true);
+
+                shader.bind();
+                shader.set_int(shader.get_uniform_location("uBodyType"), 3);
+                shader.set_float(shader.get_uniform_location("uFogDensity"), 0.0);
+                shader.set_vec3(
+                    shader.get_uniform_location("viewPos"),
+                    Vec3::new(0.0, 0.0, 3.0),
+                );
+                shader.set_vec3(
+                    shader.get_uniform_location("sunDir"),
+                    Vec3::new(0.0, 1.0, 0.0),
+                );
+                shader.set_float(shader.get_uniform_location("uHdrScale"), 1.0);
+                shader.set_int(shader.get_uniform_location("uHdrOutput"), 0);
+
+                avatar.draw_doll(
+                    &shader,
+                    atlas,
+                    &doll_mvp,
+                    selected_skin,
+                    body_yaw,
+                    head_yaw,
+                    head_pitch,
+                    held_mesh,
+                    armor_pieces,
+                );
+
+                // Restore 2D UI render pipeline state
+                shader.set_int(shader.get_uniform_location("uBodyType"), 0);
+                renderer::set_depth_test(false);
+                renderer::set_blend(true);
+                renderer::set_cull(false);
+                ui_shader.bind();
+                ui_shader.set_vec2(
+                    ui_shader.get_uniform_location("uScreenSize"),
+                    glam::Vec2::new(sw, sh),
+                );
+            }
 
             // ── Armor slots (4 vertical, far left)
             let armor_labels = [
@@ -2916,7 +2977,13 @@ async fn run() {
             ];
             for i in 0..4usize {
                 let (sx, sy, sw2, sh2) = slot_rect(36 + i, px, py);
-                draw_rect(&ui_shader, sx, sy, sw2, sh2, [100, 88, 78, 255], sw, sh);
+                let hov = mx >= sx && mx < sx + sw2 && my >= sy && my < sy + sh2;
+                let bg = if hov {
+                    [130, 115, 100, 255]
+                } else {
+                    [100, 88, 78, 255]
+                };
+                draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, sw, sh);
                 draw_rect(
                     &ui_shader,
                     sx + 2.0,
@@ -2948,14 +3015,7 @@ async fn run() {
             // ── Crafting 2×2 + output
             for (i, inv_slot) in inv_slots.iter().enumerate().take(44).skip(40) {
                 let (sx, sy, sw2, sh2) = slot_rect(i, px, py);
-                let hov = {
-                    let (mx, my) = inventory_cursor(
-                        last_cursor_pos,
-                        window.get_size(),
-                        window.get_framebuffer_size(),
-                    );
-                    mx >= sx && mx < sx + sw2 && my >= sy && my < sy + sh2
-                };
+                let hov = mx >= sx && mx < sx + sw2 && my >= sy && my < sy + sh2;
                 let bg = if hov {
                     [130, 115, 100, 255]
                 } else {
@@ -3010,14 +3070,7 @@ async fn run() {
             // Craft output slot (slot 44) – larger
             {
                 let (sx, sy, sw2, sh2) = slot_rect(44, px, py);
-                let hov = {
-                    let (mx, my) = inventory_cursor(
-                        last_cursor_pos,
-                        window.get_size(),
-                        window.get_framebuffer_size(),
-                    );
-                    mx >= sx && mx < sx + sw2 && my >= sy && my < sy + sh2
-                };
+                let hov = mx >= sx && mx < sx + sw2 && my >= sy && my < sy + sh2;
                 let bg = if hov {
                     [145, 130, 110, 255]
                 } else {
