@@ -2052,7 +2052,15 @@ async fn run() {
         // deferred targets could not be built.
         renderer::deferred_resize(target.texture.width, target.texture.height);
         let deferred = fancy_gfx_setting && renderer::deferred_ready();
-        let deferred_uniforms = vibrant::frame::build_uniforms(
+        let player_biome = chunk::biome_at_version(
+            camera_pos.x,
+            camera_pos.z,
+            world.seed,
+            world.generator_version,
+        );
+        let biome_water = vibrant::water::biome_surface_water_color(player_biome);
+        let water_color = vibrant_pack.water.compute_water_color(biome_water);
+        let mut deferred_uniforms = vibrant::frame::build_uniforms(
             &vibrant_pack,
             &vibrant::frame::FrameInput {
                 day_fraction: vibrant::frame::day_fraction(dusk_time),
@@ -2060,6 +2068,7 @@ async fn run() {
                 view_proj: mvp,
             },
         );
+        deferred_uniforms.water_color = [water_color[0], water_color[1], water_color[2], 0.0];
         // Forward draws that land in the HDR target have to be lifted into
         // the same lux-scaled space the lighting pass writes. Set before
         // any sky or world draw: leftover staging from a previous deferred
@@ -2256,14 +2265,6 @@ async fn run() {
         shader.bind();
         world.render_transparent(&shader, &frustum);
 
-        let player_biome = chunk::biome_at_version(
-            camera_pos.x,
-            camera_pos.z,
-            world.seed,
-            world.generator_version,
-        );
-        let biome_water = vibrant::water::biome_surface_water_color(player_biome);
-        let water_color = vibrant_pack.water.compute_water_color(biome_water);
         let wave_depth = if vibrant_pack.water.waves.enabled {
             vibrant_pack.water.waves.depth
         } else {

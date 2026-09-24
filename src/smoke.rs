@@ -397,10 +397,10 @@ pub fn shader_lighting(
         ("hidden-sun", 1.0, 0, 0.0, 3),
         ("hidden-sun-no-glare", 1.0, 0, 0.0, 4),
     ] {
-        let transform = Mat4::from_translation(Vec3::new(0.0, 0.0, -distance - 0.5));
+        let transform = Mat4::from_translation(Vec3::new(0.0, 130.0, -distance - 0.5));
         let mut uniforms = DeferredUniforms {
             inv_view_proj: transform.to_cols_array(),
-            camera_pos_exposure: [0.0, 0.0, 0.0, 1.0],
+            camera_pos_exposure: [0.0, 130.0, 0.0, 1.0],
             sun_direction_illuminance: [0.0, -1.0, 0.0, std::f32::consts::PI],
             moon_direction_illuminance: [0.0; 4],
             ambient_color_illuminance: [1.0, 1.0, 1.0, std::f32::consts::PI],
@@ -413,7 +413,7 @@ pub fn shader_lighting(
         if mode >= 3 {
             let down = Vec3::new(0.0, -1.0, -1.0).normalize();
             uniforms.inv_view_proj =
-                Mat4::from_translation(Vec3::new(0.0, -1.0, -2.0)).to_cols_array();
+                Mat4::from_translation(Vec3::new(0.0, 129.0, -2.0)).to_cols_array();
             uniforms.sun_direction_illuminance = [down.x, down.y, down.z, 0.0];
             uniforms.moon_direction_illuminance = [-down.x, -down.y, -down.z, std::f32::consts::PI];
             uniforms.atmosphere[1] = if mode == 3 { 10.0 } else { 0.0 };

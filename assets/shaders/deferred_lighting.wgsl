@@ -24,6 +24,7 @@ struct Deferred {
     // horizon_blend_stops: min, start, mie_start, max
     horizon_stops: vec4<f32>,
     block_light_color: vec4<f32>,
+    water_color: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> u: Deferred;
@@ -39,6 +40,8 @@ const PI: f32 = 3.14159265359;
 // authored in lux, which would blow out an 8-bit target but is exactly
 // what the tone mapper expects.
 const INV_PI: f32 = 0.31830988618;
+const SEA_LEVEL: f32 = 124.0;
+const WATER_SURFACE_THRESHOLD: f32 = 123.9;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -267,8 +270,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Minecraft Bedrock Vibrant Visuals dynamic underwater caustics:
     let caustic_scale = u.moon_color.w;
     let caustic_power = u.block_light_color.w;
-    if (caustic_power > 0.0 && world_pos.y < 123.9) {
-        let depth_under = 124.0 - world_pos.y;
+    if (caustic_power > 0.0 && world_pos.y < WATER_SURFACE_THRESHOLD) {
+        let depth_under = SEA_LEVEL - world_pos.y;
         let depth_decay = exp(-depth_under * 0.08);
         let time = u.sun_color.w;
         let p = world_pos.xz * caustic_scale;
@@ -303,18 +306,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     // Underwater optical light extinction and volumetric in-scattering (Beer-Lambert law):
-    if (world_pos.y < 123.9) {
-        let depth_under = 124.0 - world_pos.y;
+    if (world_pos.y < WATER_SURFACE_THRESHOLD) {
+        let depth_under = SEA_LEVEL - world_pos.y;
         // Wavelength-dependent transmittance (red extinguishes quickly, green medium, blue slowly)
         let water_transmittance = exp(-depth_under * vec3<f32>(0.20, 0.08, 0.025));
 
         // In-scattered light from ambient sky dome through water column, scaled strictly by current sky lux
         let ambient_water = sky_lux * sky_intensity * 0.35 * INV_PI;
-        let water_base = mix(u.horizon_color.rgb, vec3<f32>(0.09, 0.53, 0.83), 0.5);
+        let water_base = mix(u.horizon_color.rgb, u.water_color.rgb, 0.5);
         let water_body_color = water_base * ambient_water;
 
         // Volumetric integration: L = L_surface * T + L_water * (1 - T)
-        radiance = radiance * water_transmittance + water_body_color * (vec3<f32>(1.0) - water_transmittance) * sky_visibility;
+        // Cave safeguard: dry underground areas (sky_visibility == 0) are protected from extinction
+        let effective_transmittance = mix(vec3<f32>(1.0), water_transmittance, sky_visibility);
+        radiance = radiance * effective_transmittance + water_body_color * (vec3<f32>(1.0) - water_transmittance) * sky_visibility;
     }
 
     // Aerial perspective adds depth without flattening nearby block detail.
