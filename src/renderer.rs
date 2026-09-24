@@ -2067,6 +2067,8 @@ pub struct DeferredUniforms {
     pub horizon_stops: [f32; 4],
     /// Linear color of block light (torches and the like), w unused.
     pub block_light_color: [f32; 4],
+    /// Linear water color for underwater scattering, w unused.
+    pub water_color: [f32; 4],
 }
 
 impl Default for DeferredUniforms {
@@ -2085,6 +2087,7 @@ impl Default for DeferredUniforms {
             atmosphere: [1.0, 1.0, 0.0, 4.0],
             horizon_stops: [0.0, 0.25, 0.5, 0.25],
             block_light_color: [1.0, 0.78, 0.5, 0.0],
+            water_color: [0.09, 0.53, 0.83, 0.0],
         }
     }
 }

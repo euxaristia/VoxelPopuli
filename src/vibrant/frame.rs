@@ -80,6 +80,7 @@ const BLOCK_LIGHT_LUX: f32 = 1.5;
 /// Gentle aerial perspective shared by opaque geometry and transparent water.
 pub const HAZE_DENSITY: f32 = 0.0018;
 
+/// Builds the unified lighting, atmospheric, and water uniform payload for the deferred pass.
 pub fn build_uniforms(pack: &VibrantPack, input: &FrameInput) -> DeferredUniforms {
     let time = input.day_fraction;
     let lighting = &pack.lighting;
@@ -119,6 +120,8 @@ pub fn build_uniforms(pack: &VibrantPack, input: &FrameInput) -> DeferredUniform
     } else {
         input.day_fraction * SECONDS_PER_DAY
     };
+
+    let water_col = pack.water.compute_water_color([0.09, 0.53, 0.83]);
 
     DeferredUniforms {
         inv_view_proj: input.view_proj.inverse().to_cols_array(),
@@ -168,6 +171,7 @@ pub fn build_uniforms(pack: &VibrantPack, input: &FrameInput) -> DeferredUniform
             block_light[2],
             caustic_power,
         ],
+        water_color: [water_col[0], water_col[1], water_col[2], 0.0],
     }
 }
 
