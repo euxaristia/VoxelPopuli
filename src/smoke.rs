@@ -988,7 +988,22 @@ pub fn mobs() -> Result<(), String> {
     let visuals = crate::mob_visuals::MobVisuals::new();
     let target = RenderTexture2D::new(1600, 1100);
     std::fs::create_dir_all("target/test-artifacts").map_err(|e| e.to_string())?;
-    for (page, entries) in MobKind::ALL.chunks(20).enumerate() {
+    let mut pages: Vec<Vec<MobKind>> = MobKind::ALL.chunks(20).map(|v| v.to_vec()).collect();
+    let reference_animals = [
+        MobKind::Goat,
+        MobKind::Llama,
+        MobKind::Camel,
+        MobKind::Pig,
+        MobKind::Wolf,
+        MobKind::Fox,
+        MobKind::Panda,
+        MobKind::PolarBear,
+        MobKind::TraderLlama,
+        MobKind::CamelHusk,
+    ];
+    let reference_page = pages.len();
+    pages.push(reference_animals.repeat(2));
+    for (page, entries) in pages.iter().enumerate() {
         for pose in 0..3 {
             target.bind();
             renderer::clear(0.105, 0.14, 0.155, 1.0);
@@ -998,11 +1013,18 @@ pub fn mobs() -> Result<(), String> {
             renderer::set_blend(false);
             for (i, &kind) in entries.iter().enumerate() {
                 let mut mob = Mob::new(kind, Vec3::ZERO, Vec3::ZERO, 0);
+                if page == reference_page && i >= reference_animals.len() {
+                    mob.animal.growth = 1200.0;
+                }
                 mob.yaw = std::f32::consts::FRAC_PI_2;
                 mob.walk_phase = if pose == 0 { 0.0 } else { 1.2 };
                 mob.walk_blend = if pose == 1 { 1.0 } else { 0.0 };
                 let visual_height = crate::mob_visuals::render_height(&mob);
-                let size = visual_height.max(kind.species().width * 1.3);
+                let size = if page == reference_page {
+                    2.75
+                } else {
+                    visual_height.max(kind.species().width * 1.3)
+                };
                 let eye = if pose == 2 {
                     Vec3::new(size * 2.0, size * 0.65, 0.0)
                 } else {
@@ -1010,7 +1032,12 @@ pub fn mobs() -> Result<(), String> {
                 };
                 let view = glam::camera::rh::view::look_at_mat4(
                     eye,
-                    Vec3::Y * visual_height * 0.48,
+                    Vec3::Y
+                        * if page == reference_page {
+                            1.32
+                        } else {
+                            visual_height * 0.48
+                        },
                     Vec3::Y,
                 );
                 let proj = glam::camera::rh::proj::directx::perspective(
@@ -1048,8 +1075,12 @@ pub fn mobs() -> Result<(), String> {
             crate::hud::draw_text(
                 &font,
                 &format!(
-                    "OVERWORLD / {} CREATURES / {}",
-                    MobKind::ALL.len(),
+                    "{} / {}",
+                    if page == reference_page {
+                        "PROCEDURAL ANIMALS / SHARED BLOCK SCALE / ADULTS ABOVE BABIES".to_string()
+                    } else {
+                        format!("OVERWORLD / {} CREATURES", MobKind::ALL.len())
+                    },
                     match pose {
                         0 => "REST",
                         1 => "MOVEMENT",

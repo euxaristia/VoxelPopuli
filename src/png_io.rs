@@ -38,7 +38,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Image, String> {
     ))
 }
 
-fn decode(input: impl BufRead + Seek) -> Result<Image, String> {
+pub(crate) fn decode(input: impl BufRead + Seek) -> Result<Image, String> {
     let mut decoder = png::Decoder::new(input);
     decoder.set_limits(png::Limits {
         bytes: 512 * 1024 * 1024,

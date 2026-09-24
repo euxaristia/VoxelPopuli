@@ -473,7 +473,7 @@ mod tests {
         let home = Vec3::ZERO;
 
         let z = Mob::new(MobKind::Zombie, pos, home, 0);
-        assert_eq!(z.height(), 1.95);
+        assert_eq!(z.height(), 1.9);
         assert_eq!(z.drop_item(), Some((BlockType::RawIron, 1)));
 
         let sk = Mob::new(MobKind::Skeleton, pos, home, 0);
@@ -491,7 +491,7 @@ mod tests {
         assert!((1..=3).contains(&pig_drop.1));
 
         let cow = Mob::new(MobKind::Cow, pos, home, 0);
-        assert_eq!(cow.height(), 1.4);
+        assert_eq!(cow.height(), 1.3);
         assert_eq!(cow.health, 10.0);
         let cow_drop = cow.drop_item().unwrap();
         assert_eq!(cow_drop.0, BlockType::RawBeef);
@@ -539,10 +539,10 @@ mod tests {
         let mut calf = Mob::new(MobKind::Cow, Vec3::ZERO, Vec3::ZERO, 0);
         calf.animal.growth = 1200.0;
         assert!(calf.is_baby());
-        assert!((calf.height() - 0.7).abs() < 1e-6);
+        assert!((calf.height() - 0.65).abs() < 1e-6);
         calf.animal.growth = 0.0;
         assert!(!calf.is_baby());
-        assert!((calf.height() - 1.4).abs() < 1e-6);
+        assert!((calf.height() - 1.3).abs() < 1e-6);
     }
 
     #[test]

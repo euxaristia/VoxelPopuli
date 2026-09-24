@@ -1,10 +1,12 @@
-//! Original pixel art and articulated cuboid models. One shared atlas, cached
+//! Reference skins, procedural pixel art and articulated cuboid models. One shared atlas, cached
 //! meshes per joint; details on a limb travel with that limb in one draw.
 use crate::mob::Mob;
 use crate::mob_catalog::{MobKind, Shape};
 use crate::renderer::{Mesh, Shader, Texture2D};
 use glam::{Mat4, Vec3, Vec4};
 use std::collections::HashMap;
+mod animals;
+mod skins;
 
 pub const ATLAS_SIZE: usize = 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -53,6 +55,7 @@ struct Cube {
     size: Vec3,
     surface: Surface,
     rotation: Vec3,
+    rotation_pivot: Option<Vec3>,
 }
 struct Design {
     joints: Vec<Joint>,
@@ -84,10 +87,15 @@ impl Design {
             size: Vec3::from_array(size),
             surface,
             rotation: Vec3::ZERO,
+            rotation_pivot: None,
         });
     }
     fn tilt(&mut self, rotation: [f32; 3]) {
         self.cubes.last_mut().unwrap().rotation = Vec3::from_array(rotation);
+    }
+    fn tilt_about(&mut self, pivot: [f32; 3], rotation: [f32; 3]) {
+        self.tilt(rotation);
+        self.cubes.last_mut().unwrap().rotation_pivot = Some(Vec3::from_array(pivot));
     }
     fn leg(&mut self, x: f32, z: f32, height: f32, width: f32, sign: f32, hoof: bool) {
         let j = self.joint([x, height, z], Action::Stride(sign));
@@ -109,6 +117,9 @@ impl Design {
 }
 
 fn design(kind: MobKind) -> Design {
+    if let Some(design) = animals::design(kind) {
+        return design;
+    }
     use MobKind::*;
     use Surface::*;
     let mut d = Design::new();
@@ -945,12 +956,14 @@ pub struct MobVisuals {
     models: Vec<Model>,
 }
 
+type FaceKey = (MobKind, Surface, Face, usize, usize, Option<usize>);
+
 struct Atlas {
     pixels: Vec<u8>,
     x: usize,
     y: usize,
     row: usize,
-    cache: HashMap<(MobKind, Surface, Face, usize, usize), [f32; 4]>,
+    cache: HashMap<FaceKey, [f32; 4]>,
 }
 impl Atlas {
     fn new() -> Self {
@@ -970,6 +983,18 @@ impl Atlas {
         w: usize,
         h: usize,
     ) -> [f32; 4] {
+        self.face_for_cube(kind, surface, face, w, h, None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn face_for_cube(
+        &mut self,
+        kind: MobKind,
+        surface: Surface,
+        face: Face,
+        w: usize,
+        h: usize,
+        cube: Option<usize>,
+    ) -> [f32; 4] {
         // Head geometry can be narrower than its two-pixel eye pattern. Keep
         // texture detail independent of the physical size of the cuboid.
         // Tiny decorative Head surfaces (frog eye bumps, mushroom caps) do
@@ -979,7 +1004,7 @@ impl Atlas {
         } else {
             (w, h)
         };
-        let key = (kind, surface, face, w, h);
+        let key = (kind, surface, face, w, h, cube);
         if let Some(rect) = self.cache.get(&key) {
             return *rect;
         }
@@ -994,16 +1019,20 @@ impl Atlas {
             for x in 0..w + 4 {
                 let px = x.saturating_sub(2).min(w - 1);
                 let py = y.saturating_sub(2).min(h - 1);
-                let rgb = shade(
-                    texel(kind, surface, face, px, py, w, h),
-                    match face {
-                        Face::Top => 5,
-                        Face::Right => -15,
-                        Face::Left | Face::Back => -8,
-                        Face::Bottom => -25,
-                        Face::Front => 0,
-                    },
-                );
+                let rgb = if let Some(cube) = cube {
+                    skins::texel(kind, surface, cube, face, px, py, w, h)
+                } else {
+                    shade(
+                        texel(kind, surface, face, px, py, w, h),
+                        match face {
+                            Face::Top => 5,
+                            Face::Right => -15,
+                            Face::Left | Face::Back => -8,
+                            Face::Bottom => -25,
+                            Face::Front => 0,
+                        },
+                    )
+                };
                 let index = ((self.y + y) * ATLAS_SIZE + self.x + x) * 4;
                 self.pixels[index..index + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
             }
@@ -1380,7 +1409,7 @@ fn cube_faces(cube: &Cube) -> [(Face, [Vec3; 4], Vec3, usize, usize); 6] {
 
 fn bake(kind: MobKind, design: &Design, atlas: &mut Atlas) -> Vec<(usize, bool, Geometry)> {
     let mut groups: Vec<(usize, bool, Geometry)> = Vec::new();
-    for cube in &design.cubes {
+    for (cube_index, cube) in design.cubes.iter().enumerate() {
         let tint = kind == MobKind::Sheep && cube.surface == Surface::Wool
             || kind == MobKind::Villager && cube.surface == Surface::Body;
         let index = groups
@@ -1391,7 +1420,7 @@ fn bake(kind: MobKind, design: &Design, atlas: &mut Atlas) -> Vec<(usize, bool, 
                 groups.len() - 1
             });
         let geometry = &mut groups[index].2;
-        let center = cube.min + cube.size * 0.5;
+        let center = cube.rotation_pivot.unwrap_or(cube.min + cube.size * 0.5);
         let rot = Mat4::from_euler(
             glam::EulerRot::XYZ,
             cube.rotation.x,
@@ -1409,7 +1438,11 @@ fn bake(kind: MobKind, design: &Design, atlas: &mut Atlas) -> Vec<(usize, bool, 
             } else {
                 cube.surface
             };
-            let [u0, v0, u1, v1] = atlas.face(kind, surface, face, w, h);
+            let [u0, v0, u1, v1] = if animals::height(kind).is_some() {
+                atlas.face_for_cube(kind, surface, face, w, h, Some(cube_index))
+            } else {
+                atlas.face(kind, surface, face, w, h)
+            };
             let uv = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
             for i in [0, 1, 2, 0, 2, 3] {
                 let pos = rot.transform_point3(vertices[i] - center) + center
@@ -1431,15 +1464,32 @@ pub fn facing(yaw: f32) -> Mat4 {
 
 /// Raised horse heads extend above the collision box around the torso.
 pub fn render_height(mob: &Mob) -> f32 {
+    if let Some(height) = animals::height(mob.kind) {
+        return height * if mob.is_baby() { 0.5 } else { 1.0 };
+    }
     let adult_height = match mob.kind {
         MobKind::Horse | MobKind::SkeletonHorse | MobKind::ZombieHorse => 2.2,
         // Preserve 16 model units per block rather than fitting horns/wool to the hitbox.
+        MobKind::Cat => 0.7,
         MobKind::Cow => 25.5 / 16.0,
         MobKind::Mooshroom => 27.0 / 16.0,
         MobKind::Sheep => 23.5 / 16.0,
         _ => mob.kind.species().height,
     };
     adult_height * mob.height() / mob.kind.species().height
+}
+
+fn model_scale(mob: &Mob, height: f32) -> f32 {
+    if animals::height(mob.kind).is_some() {
+        animals::scale(mob.kind)
+            * if mob.is_baby() {
+                1.0 / 32.0
+            } else {
+                1.0 / 16.0
+            }
+    } else {
+        render_height(mob) / height
+    }
 }
 
 impl MobVisuals {
@@ -1485,7 +1535,7 @@ impl MobVisuals {
         }
         self.texture.bind(0);
         let model = &self.models[mob.kind as usize];
-        let mut scale = render_height(mob) / model.height;
+        let mut scale = model_scale(mob, model.height);
         if mob.kind == MobKind::Creeper && mob.creeper_fuse > 0.0 {
             scale *= 1.0 + (mob.creeper_fuse / 1.5).clamp(0.0, 1.0) * 0.3;
         }
@@ -1778,14 +1828,7 @@ mod tests {
 
     #[test]
     fn small_head_atlas_preserves_both_eye_pixels() {
-        for kind in [
-            MobKind::Pig,
-            MobKind::Sheep,
-            MobKind::Wolf,
-            MobKind::Cat,
-            MobKind::Ocelot,
-            MobKind::Llama,
-        ] {
+        for kind in [MobKind::Sheep, MobKind::Cat, MobKind::Ocelot] {
             let d = design(kind);
             let head = d.cubes.iter().find(|c| c.surface == Surface::Head).unwrap();
             let (_, _, _, w, h) = cube_faces(head)[0];
