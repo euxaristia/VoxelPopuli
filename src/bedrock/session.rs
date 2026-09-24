@@ -19,6 +19,12 @@ pub struct WorldStore {
 }
 
 impl WorldStore {
+    #[cfg(test)]
+    pub(crate) fn with_locked_database(&self, f: impl FnOnce()) {
+        let _guard = self.database.lock().unwrap();
+        f();
+    }
+
     pub fn containers(
         &self,
         x: i32,

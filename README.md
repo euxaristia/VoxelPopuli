@@ -48,6 +48,8 @@ to turn ore into ingots and raw meat into cooked food.
 
 Desktop builds use a native Bedrock world directory (`world/`) and save player
 progress on exit. Generated and displaced chunks are persisted while streaming.
+Storage waits run on workers; outgoing chunks stay loaded until saved.
+See [chunk streaming and profiling](docs/chunk-streaming.md).
 See [Bedrock saves and compatibility limits](docs/bedrock.md). Browser builds retain
 their existing browser save format. To keep a separate survival world:
 

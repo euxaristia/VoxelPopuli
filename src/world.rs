@@ -9,6 +9,8 @@ use crate::mob_catalog::Motion;
 mod bees;
 mod mobs;
 mod skeletons;
+mod streaming;
+use streaming::{GenerationResult, LoadedChunk};
 pub const MOB_CAP: usize = 48;
 use crate::renderer;
 use crate::renderer::{Mesh, Shader, Texture2D};
@@ -264,8 +266,11 @@ pub struct World {
     next_mesh_job_id: u64,
     mesh_result_tx: std::sync::mpsc::Sender<MeshResult>,
     mesh_result_rx: std::sync::mpsc::Receiver<MeshResult>,
-    gen_result_tx: std::sync::mpsc::Sender<Result<Box<Chunk>, (i32, i32, String)>>,
-    gen_result_rx: std::sync::mpsc::Receiver<Result<Box<Chunk>, (i32, i32, String)>>,
+    gen_result_tx: std::sync::mpsc::Sender<GenerationResult>,
+    gen_result_rx: std::sync::mpsc::Receiver<GenerationResult>,
+    pending_chunk: Option<LoadedChunk>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_eviction: Option<streaming::PendingEviction>,
     // Chunk coordinates currently being generated on a worker
     gen_in_flight: std::collections::HashSet<(i32, i32)>,
     pub mobs: Vec<Mob>,
@@ -358,6 +363,9 @@ impl World {
             mesh_result_rx,
             gen_result_tx,
             gen_result_rx,
+            pending_chunk: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_eviction: None,
             gen_in_flight: std::collections::HashSet::new(),
             mobs: Vec::new(),
             dying_mobs: Vec::new(),
@@ -1602,7 +1610,20 @@ impl World {
         if let Some(src) = self.imported.get(&(x, z)) {
             let mut chunk = Box::new(Chunk::new(x, z, self.seed));
             chunk.copy_terrain_from(src);
-            let _ = self.gen_result_tx.send(Ok(chunk));
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(store) = self.bedrock.clone() {
+                let tx = self.gen_result_tx.clone();
+                let dimension = self.dimension;
+                crate::platform::spawn(move || {
+                    let result = store
+                        .containers(x, z, dimension)
+                        .map(|containers| LoadedChunk { chunk, containers })
+                        .map_err(|error| (x, z, error.to_string()));
+                    let _ = tx.send(result);
+                });
+                return;
+            }
+            let _ = self.gen_result_tx.send(Ok(chunk.into()));
             return;
         }
         let seed = self.seed;
@@ -1640,6 +1661,17 @@ impl World {
                 }
                 Ok(chunk)
             })();
+            let result = result.and_then(|chunk| {
+                #[cfg(not(target_arch = "wasm32"))]
+                let containers = bedrock
+                    .as_ref()
+                    .map(|store| store.containers(x, z, dimension))
+                    .transpose()?
+                    .unwrap_or_default();
+                #[cfg(target_arch = "wasm32")]
+                let containers = Vec::new();
+                Ok(LoadedChunk { chunk, containers })
+            });
             let _ = tx.send(result.map_err(|error| (x, z, error.to_string())));
         });
     }
@@ -1713,96 +1745,16 @@ impl World {
             }
         }
 
-        // --- Integrate chunks generated in the background ---
-        while let Ok(result) = self.gen_result_rx.try_recv() {
-            let chunk = match result {
-                Ok(chunk) => chunk,
-                Err((x, z, error)) => {
-                    self.gen_in_flight.remove(&(x, z));
-                    self.storage_error = Some(format!("Could not load chunk ({x}, {z}): {error}"));
-                    break;
-                }
-            };
-            let (x, z) = (chunk.x, chunk.z);
-            self.gen_in_flight.remove(&(x, z));
-            // Discard arrivals the player has since moved away from; the
-            // scan re-dispatches them if the player comes back.
-            if (x - pcx).abs() > self.view_distance || (z - pcz).abs() > self.view_distance {
-                continue;
-            }
-            let index = self.get_pool_index(x, z);
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(store) = &self.bedrock {
-                match store.containers(x, z, self.dimension) {
-                    Ok(containers) => {
-                        for (position, container) in containers {
-                            if chunk.get_block(
-                                position.0.rem_euclid(16) as usize,
-                                position.1 as usize,
-                                position.2.rem_euclid(16) as usize,
-                            ) == container.block()
-                            {
-                                self.containers.entry(position).or_insert(container);
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        self.storage_error = Some(format!("Could not load containers: {error}"));
-                        break;
-                    }
-                }
-            }
-            if let Some(existing) = &self.chunks[index]
-                && existing.x == x
-                && existing.z == z
-            {
-                continue;
-            }
-            // The displaced chunk's dirty flag was counted; drop its count
-            #[cfg(not(target_arch = "wasm32"))]
-            if let (Some(store), Some(old)) = (&self.bedrock, &self.chunks[index]) {
-                if let Err(error) =
-                    store.save_chunks(std::iter::once(old.as_ref()), self.dimension, vec![])
-                {
-                    self.storage_error = Some(format!("Could not save displaced chunk: {error}"));
-                    break;
-                }
-            }
-            if let Some(old) = &self.chunks[index]
-                && old.dirty
-            {
-                self.dirty_count -= 1;
-            }
-            self.chunks[index] = Some(chunk);
-            self.apply_edits_to_chunk(x, z);
-
-            // Dirty the new chunk AND its neighbors to fix lighting/meshing
-            // gaps. Fresh chunks are born dirty but were never counted, so
-            // count unconditionally.
-            if let Some(c) = &mut self.chunks[index] {
-                c.dirty = true;
-                self.dirty_count += 1;
-            }
-            let neighbors = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)];
-            for (nx, nz) in neighbors {
-                if let Some(nc) = self.get_chunk_mut(nx, nz)
-                    && !nc.dirty
-                {
-                    nc.dirty = true;
-                    self.dirty_count += 1;
-                }
-            }
-            self.try_spawn_village_mobs(x, z);
-            self.try_spawn_natural_mobs(x, z);
-            self.chunks_generated_count += 1;
-            self.sync_gpu_chunk(x, z, pcx, pcz);
-        }
+        self.integrate_chunks(pcx, pcz);
 
         // --- Prioritized Meshing ---
         // 1. Collect finished meshing jobs from the workers and upload to GPU.
         //    Results for chunks that scrolled out of the pool are dropped.
         if self.meshing_in_flight > 0 {
-            while let Ok(result) = self.mesh_result_rx.try_recv() {
+            let upload_start = crate::platform::Instant::now();
+            while (self.is_loading || upload_start.elapsed().as_secs_f32() < 0.002)
+                && let Ok(result) = self.mesh_result_rx.try_recv()
+            {
                 self.meshing_in_flight -= 1;
                 let has_atlas = self.atlas.is_some();
                 let relit = if let Some(chunk) = self.get_chunk_mut(result.x, result.z)
@@ -1810,6 +1762,7 @@ impl World {
                     && chunk.mesh_job_id == result.job_id
                 {
                     chunk.light = result.light;
+                    chunk.meshing_in_progress = false;
                     if has_atlas {
                         chunk.upload_mesh(result.opaque, result.transparent, result.water);
                     }
@@ -1845,6 +1798,7 @@ impl World {
                 a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
             });
 
+            let dispatch_start = crate::platform::Instant::now();
             let mut dispatches_this_frame = 0;
             for (index, _) in dirty_indices {
                 let (cx, cz) = match &self.chunks[index] {
@@ -1891,7 +1845,9 @@ impl World {
                 } else {
                     16
                 };
-                if dispatches_this_frame >= max_dispatches {
+                if dispatches_this_frame >= max_dispatches
+                    || (!self.is_loading && dispatch_start.elapsed().as_secs_f32() >= 0.002)
+                {
                     break;
                 }
             }

@@ -120,6 +120,7 @@ impl GameSave {
     }
 
     pub fn write_bedrock(&self, world: &World) -> io::Result<()> {
+        world.finish_chunk_save()?;
         let store = world
             .bedrock
             .as_ref()
