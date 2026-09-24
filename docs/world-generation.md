@@ -4,6 +4,8 @@ New worlds use terrain generator 2. Existing saves without a generator version
 keep generator 1, including after saving again, loading on the web, or migrating
 to native Bedrock storage. Generator 1 preserves the original six biomes and
 their vegetation. There is no automatic upgrade of existing worlds.
+Seed-based Java export also uses the loaded save's generator version; without
+a loaded save it uses generator 2. This terrain export does not copy player edits.
 
 Generator 2 adds forests, birch forests, flower forests, sunflower plains,
 meadows, mangrove swamps, and cherry groves. Forests mix oak and birch; birch

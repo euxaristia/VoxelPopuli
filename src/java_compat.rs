@@ -1,5 +1,7 @@
 use crate::block::BlockType;
-use crate::chunk::{Biome, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, biome_at_version};
+use crate::chunk::{
+    Biome, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, Chunk, GeneratorVersion, biome_at_version,
+};
 use flate2::Compression;
 use flate2::write::{GzEncoder, ZlibEncoder};
 use std::collections::{BTreeMap, BTreeSet};
@@ -246,9 +248,14 @@ impl ExportConfig {
     }
 }
 
-pub fn export_classic_java_world(seed: u64, config: &ExportConfig) -> io::Result<ExportSummary> {
+pub fn export_classic_java_world(
+    seed: u64,
+    generator_version: GeneratorVersion,
+    config: &ExportConfig,
+) -> io::Result<ExportSummary> {
     export_classic_java_chunks(seed, config, |chunk_x, chunk_z| {
         let mut chunk = Chunk::new(chunk_x, chunk_z, seed);
+        chunk.generator_version = generator_version;
         chunk.generate();
         chunk
     })
@@ -1533,6 +1540,32 @@ pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
 mod tests {
     use super::*;
     #[test]
+    fn java_export_preserves_legacy_generator_terrain() {
+        let (seed, original) = (0..64)
+            .find_map(|seed| {
+                let mut legacy = Chunk::new(0, 0, seed);
+                legacy.generator_version = GeneratorVersion::Legacy;
+                legacy.generate();
+                let mut habitats = Chunk::new(0, 0, seed);
+                habitats.generate();
+                (legacy.blocks != habitats.blocks).then_some((seed, legacy))
+            })
+            .expect("fixture must distinguish the two generators");
+        let out = std::env::temp_dir().join(format!("voxel-java-legacy-{}", rand::random::<u64>()));
+        let config = ExportConfig {
+            output_dir: out.clone(),
+            radius: 0,
+        };
+        export_classic_java_world(seed, GeneratorVersion::Legacy, &config).unwrap();
+        let imported = import_classic_java_chunk(&out, 0, 0).unwrap().unwrap();
+        let matches = imported.blocks == original.blocks;
+        std::fs::remove_dir_all(out).unwrap();
+        assert!(
+            matches,
+            "Java export regenerated legacy terrain with the habitat generator"
+        );
+    }
+    #[test]
     fn java17_rejects_newer_habitat_blocks_before_writing_files() {
         let destination =
             std::env::temp_dir().join(format!("voxel-java17-habitat-{}", rand::random::<u64>()));
@@ -1719,7 +1752,8 @@ mod tests {
             output_dir: out.clone(),
             radius: 0,
         };
-        let summary = export_classic_java_world(12345, &config).unwrap();
+        let summary =
+            export_classic_java_world(12345, GeneratorVersion::Habitats, &config).unwrap();
 
         assert_eq!(summary.chunks, 1);
         assert_eq!(summary.regions, 1);
@@ -1779,7 +1813,7 @@ mod tests {
             output_dir: out.clone(),
             radius: 0,
         };
-        let summary = export_classic_java_world(9999, &config).unwrap();
+        let summary = export_classic_java_world(9999, GeneratorVersion::Habitats, &config).unwrap();
         assert_eq!(summary.chunks, 1);
 
         let streamed = import_classic_java_chunk(&out, 0, 0).unwrap().unwrap();

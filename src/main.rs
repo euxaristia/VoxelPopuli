@@ -436,7 +436,13 @@ async fn run() {
             }
         });
     if let Some(config) = java_compat::ExportConfig::from_args() {
-        match java_compat::export_classic_java_world(world_seed as u64, &config) {
+        let generator_version = loaded_save
+            .as_ref()
+            .map_or(chunk::GeneratorVersion::Habitats, |save| {
+                save.generator_version
+            });
+        match java_compat::export_classic_java_world(world_seed as u64, generator_version, &config)
+        {
             Ok(summary) => {
                 println!(
                     "Exported {} chunks across {} region file(s) as {} to {}",
