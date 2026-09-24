@@ -444,21 +444,6 @@ fn crouched_torso(amount: f32) -> Mat4 {
         * Mat4::from_translation(Vec3::new(0.0, -HIP_HEIGHT - amount * 2.0 / 16.0, 0.0))
 }
 
-#[cfg(test)]
-#[test]
-fn sneak_pose_bends_torso_and_lowers_shoulder() {
-    let shoulder = Vec3::new(0.0, TORSO_TOP, 0.0);
-    assert_eq!(crouched_torso(0.0), Mat4::IDENTITY);
-    let crouched = crouched_torso(1.0).transform_point3(shoulder);
-    assert!(crouched.y < shoulder.y);
-    assert!(crouched.z > shoulder.z);
-    assert!(
-        (crouched_torso(1.0).transform_vector3(Vec3::Y).dot(Vec3::Y) - 28.0_f32.to_radians().cos())
-            .abs()
-            < 1e-6
-    );
-}
-
 /// Draw the player's own torso and legs in world space, so looking down
 /// shows them. Unlike the arm these are ordinary world geometry: they use
 /// the world view-projection and are revealed by pitch like anything else.
@@ -655,6 +640,21 @@ pub fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sneak_pose_bends_torso_and_lowers_shoulder() {
+        let shoulder = Vec3::new(0.0, TORSO_TOP, 0.0);
+        assert_eq!(crouched_torso(0.0), Mat4::IDENTITY);
+        let crouched = crouched_torso(1.0).transform_point3(shoulder);
+        assert!(crouched.y < shoulder.y);
+        assert!(crouched.z > shoulder.z);
+        assert!(
+            (crouched_torso(1.0).transform_vector3(Vec3::Y).dot(Vec3::Y)
+                - 28.0_f32.to_radians().cos())
+            .abs()
+                < 1e-6
+        );
+    }
 
     #[test]
     fn base_and_attack_channels_cancel_before_rotation() {
