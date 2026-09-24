@@ -26,27 +26,27 @@ impl Default for ParticleConcentrations {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WaveSettings {
     pub enabled: bool,
-    /// 0.0 - 3.0: wave displacement amount.
+    /// 0.0 - 3.0: wave normal perturbation amount (active in shader).
     pub depth: f32,
-    /// 0.0 - 360.0: heading change in degrees between octaves.
+    /// 0.0 - 360.0: heading change in degrees between octaves (schema field; shader fixes 80.0 deg).
     pub direction_increment: f32,
-    /// 0.01 - 3.0: wave size / frequency per block.
+    /// 0.01 - 3.0: wave size / frequency per block (active in shader).
     pub frequency: f32,
-    /// 0.0 - 2.0: frequency scaling per octave.
+    /// 0.0 - 2.0: frequency scaling per octave (schema field; shader fixes 1.28).
     pub frequency_scaling: f32,
-    /// 0.0 - 1.0: blend between neighboring octaves.
+    /// 0.0 - 1.0: blend between neighboring octaves (schema field; shader fixes 0.68).
     pub mix: f32,
-    /// 1 - 30: wave octaves.
+    /// 1 - 30: wave octaves (schema field; shader evaluates 8 Bedrock standard octaves).
     pub octaves: u32,
-    /// -1.0 - 1.0: pull smaller waves into larger ones (concave > 0, convex < 0).
+    /// -1.0 - 1.0: pull smaller waves into larger ones (active in shader).
     pub pull: f32,
-    /// 0.01 - 1.0: fractal resolution.
+    /// 0.01 - 1.0: fractal resolution (schema field).
     pub sample_width: f32,
-    /// 1.0 - 10.0: wave shape (1.0 = sine, > 1.0 = sharp crests).
+    /// 1.0 - 10.0: wave shape (schema field; pull parameter drives crest shaping).
     pub shape: f32,
-    /// 0.01 - 10.0: starting speed.
+    /// 0.01 - 10.0: starting speed (active in shader).
     pub speed: f32,
-    /// 0.0 - 2.0: speed multiplier per octave.
+    /// 0.0 - 2.0: speed multiplier per octave (schema field; shader fixes 1.05).
     pub speed_scaling: f32,
 }
 
@@ -128,23 +128,23 @@ impl WaterSettings {
         // Base absorption coefficients per meter (R, G, B)
         // Pure water:
         let aw = [0.35f32, 0.035, 0.005];
-        // CDOM absorption:
+        // CDOM absorption (strongly absorbs blue):
         let acdom = [
-            self.particles.cdom * 0.01,
-            self.particles.cdom * 0.05,
-            self.particles.cdom * 0.18,
+            self.particles.cdom * 0.001,
+            self.particles.cdom * 0.008,
+            self.particles.cdom * 0.035,
         ];
-        // Chlorophyll absorption:
+        // Chlorophyll absorption (absorbs red and blue, green low):
         let achl = [
-            self.particles.chlorophyll * 0.08,
-            self.particles.chlorophyll * 0.015,
-            self.particles.chlorophyll * 0.09,
+            self.particles.chlorophyll * 0.04,
+            self.particles.chlorophyll * 0.005,
+            self.particles.chlorophyll * 0.02,
         ];
         // Suspended sediment absorption:
         let ased = [
             self.particles.suspended_sediment * 0.005,
-            self.particles.suspended_sediment * 0.025,
-            self.particles.suspended_sediment * 0.06,
+            self.particles.suspended_sediment * 0.015,
+            self.particles.suspended_sediment * 0.02,
         ];
 
         // Total absorption:
@@ -160,14 +160,16 @@ impl WaterSettings {
         let tg = (-a[1] * path).exp();
         let tb = (-a[2] * path).exp();
 
-        // Scattering contribution from suspended sediment (backscattering adds diffuse tint)
+        // Scattering contribution from suspended sediment and dissolved organic particles
         let bb = (self.particles.suspended_sediment * 0.02).clamp(0.0, 0.6);
-        let sr = tr * (1.0 - bb) + bb * 0.55;
-        let sg = tg * (1.0 - bb) + bb * 0.40;
-        let sb = tb * (1.0 - bb) + bb * 0.25;
+        let b_cdom = (self.particles.cdom * 0.02).clamp(0.0, 0.5);
+        let tot_b = (bb + b_cdom).clamp(0.0, 0.8);
 
-        let max_val = sr.max(sg).max(sb).max(1e-4);
-        let optical_color = [sr / max_val, sg / max_val, sb / max_val];
+        let sr = tr * (1.0 - tot_b) + bb * 0.55 + b_cdom * 0.55;
+        let sg = tg * (1.0 - tot_b) + bb * 0.40 + b_cdom * 0.35;
+        let sb = tb * (1.0 - tot_b) + bb * 0.25 + b_cdom * 0.08;
+
+        let optical_color = [sr.clamp(0.0, 1.0), sg.clamp(0.0, 1.0), sb.clamp(0.0, 1.0)];
 
         // Blend with biome water color
         let f = self.biome_water_color_contribution.clamp(0.0, 1.0);
@@ -178,6 +180,7 @@ impl WaterSettings {
         ]
     }
 
+    /// Parses water settings from a JSON payload conforming to the Vibrant Visuals schema.
     pub fn parse(json: &Json) -> Option<Self> {
         let settings = json.get("minecraft:water_settings")?;
         let mut out = WaterSettings::default();
@@ -403,6 +406,17 @@ mod tests {
         assert!(
             c_sed[0] > c_sed[2],
             "sediment water must be red/brown-dominated"
+        );
+    }
+
+    #[test]
+    fn default_water_settings_produce_blue_dominant_color() {
+        let settings = WaterSettings::default();
+        let biome_blue = [0.090, 0.529, 0.831];
+        let color = settings.compute_water_color(biome_blue);
+        assert!(
+            color[2] > color[1] && color[2] > color[0],
+            "default water color must be blue-dominant, got {color:?}"
         );
     }
 }
