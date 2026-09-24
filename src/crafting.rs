@@ -1239,6 +1239,7 @@ fn matches_shapeless(grid: &[Option<BlockType>], ingredients: &[BlockType]) -> b
 fn recipe_ingredient_matches(actual: BlockType, expected: BlockType) -> bool {
     actual == expected
         || (expected == OakPlanks && matches!(actual, BirchPlanks | MangrovePlanks | CherryPlanks))
+        || (expected == OakLog && matches!(actual, SpruceLog | BirchLog | MangroveLog | CherryLog))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -1246,6 +1247,47 @@ fn recipe_ingredient_matches(actual: BlockType, expected: BlockType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn campfires_accept_all_logs_without_changing_plank_recipes() {
+        for (log, planks) in [
+            (OakLog, OakPlanks),
+            (SpruceLog, OakPlanks),
+            (BirchLog, BirchPlanks),
+            (MangroveLog, MangrovePlanks),
+            (CherryLog, CherryPlanks),
+        ] {
+            let grid = [
+                None,
+                Some(Stick),
+                None,
+                Some(Stick),
+                Some(Coal),
+                Some(Stick),
+                Some(log),
+                Some(log),
+                Some(log),
+            ];
+            assert_eq!(find_recipe(&grid, 3, 3), Some((Campfire, 1)), "{log:?}");
+            assert_eq!(
+                find_recipe(&[Some(log), None, None, None], 2, 2),
+                Some((planks, 4))
+            );
+        }
+        let mut mixed = [
+            None,
+            Some(Stick),
+            None,
+            Some(Stick),
+            Some(Coal),
+            Some(Stick),
+            Some(BirchLog),
+            Some(MangroveLog),
+            Some(CherryLog),
+        ];
+        assert_eq!(find_recipe(&mixed, 3, 3), Some((Campfire, 1)));
+        mixed[8] = Some(CherryPlanks);
+        assert_eq!(find_recipe(&mixed, 3, 3), None);
+    }
     #[test]
     fn habitat_woods_make_matching_planks_and_accept_mixed_planks() {
         for (log, planks) in [
