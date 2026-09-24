@@ -94,18 +94,18 @@ fn grow(chunk: &mut Chunk, x: usize, y: usize, z: usize, tree: Tree, roll: u32) 
     }
     let root_height = if tree == Tree::Mangrove { 3 } else { 1 };
     for yy in y + root_height..=crown {
-        chunk.blocks[x][yy][z] = log;
+        chunk.set_local(x as i32, yy as i32, z as i32, log);
     }
     if tree == Tree::Mangrove {
         for yy in y + 1..y + 3 {
-            chunk.blocks[x][yy][z] = BlockType::MangroveRoots;
+            chunk.set_local(x as i32, yy as i32, z as i32, BlockType::MangroveRoots);
         }
         for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
             for step in 1..=2 {
                 let xx = (x as i32 + dx * step) as usize;
                 let zz = (z as i32 + dz * step) as usize;
                 for yy in y + 1..=y + 3 - step as usize {
-                    chunk.blocks[xx][yy][zz] = BlockType::MangroveRoots;
+                    chunk.set_local(xx as i32, yy as i32, zz as i32, BlockType::MangroveRoots);
                 }
             }
         }
@@ -272,6 +272,39 @@ pub(super) fn decorate(chunk: &mut Chunk) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mangrove_roots_and_trunk_clear_replaced_water_levels() {
+        let mut chunk = Chunk::new(0, 0, 42);
+        chunk.set_local(8, 100, 8, BlockType::Mud);
+        for x in 5..=11 {
+            for z in 5..=11 {
+                for y in 101..=103 {
+                    chunk.set_local(x, y, z, BlockType::Water);
+                }
+            }
+        }
+        assert!(grow(&mut chunk, 8, 100, 8, Tree::Mangrove, 0));
+        let mut replaced = 0;
+        for x in 5..=11 {
+            for z in 5..=11 {
+                for y in 101..=103 {
+                    let solid = matches!(
+                        chunk.blocks[x][y][z],
+                        BlockType::MangroveRoots | BlockType::MangroveLog
+                    );
+                    if solid {
+                        replaced += 1;
+                    }
+                    assert_eq!(
+                        chunk.liquid_levels[x][y][z],
+                        if solid { 0 } else { WATER_SOURCE },
+                        "({x},{y},{z})"
+                    );
+                }
+            }
+        }
+        assert_eq!(replaced, 15);
+    }
     #[test]
     fn tree_species_have_distinct_trunks_canopies_and_roots() {
         for tree in [Tree::Oak, Tree::Birch, Tree::Cherry, Tree::Mangrove] {
