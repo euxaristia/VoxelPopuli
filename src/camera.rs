@@ -33,12 +33,15 @@ impl Perspective {
         } else {
             look
         };
+        // Fit inside the player's 0.22 half-width and the 0.23 clearance
+        // above a crouched eye, so parallel surfaces do not trap the camera.
+        const HALF: f32 = 0.2;
         let mut distance = 0.0;
         'sweep: for step in 1..=80 {
             let candidate = eye + outward * (step as f32 * 0.05);
-            for x in [-0.25, 0.25] {
-                for y in [-0.25, 0.25] {
-                    for z in [-0.25, 0.25] {
+            for x in [-HALF, HALF] {
+                for y in [-HALF, HALF] {
+                    for z in [-HALF, HALF] {
                         if solid(candidate + Vec3::new(x, y, z)) {
                             break 'sweep;
                         }
@@ -78,10 +81,22 @@ mod tests {
         );
     }
     #[test]
+    fn third_person_clears_parallel_walls_and_crouching_ceilings() {
+        for mode in [Perspective::ThirdPersonRear, Perspective::ThirdPersonFront] {
+            let eye = Vec3::new(0.22, 1.27, 0.0);
+            let (camera, _) = mode.view(eye, Vec3::Z, |p| p.x < 0.0 || p.y >= 1.5);
+            assert_eq!(
+                camera.distance(eye),
+                4.0,
+                "{mode:?} collapsed into the head"
+            );
+        }
+    }
+    #[test]
     fn camera_corners_stop_at_walls_and_release_afterward() {
         let mode = Perspective::ThirdPersonRear;
-        let (pos, _) = mode.view(Vec3::ZERO, Vec3::Z, |p| p.z < -2.0 && p.x > 0.2);
-        assert!(pos.z > -1.8 && pos.z < -1.6);
+        let (pos, _) = mode.view(Vec3::ZERO, Vec3::Z, |p| p.z < -2.0 && p.x > 0.15);
+        assert!(pos.z > -1.86 && pos.z < -1.74);
         assert_eq!(mode.view(Vec3::ZERO, Vec3::Z, |_| false).0.z, -4.0);
         assert_eq!(mode.view(Vec3::ZERO, Vec3::Z, |_| true).0, Vec3::ZERO);
     }
