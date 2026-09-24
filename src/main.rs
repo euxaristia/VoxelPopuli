@@ -2256,11 +2256,30 @@ async fn run() {
         shader.bind();
         world.render_transparent(&shader, &frustum);
 
+        let player_biome = chunk::biome_at_version(
+            camera_pos.x,
+            camera_pos.z,
+            world.seed,
+            world.generator_version,
+        );
+        let biome_water = vibrant::water::biome_surface_water_color(player_biome);
+        let water_color = vibrant_pack.water.compute_water_color(biome_water);
+        let wave_depth = if vibrant_pack.water.waves.enabled {
+            vibrant_pack.water.waves.depth
+        } else {
+            0.0
+        };
+        let wave_speed = if vibrant_pack.water.waves.enabled {
+            vibrant_pack.water.waves.speed
+        } else {
+            1.0
+        };
+
         water_shader.bind();
         water_shader.set_mat4(water_shader.get_uniform_location("uMVP"), &mvp);
         water_shader.set_float(
             water_shader.get_uniform_location("uTime"),
-            current_time as f32,
+            (current_time as f32) * (wave_speed * 0.5),
         );
         water_shader.set_vec3(water_shader.get_uniform_location("sunDir"), sun_dir);
         water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), camera_pos);
@@ -2268,6 +2287,17 @@ async fn run() {
         water_shader.set_vec4(
             water_shader.get_uniform_location("colDiffuse"),
             forward_zenith,
+        );
+        water_shader.set_vec4(
+            water_shader.get_uniform_location("uColor"),
+            glam::Vec4::new(water_color[0], water_color[1], water_color[2], wave_depth),
+        );
+        water_shader.set_vec2(
+            water_shader.get_uniform_location("uScreenSize"),
+            glam::Vec2::new(
+                vibrant_pack.water.waves.frequency,
+                vibrant_pack.water.waves.pull,
+            ),
         );
         world.render_water(&water_shader, &frustum);
 
