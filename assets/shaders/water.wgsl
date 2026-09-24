@@ -47,28 +47,36 @@ fn vs_main(in: VsIn) -> VsOut {
 
 // Bedrock Vibrant Visuals multi-octave Gerstner-style trochoidal wave slope
 fn wave_slope(pos: vec2<f32>, t: f32) -> vec2<f32> {
-    // 4 octaves of coherent waves traveling in realistic cross directions:
-    // Octave 1: primary ocean swell (wavelength ~8 blocks)
-    let d1 = vec2<f32>(0.80, 0.60);
-    let p1 = dot(pos, d1) * 0.78 + t * 1.4;
-    let w1 = d1 * (cos(p1) * (0.65 + 0.35 * sin(p1))) * 0.11;
+    let freq = select(1.0, u.screen_size.x, u.screen_size.x > 0.01);
+    let pull = select(0.38, u.screen_size.y, abs(u.screen_size.y) > 0.001);
 
-    // Octave 2: secondary cross wave (wavelength ~4.5 blocks)
-    let d2 = vec2<f32>(-0.60, 0.80);
-    let p2 = dot(pos, d2) * 1.40 - t * 1.8;
-    let w2 = d2 * (cos(p2) * (0.65 + 0.35 * sin(p2))) * 0.075;
+    // Base frequency: swell wavelength ~8 blocks
+    var p = pos * (freq * 0.22);
+    var slope = vec2<f32>(0.0);
+    var amp = 0.075;
+    var speed = 1.1;
+    var heading = 0.42; // starting angle
+    let dir_inc = 1.3962634; // 80.0 degrees (Bedrock standard)
 
-    // Octave 3: surface ripples (wavelength ~2.2 blocks)
-    let d3 = vec2<f32>(0.35, -0.94);
-    let p3 = dot(pos, d3) * 2.85 + t * 2.5;
-    let w3 = d3 * cos(p3) * 0.045;
+    // 8 octaves of rotating waves: prevents orthogonal interference grids
+    for (var i = 0; i < 8; i = i + 1) {
+        let dir = vec2<f32>(cos(heading), sin(heading));
+        let phase = dot(p, dir) + t * speed;
+        let s = sin(phase);
+        let c = cos(phase);
 
-    // Octave 4: fine capillary ripples (wavelength ~1.1 blocks)
-    let d4 = vec2<f32>(-0.85, -0.53);
-    let p4 = dot(pos, d4) * 5.70 - t * 3.4;
-    let w4 = d4 * cos(p4) * 0.025;
+        // Bedrock trochoidal wave crest shaping:
+        // pull > 0 pulls waves into sharp crests and broader troughs
+        let crest = mix(1.0, pow(s * 0.5 + 0.5, 1.4) * 2.0, clamp(pull, 0.0, 1.0));
+        slope = slope + dir * (c * crest) * amp;
 
-    return w1 + w2 + w3 + w4;
+        p = p * 1.28;
+        amp = amp * 0.68;
+        speed = speed * 1.05;
+        heading = heading + dir_inc;
+    }
+
+    return slope;
 }
 
 @fragment
@@ -77,7 +85,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Multi-octave trochoidal wave normal perturbation.
     // Crossed ripples use world coordinates so adjacent chunks stay in phase.
-    let slope = wave_slope(in.world_pos.xz, u.u_time);
+    let wave_depth = select(1.0, u.u_color.w, length(u.u_color) > 0.001);
+    let slope = wave_slope(in.world_pos.xz, u.u_time) * wave_depth;
     let n = normalize(in.normal + vec3(-slope.x, 0.0, -slope.y) * abs(in.normal.y));
     let v = normalize(u.view_pos - in.world_pos);
 
@@ -92,12 +101,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let daylight = 0.15 + max(u.sun_dir.y, 0.0) * 0.85;
     let light = max(max(in.color.r * daylight, in.color.g) * in.color.b, 0.12);
 
-    // Minecraft Bedrock Vibrant Visuals ocean water appearance (#1787D4):
-    // Blend procedural wave texel with documented Bedrock ocean surface color.
-    let ocean_day = vec3<f32>(0.090, 0.529, 0.831);
-    let ocean_night = vec3<f32>(0.035, 0.120, 0.230);
+    // Bedrock Vibrant Visuals water appearance:
+    // Driven by the bio-optical water color and continuous wave optics without 16x16 block seams.
+    let custom_color = u.u_color.rgb;
+    let ocean_day = select(vec3<f32>(0.090, 0.529, 0.831), custom_color, length(custom_color) > 0.01);
+    let ocean_night = vec3<f32>(0.035, 0.120, 0.230) * (ocean_day / vec3<f32>(0.090, 0.529, 0.831));
     let ocean_base = mix(ocean_night, ocean_day, clamp(u.sun_dir.y * 2.0, 0.0, 1.0));
-    var albedo = mix(texel.rgb, ocean_base, 0.45);
+    var albedo = mix(ocean_base, texel.rgb, 0.05);
     if (u.hdr_output != 0) {
         albedo = srgb_to_linear(albedo);
     }
@@ -115,14 +125,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Specular (Sun track by day, Moonlight glisten across waves by night)
     let r_l = reflect(-celestial_dir, n);
-    let spec = pow(max(dot(v, r_l), 0.0), 24.0);
-    let spec_intensity = select(0.40, 0.60, is_day);
+    let spec = pow(max(dot(v, r_l), 0.0), 32.0);
+    let spec_intensity = select(0.35, 0.55, is_day);
     let specular = celestial_col * spec * spec_intensity * in.color.r * celestial_alt;
 
     // Bedrock Vibrant Visuals water: depth-aware opacity (1.0 for deep ocean),
     // with strong Fresnel reflection at grazing angles.
-    let fresnel = 0.02 + 0.98 * pow(1.0 - clamp(abs(dot(n, v)), 0.0, 1.0), 4.5);
-    let alpha = mix(in.color.a, 1.0, fresnel);
+    let fresnel = 0.04 + 0.96 * pow(1.0 - clamp(abs(dot(n, v)), 0.0, 1.0), 4.5);
+    let alpha = mix(in.color.a * 0.92, 1.0, fresnel);
 
     var color = mix(diffuse, sky_reflection, fresnel) + specular;
     let distance = max(length(in.world_pos - u.view_pos) - 24.0, 0.0);

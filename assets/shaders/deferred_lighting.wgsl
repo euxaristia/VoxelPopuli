@@ -264,6 +264,59 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             * subsurface * pow(back, 2.0) * wrap * sky_visibility * INV_PI;
     }
 
+    // Minecraft Bedrock Vibrant Visuals dynamic underwater caustics:
+    let caustic_scale = u.moon_color.w;
+    let caustic_power = u.block_light_color.w;
+    if (caustic_power > 0.0 && world_pos.y < 124.0) {
+        let depth_under = 124.0 - world_pos.y;
+        let depth_decay = exp(-depth_under * 0.08);
+        let time = u.sun_color.w;
+        let p = world_pos.xz * caustic_scale;
+
+        // Non-orthogonal wave fronts rotated by 80 degrees (no axis-aligned grid or checkerboard)
+        let dir1 = vec2<f32>(1.0, 0.0);
+        let dir2 = vec2<f32>(0.1736, 0.9848);  // 80 degrees
+        let dir3 = vec2<f32>(-0.9397, 0.3420); // 160 degrees
+
+        let warp = vec2<f32>(
+            sin(dot(p, dir2) * 1.6 + time * 1.2),
+            cos(dot(p, dir3) * 1.6 - time * 1.1)
+        ) * 0.35;
+        let pw = p + warp;
+
+        let c1 = cos(dot(pw, dir1) * 2.2 + time * 1.3);
+        let c2 = cos(dot(pw, dir2) * 2.2 - time * 1.2);
+        let c3 = cos(dot(pw, dir3) * 2.2 + time * 1.4);
+
+        // Sum of non-orthogonal waves produces organic filamentary networks, not checkerboards
+        let c_net = (c1 + c2 + c3) / 3.0;
+        let caustics_wave = clamp(c_net * 0.5 + 0.5, 0.0, 1.0);
+        let caustics = pow(caustics_wave, caustic_power * 0.7) * (1.6 + caustic_power * 0.5);
+
+        // Water refracts downward: horizontal surfaces receive 1.0, vertical walls receive 0.50
+        let surface_orientation = max(n.y, 0.0) * 0.50 + 0.50;
+        let sun_lum = u.sun_direction_illuminance.w * max(u.sun_direction_illuminance.y, 0.0);
+        let moon_lum = u.moon_direction_illuminance.w * max(u.moon_direction_illuminance.y, 0.0);
+        let celestial_light = u.sun_color.rgb * sun_lum + u.moon_color.rgb * moon_lum;
+
+        radiance += albedo * celestial_light * caustics * depth_decay * surface_orientation * sky_visibility * INV_PI;
+    }
+
+    // Underwater optical light extinction and volumetric in-scattering (Beer-Lambert law):
+    if (world_pos.y < 124.0) {
+        let depth_under = 124.0 - world_pos.y;
+        // Wavelength-dependent transmittance (red extinguishes quickly, green medium, blue slowly)
+        let water_transmittance = exp(-depth_under * vec3<f32>(0.20, 0.08, 0.025));
+
+        // In-scattered light from ambient sky dome through water column, scaled strictly by current sky lux
+        let ambient_water = sky_lux * sky_intensity * 0.35 * INV_PI;
+        let water_base = mix(u.horizon_color.rgb, vec3<f32>(0.09, 0.53, 0.83), 0.5);
+        let water_body_color = water_base * ambient_water;
+
+        // Volumetric integration: L = L_surface * T + L_water * (1 - T)
+        radiance = radiance * water_transmittance + water_body_color * (vec3<f32>(1.0) - water_transmittance) * sky_visibility;
+    }
+
     // Aerial perspective adds depth without flattening nearby block detail.
     // Only sky-exposed geometry receives haze, so sealed caves stay clear.
     let distance = max(length(world_pos - u.camera_pos_exposure.xyz) - 24.0, 0.0);

@@ -21,11 +21,13 @@ pub mod json;
 pub mod keyframe;
 pub mod lighting;
 pub mod texture_set;
+pub mod water;
 
 use atmospherics::AtmosphereSettings;
 use lighting::{LightingSettings, LocalLightSettings, PbrFallbackSettings};
 use std::path::{Path, PathBuf};
 use texture_set::TextureSet;
+use water::WaterSettings;
 
 /// Where the built-in pack lives, relative to the working directory.
 pub const DEFAULT_PACK_DIR: &str = "assets/vibrant";
@@ -41,6 +43,7 @@ pub struct VibrantPack {
     pub atmospherics: AtmosphereSettings,
     pub local_lighting: LocalLightSettings,
     pub pbr_fallback: PbrFallbackSettings,
+    pub water: WaterSettings,
     /// Texture sets keyed by the texture base name, so `stone` resolves the
     /// set authored in `stone.texture_set.json`.
     texture_sets: Vec<(String, TextureSet)>,
@@ -57,6 +60,7 @@ impl Default for VibrantPack {
             atmospherics: AtmosphereSettings::default(),
             local_lighting: LocalLightSettings::default(),
             pbr_fallback: PbrFallbackSettings::default(),
+            water: WaterSettings::default(),
             texture_sets: Vec::new(),
             pbr_capable: false,
             warnings: Vec::new(),
@@ -125,6 +129,15 @@ impl VibrantPack {
                 None => pack
                     .warnings
                     .push("pbr/global.json: no minecraft:pbr_fallback_settings object".into()),
+            }
+        }
+
+        if let Some(value) = read_json(&dir.join("water/water.json"), &mut pack.warnings) {
+            match WaterSettings::parse(&value) {
+                Some(settings) => pack.water = settings,
+                None => pack
+                    .warnings
+                    .push("water/water.json: no minecraft:water_settings object".into()),
             }
         }
 
@@ -455,5 +468,30 @@ mod tests {
             loaded.local_lighting.get(BlockType::Torch).unwrap().color,
             Color::rgb(0.0, 0.0, 1.0)
         );
+    }
+
+    #[test]
+    fn loads_water_settings_from_pack() {
+        let pack = TempPack::new();
+        pack.write(
+            "water/water.json",
+            r##"{
+                "format_version": "1.26.0",
+                "minecraft:water_settings": {
+                    "description": { "identifier": "custom:ocean" },
+                    "particle_concentrations": { "cdom": 2.5, "chlorophyll": 1.2, "suspended_sediment": 0.8 },
+                    "waves": { "depth": 0.75, "speed": 1.5 },
+                    "caustics": { "enabled": true, "scale": 0.4 },
+                    "biome_water_color_contribution": 0.35
+                }
+            }"##,
+        );
+        let loaded = pack.load();
+        assert_eq!(loaded.water.identifier, "custom:ocean");
+        assert_eq!(loaded.water.particles.cdom, 2.5);
+        assert_eq!(loaded.water.particles.chlorophyll, 1.2);
+        assert_eq!(loaded.water.waves.depth, 0.75);
+        assert_eq!(loaded.water.caustics.scale, 0.4);
+        assert_eq!(loaded.water.biome_water_color_contribution, 0.35);
     }
 }

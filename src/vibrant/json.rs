@@ -47,6 +47,17 @@ impl Json {
         self.as_f64().map(|n| n as f32)
     }
 
+    pub fn as_u32(&self) -> Option<u32> {
+        self.as_f64().map(|n| n as u32)
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Json::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Json::String(s) => Some(s),

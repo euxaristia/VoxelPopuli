@@ -103,6 +103,23 @@ pub fn build_uniforms(pack: &VibrantPack, input: &FrameInput) -> DeferredUniform
         .unwrap_or(super::keyframe::Color::WHITE)
         .to_linear();
 
+    let caustic_scale = if pack.water.caustics.enabled {
+        pack.water.caustics.scale
+    } else {
+        0.0
+    };
+    let caustic_power = if pack.water.caustics.enabled {
+        pack.water.caustics.power as f32
+    } else {
+        0.0
+    };
+    let anim_time = if pack.water.caustics.frame_length > 0.001 {
+        let raw = input.day_fraction * SECONDS_PER_DAY;
+        (raw / pack.water.caustics.frame_length).floor() * pack.water.caustics.frame_length
+    } else {
+        input.day_fraction * SECONDS_PER_DAY
+    };
+
     DeferredUniforms {
         inv_view_proj: input.view_proj.inverse().to_cols_array(),
         camera_pos_exposure: [
@@ -112,9 +129,15 @@ pub fn build_uniforms(pack: &VibrantPack, input: &FrameInput) -> DeferredUniform
             exposure,
         ],
         sun_direction_illuminance: [sun_dir.x, sun_dir.y, sun_dir.z, sun_lux],
-        sun_color: rgb4(lighting.sun.color.sample(time).to_linear()),
+        sun_color: {
+            let [r, g, b] = lighting.sun.color.sample(time).to_linear();
+            [r, g, b, anim_time]
+        },
         moon_direction_illuminance: [moon_dir.x, moon_dir.y, moon_dir.z, moon_lux],
-        moon_color: rgb4(lighting.moon.color.sample(time).to_linear()),
+        moon_color: {
+            let [r, g, b] = lighting.moon.color.sample(time).to_linear();
+            [r, g, b, caustic_scale]
+        },
         ambient_color_illuminance: {
             let [r, g, b] = lighting.ambient_color.sample(time).to_linear();
             [r, g, b, ambient_lux]
@@ -139,7 +162,12 @@ pub fn build_uniforms(pack: &VibrantPack, input: &FrameInput) -> DeferredUniform
             atmosphere.horizon_mie_start,
             atmosphere.horizon_max,
         ],
-        block_light_color: rgb4(block_light),
+        block_light_color: [
+            block_light[0],
+            block_light[1],
+            block_light[2],
+            caustic_power,
+        ],
     }
 }
 
@@ -365,5 +393,16 @@ mod tests {
         assert!(sunset.x > sunset.z * 1.5);
         assert!(night.z > night.x);
         assert!(night.max_element() < day.max_element() * 0.25);
+    }
+
+    #[test]
+    fn caustics_parameters_are_populated_into_deferred_uniforms() {
+        let pack = VibrantPack::default();
+        let uniforms = build_uniforms(&pack, &noon_input());
+        assert_eq!(uniforms.moon_color[3], pack.water.caustics.scale);
+        assert_eq!(
+            uniforms.block_light_color[3],
+            pack.water.caustics.power as f32
+        );
     }
 }
