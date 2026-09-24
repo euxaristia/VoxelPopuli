@@ -267,7 +267,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Minecraft Bedrock Vibrant Visuals dynamic underwater caustics:
     let caustic_scale = u.moon_color.w;
     let caustic_power = u.block_light_color.w;
-    if (caustic_power > 0.0 && world_pos.y < 124.0) {
+    if (caustic_power > 0.0 && world_pos.y < 123.9) {
         let depth_under = 124.0 - world_pos.y;
         let depth_decay = exp(-depth_under * 0.08);
         let time = u.sun_color.w;
@@ -303,7 +303,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     // Underwater optical light extinction and volumetric in-scattering (Beer-Lambert law):
-    if (world_pos.y < 124.0) {
+    if (world_pos.y < 123.9) {
         let depth_under = 124.0 - world_pos.y;
         // Wavelength-dependent transmittance (red extinguishes quickly, green medium, blue slowly)
         let water_transmittance = exp(-depth_under * vec3<f32>(0.20, 0.08, 0.025));
