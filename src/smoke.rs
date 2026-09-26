@@ -121,12 +121,12 @@ pub fn hand_input(frame: u32) -> Option<glfw::WindowEvent> {
 /// Render the same articulated meshes used in gameplay, including hit tint.
 pub fn combat_poses(shader: &Shader, width: i32, height: i32) -> Result<(), String> {
     use crate::mob::{Mob, MobKind};
-    use glam::{Mat4, Vec3, Vec4};
+    use glam::{Vec3, Vec4};
     let visuals = crate::mob_visuals::MobVisuals::new();
     let target = RenderTexture2D::new(480, 480);
     let viewer = Vec3::new(3.0, 2.0, 5.0);
-    let mvp = Mat4::perspective_rh(50.0f32.to_radians(), 1.0, 0.1, 30.0)
-        * Mat4::look_at_rh(viewer, Vec3::Y * 1.3, Vec3::Y);
+    let mvp = glam::camera::rh::proj::directx::perspective(50.0f32.to_radians(), 1.0, 0.1, 30.0)
+        * glam::camera::rh::view::look_at_mat4(viewer, Vec3::Y * 1.3, Vec3::Y);
     for (name, kind) in [("zombie", MobKind::Zombie), ("golem", MobKind::Golem)] {
         let mut idle: Option<crate::png_io::Image> = None;
         for pose in ["idle", "attack", "hurt", "death"] {
@@ -700,7 +700,7 @@ pub fn container_ui() -> Result<(), String> {
 /// Capture generated habitats through the production terrain mesher and shader.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn celestial_sneak() -> Result<(), String> {
-    use glam::{Mat4, Vec3, Vec4};
+    use glam::{Vec3, Vec4};
     let mut glfw = glfw::init(glfw::log_errors).map_err(|e| e.to_string())?;
     glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
     glfw.window_hint(glfw::WindowHint::Visible(false));
@@ -718,8 +718,9 @@ pub fn celestial_sneak() -> Result<(), String> {
     let sky = crate::celestial::Celestial::new();
     let target = RenderTexture2D::new(800, 600);
     std::fs::create_dir_all("target/test-artifacts").map_err(|e| e.to_string())?;
-    let mvp = Mat4::perspective_rh(60f32.to_radians(), 4.0 / 3.0, 0.1, 1000.0)
-        * Mat4::look_at_rh(Vec3::ZERO, Vec3::Z, Vec3::Y);
+    let mvp =
+        glam::camera::rh::proj::directx::perspective(60f32.to_radians(), 4.0 / 3.0, 0.1, 1000.0)
+            * glam::camera::rh::view::look_at_mat4(Vec3::ZERO, Vec3::Z, Vec3::Y);
     for i in 0..15 {
         let (direction, view_projection) = if i >= 9 {
             let (elevation, yaw) = if i < 12 {
@@ -774,8 +775,13 @@ pub fn celestial_sneak() -> Result<(), String> {
         player.position = Vec3::ZERO;
         player.crouch_amount = if crouched { 1.0 } else { 0.0 };
         let eye = player.eye_position();
-        let mvp = Mat4::perspective_rh(70f32.to_radians(), 4.0 / 3.0, 0.1, 1000.0)
-            * Mat4::look_at_rh(eye, eye + Vec3::new(0.0, -1.0, 0.5), Vec3::Y);
+        let mvp =
+            glam::camera::rh::proj::directx::perspective(
+                70f32.to_radians(),
+                4.0 / 3.0,
+                0.1,
+                1000.0,
+            ) * glam::camera::rh::view::look_at_mat4(eye, eye + Vec3::new(0.0, -1.0, 0.5), Vec3::Y);
         target.bind();
         renderer::clear(0.25, 0.35, 0.4, 1.0);
         body_shader.set_vec3(body_shader.get_uniform_location("sunDir"), Vec3::Y);
@@ -815,8 +821,12 @@ pub fn celestial_sneak() -> Result<(), String> {
     ] {
         let eye = Vec3::new(0.0, 1.62 - 0.35 * crouch, 0.0);
         let (position, look) = mode.view(eye, Vec3::new(0.0, -0.12, 1.0), |_| false);
-        let mvp = Mat4::perspective_rh(60f32.to_radians(), 4.0 / 3.0, 0.1, 1000.0)
-            * Mat4::look_at_rh(position, position + look, Vec3::Y);
+        let mvp = glam::camera::rh::proj::directx::perspective(
+            60f32.to_radians(),
+            4.0 / 3.0,
+            0.1,
+            1000.0,
+        ) * glam::camera::rh::view::look_at_mat4(position, position + look, Vec3::Y);
         target.bind();
         renderer::clear(0.25, 0.35, 0.4, 1.0);
         body_shader.set_vec3(body_shader.get_uniform_location("viewPos"), position);
@@ -846,16 +856,16 @@ pub fn celestial_sneak() -> Result<(), String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn sky_seam(width: i32, height: i32) -> Result<(), String> {
-    use glam::{Mat4, Vec3};
+    use glam::Vec3;
     renderer::deferred_resize(width, height);
     let target = RenderTexture2D::new(width, height);
     let uniforms = renderer::DeferredUniforms {
-        inv_view_proj: (Mat4::perspective_rh(
+        inv_view_proj: (glam::camera::rh::proj::directx::perspective(
             70f32.to_radians(),
             width as f32 / height as f32,
             0.1,
             1000.0,
-        ) * Mat4::look_at_rh(Vec3::ZERO, Vec3::Z, Vec3::Y))
+        ) * glam::camera::rh::view::look_at_mat4(Vec3::ZERO, Vec3::Z, Vec3::Y))
         .inverse()
         .to_cols_array(),
         camera_pos_exposure: [0.0, 0.0, 0.0, 1.0],
@@ -950,8 +960,9 @@ pub fn habitats() -> Result<(), String> {
             .unwrap_or(128) as f32;
         let center = Vec3::new((cx * 16 + 8) as f32, top - 2.0, (cz * 16 + 8) as f32);
         let eye = center + Vec3::new(23.0, 17.0, 27.0);
-        let mvp = Mat4::perspective_rh(45f32.to_radians(), 1.25, 0.1, 500.0)
-            * Mat4::look_at_rh(eye, center, Vec3::Y);
+        let mvp =
+            glam::camera::rh::proj::directx::perspective(45f32.to_radians(), 1.25, 0.1, 500.0)
+                * glam::camera::rh::view::look_at_mat4(eye, center, Vec3::Y);
         let mut world = crate::world::World::simulation(42);
         world.insert_chunk(chunk);
         let snap = MeshSnapshot::capture(&world, cx, cz);

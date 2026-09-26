@@ -7,8 +7,8 @@ perf.data.old
 target/
 window.cfg
 world.vps
-world/
-world.bedrock/
+/world/
+/world.bedrock/
 *.vps
 !tests/fixtures/*.vps
 java17_world/

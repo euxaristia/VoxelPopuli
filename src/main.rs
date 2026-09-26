@@ -2024,7 +2024,12 @@ async fn run() {
 
         let aspect = target.texture.width as f32 / target.texture.height as f32;
         // perspective_rh maps depth to wgpu's [0, 1] range (GL used [-1, 1]).
-        let projection = Mat4::perspective_rh(fov_setting.to_radians(), aspect, 0.1, 1000.0);
+        let projection = glam::camera::rh::proj::directx::perspective(
+            fov_setting.to_radians(),
+            aspect,
+            0.1,
+            1000.0,
+        );
         let (tilt, hurt_angle) = if player.hurt_time > 0.0 {
             let f = (player.hurt_time / 0.5).clamp(0.0, 1.0);
             let tilt = (f * f * std::f32::consts::PI).sin() * 14.0f32.to_radians();
@@ -2044,7 +2049,8 @@ async fn run() {
                 .get_block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)
                 .is_solid()
         });
-        let view = hurt_mat * Mat4::look_at_rh(camera_pos, camera_pos + camera_look, Vec3::Y);
+        let view = hurt_mat
+            * glam::camera::rh::view::look_at_mat4(camera_pos, camera_pos + camera_look, Vec3::Y);
         let mvp = projection * view;
 
         // Vibrant Visuals deferred path. Fancy graphics off keeps the
@@ -2922,9 +2928,19 @@ async fn run() {
 
             // Set up orthographic view-projection mapping onto [plx, ply, pw_doll, ph_doll]
             let aspect = pw_doll / ph_doll;
-            let ortho = Mat4::orthographic_rh(-aspect * 1.05, aspect * 1.05, -1.05, 1.05, 0.5, 6.0);
-            let view =
-                Mat4::look_at_rh(Vec3::new(0.0, 0.0, 3.0), Vec3::new(0.0, 0.0, 0.0), Vec3::Y);
+            let ortho = glam::camera::rh::proj::directx::orthographic(
+                -aspect * 1.05,
+                aspect * 1.05,
+                -1.05,
+                1.05,
+                0.5,
+                6.0,
+            );
+            let view = glam::camera::rh::view::look_at_mat4(
+                Vec3::new(0.0, 0.0, 3.0),
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::Y,
+            );
             let proj_view = ortho * view;
             let ndc_cx = ((plx + pw_doll * 0.5) / sw) * 2.0 - 1.0;
             let ndc_cy = 1.0 - ((ply + ph_doll * 0.5) / sh) * 2.0;

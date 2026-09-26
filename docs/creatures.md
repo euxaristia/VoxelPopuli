@@ -87,6 +87,21 @@ Honey bottles restore hunger and cure poison. This implementation follows the
 [Bedrock bee example](https://github.com/Mojang/bedrock-samples/blob/main/behavior_pack/entities/bee.json)
 within this game's available blocks and systems; it is not full Bedrock parity.
 
+Iron golems follow the
+[Bedrock iron_golem definition](https://learn.microsoft.com/en-us/minecraft/creator/reference/source/vanillabehaviorpack_snippets/entities/iron_golem?view=minecraft-bedrock-stable):
+100 health, 0.25 movement, 7 to 21 melee damage, full knockback resistance,
+and no fall damage. They acquire the monster family within 10 blocks, exclude
+creepers, retaliate against non-creeper attackers at the 64-block follow range,
+and never despawn with distance. Feeding an iron ingot repairs 25 health up to
+100. Defeat drops 3 to 5 iron ingots and 0 to 2 poppies with no experience.
+The model uses the reference cube geometry at 16 units per block.
+Their base `nearest_attackable_target` and `hurt_by_target` goals apply to
+village- and player-created golems alike, so this implementation matches a
+village golem. Not implemented: iron block and pumpkin construction, the
+`village_created` `defend_village_target` 5 percent attack chance and dweller
+role, `move_through_village` at night, `offer_flower`, `preferred_path` block
+costs, `leashable`, `balloonable`, and `target_when_pushed`.
+
 The roster was checked against the official
 [Bedrock entity list](https://learn.microsoft.com/en-us/minecraft/creator/reference/content/vanillalistingsreference/entities?view=minecraft-bedrock-stable),
 [Bedrock sample version metadata](https://github.com/Mojang/bedrock-samples/blob/main/version.json),

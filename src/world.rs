@@ -7,6 +7,7 @@ use crate::chunk::{
 use crate::mob::{Mob, MobKind};
 use crate::mob_catalog::Motion;
 mod bees;
+mod golems;
 mod mobs;
 mod skeletons;
 mod streaming;
@@ -905,9 +906,15 @@ impl World {
         if let Some((block, count)) = mob.drop_item() {
             self.pending_drops.push((block, count as u32));
         }
+        if mob.kind == MobKind::Golem {
+            let poppies = rand::random_range(0..=2);
+            if poppies > 0 {
+                self.pending_drops.push((BlockType::Poppy, poppies));
+            }
+            return;
+        }
         let xp_val = match mob.kind {
             MobKind::Zombie | MobKind::Skeleton | MobKind::Creeper => 5,
-            MobKind::Golem => 10,
             _ if mob.is_hostile() => 5,
             _ if mob.is_animal() => 1 + (rand::random::<u32>() % 3),
             _ => 2,
@@ -971,9 +978,7 @@ impl World {
                 scale: 0.08,
             });
         }
-        self.mobs[index]
-            .skeleton
-            .hurt_by(crate::skeleton_ai::TargetId::Player, None);
+        self.mobs[index].record_attacker(crate::skeleton_ai::TargetId::Player, None, damage);
         if self.mobs[index].kind == MobKind::Enderman {
             self.mobs[index].enderman_aggro = true;
         }
@@ -981,10 +986,12 @@ impl World {
             let mob = self.mobs.swap_remove(index);
             self.finish_mob_death(mob);
         } else {
-            let knock_h = dir * 7.0;
-            self.mobs[index].velocity.x = knock_h.x;
-            self.mobs[index].velocity.z = knock_h.z;
-            self.mobs[index].velocity.y = 3.5;
+            if self.mobs[index].kind != MobKind::Golem {
+                let knock_h = dir * 7.0;
+                self.mobs[index].velocity.x = knock_h.x;
+                self.mobs[index].velocity.z = knock_h.z;
+                self.mobs[index].velocity.y = 3.5;
+            }
             if self.mobs[index].kind == MobKind::Enderman && rand::random::<f32>() < 0.7 {
                 self.try_teleport_mob(index, 16.0);
             }
@@ -1174,13 +1181,17 @@ impl World {
                                 });
                             }
                             if from_player {
-                                self.mobs[m_idx]
-                                    .skeleton
-                                    .hurt_by(crate::skeleton_ai::TargetId::Player, None);
+                                self.mobs[m_idx].record_attacker(
+                                    crate::skeleton_ai::TargetId::Player,
+                                    None,
+                                    damage,
+                                );
                             } else if let Some(id) = owner {
-                                self.mobs[m_idx]
-                                    .skeleton
-                                    .hurt_by(crate::skeleton_ai::TargetId::Mob(id), owner_kind);
+                                self.mobs[m_idx].record_attacker(
+                                    crate::skeleton_ai::TargetId::Mob(id),
+                                    owner_kind,
+                                    damage,
+                                );
                             }
                             if self.mobs[m_idx].take_combat_damage(damage) {
                                 let dead_mob = self.mobs.swap_remove(m_idx);
@@ -2131,7 +2142,12 @@ impl World {
             self.mobs
                 .push(Mob::new(MobKind::Villager, pos, home, i as u8));
         }
-        if self.mobs.len() < MOB_CAP {
+        if self.mobs.len() < MOB_CAP
+            && !self
+                .mobs
+                .iter()
+                .any(|m| m.kind == MobKind::Golem && m.home == home)
+        {
             self.mobs
                 .push(Mob::new(MobKind::Golem, village.golem_spawn(), home, 0));
         }
@@ -2395,6 +2411,10 @@ impl World {
         let mut best_dist = 5.0f32;
         for (index, mob) in self.mobs.iter().enumerate() {
             if !((mob.is_animal() && mob.food_item() == Some(item))
+                || (mob.kind == MobKind::Golem
+                    && item == BlockType::IronIngot
+                    && mob.health > 0.0
+                    && mob.health < 100.0)
                 || (mob.kind == MobKind::Bee
                     && crate::bee::is_flower(item)
                     && !mob.bee.inside
@@ -2412,6 +2432,9 @@ impl World {
                 continue;
             }
             if dist < best_dist {
+                if mob.kind == MobKind::Golem && self.raycast(origin, to, dist).hit {
+                    continue;
+                }
                 best_dist = dist;
                 best = Some(index);
             }
@@ -2420,6 +2443,10 @@ impl World {
             return false;
         };
         let mob = &mut self.mobs[index];
+        if mob.kind == MobKind::Golem {
+            mob.health = (mob.health + 25.0).min(100.0);
+            return true;
+        }
         if mob.is_baby() {
             mob.animal.growth *= 0.9;
             return true;
@@ -2460,7 +2487,7 @@ impl World {
                 );
             }
             // Java animals do not despawn. Village mobs stay farther out.
-            if mob.is_animal() || mob.kind == MobKind::Bee {
+            if mob.is_animal() || matches!(mob.kind, MobKind::Bee | MobKind::Golem) {
                 return true;
             }
             let max_distance = if matches!(mob.kind, MobKind::Villager | MobKind::Golem) {
@@ -2619,7 +2646,17 @@ impl World {
                 && !self
                     .raycast(attack_origin, attack_line, attack_line.length())
                     .hit;
-            if !skeleton && mob.is_hostile() && target_dist < 16.0 && target_dist > 0.05 {
+            if mob.kind == MobKind::Golem
+                && let Some(hit) = self.tick_golem(mob, &peers, player_pos)
+            {
+                mob_hits.push(hit);
+            }
+            if !skeleton
+                && mob.kind != MobKind::Golem
+                && mob.is_hostile()
+                && target_dist < 16.0
+                && target_dist > 0.05
+            {
                 let ranged_shot = mob.track_combat_target(target_pos, can_see_target);
                 if mob.kind == MobKind::Creeper && is_target_player {
                     if (target_dist < 3.0 || (mob.creeper_fuse > 0.0 && target_dist <= 7.0))
@@ -2910,9 +2947,11 @@ impl World {
             let attacker_kind = mobs.iter().find(|m| m.id == attacker).map(|m| m.kind);
             if let Some(victim) = mobs.iter_mut().find(|m| m.id == id && m.health > 0.0) {
                 victim.last_damage_source = attacker_kind;
-                victim
-                    .skeleton
-                    .hurt_by(crate::skeleton_ai::TargetId::Mob(attacker), attacker_kind);
+                victim.record_attacker(
+                    crate::skeleton_ai::TargetId::Mob(attacker),
+                    attacker_kind,
+                    damage,
+                );
                 victim.take_combat_damage(damage);
             }
         }

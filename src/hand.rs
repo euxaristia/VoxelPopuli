@@ -87,7 +87,12 @@ fn tint(color: [u8; 4]) -> glam::Vec4 {
 /// The arm's own projection. Takes only the aspect ratio: the world FOV
 /// deliberately does not reach it, so the arm is identical on every setting.
 pub fn projection(aspect: f32) -> Mat4 {
-    Mat4::perspective_rh(HAND_FOV_Y.to_radians(), aspect, NEAR_PLANE, FAR_PLANE)
+    glam::camera::rh::proj::directx::perspective(
+        HAND_FOV_Y.to_radians(),
+        aspect,
+        NEAR_PLANE,
+        FAR_PLANE,
+    )
 }
 
 /// Emit one quad as two triangles. `quad` is bottom-left, bottom-right,
@@ -1205,8 +1210,12 @@ mod tests {
         for aspect in ASPECTS {
             let hand = projection(aspect);
             for world_fov in [60.0f32, 80.0, 90.0, 100.0] {
-                let world =
-                    Mat4::perspective_rh(world_fov.to_radians(), aspect, NEAR_PLANE, FAR_PLANE);
+                let world = glam::camera::rh::proj::directx::perspective(
+                    world_fov.to_radians(),
+                    aspect,
+                    NEAR_PLANE,
+                    FAR_PLANE,
+                );
                 if (world_fov - HAND_FOV_Y).abs() > 0.5 {
                     assert!(
                         world != hand,
@@ -1413,8 +1422,13 @@ mod tests {
     fn look_down_ndc(p: Vec3, pitch: f32, fov: f32, aspect: f32) -> (f32, f32) {
         let eye = Vec3::new(0.0, EYE_HEIGHT, 0.0);
         let look = Vec3::new(0.0, pitch.sin(), pitch.cos());
-        let view = Mat4::look_at_rh(eye, eye + look, Vec3::Y);
-        let proj = Mat4::perspective_rh(fov.to_radians(), aspect, NEAR_PLANE, FAR_PLANE);
+        let view = glam::camera::rh::view::look_at_mat4(eye, eye + look, Vec3::Y);
+        let proj = glam::camera::rh::proj::directx::perspective(
+            fov.to_radians(),
+            aspect,
+            NEAR_PLANE,
+            FAR_PLANE,
+        );
         let clip = proj * view * p.extend(1.0);
         (clip.x / clip.w, clip.y / clip.w)
     }

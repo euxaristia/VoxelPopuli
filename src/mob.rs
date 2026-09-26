@@ -63,6 +63,7 @@ pub struct Mob {
     pub walk_phase: f32,
     pub walk_blend: f32,
     pub anger_time: f32,
+    pub golem_target: Option<crate::skeleton_ai::TargetId>,
     pub swim_pitch: f32,
     pub animation: crate::combat_animation::MobAnimation,
     pub last_damage_source: Option<MobKind>,
@@ -94,6 +95,7 @@ impl Mob {
             walk_phase: 0.0,
             walk_blend: 0.0,
             anger_time: 0.0,
+            golem_target: None,
             swim_pitch: 0.0,
             animation: Default::default(),
             last_damage_source: None,
@@ -119,7 +121,10 @@ impl Mob {
         {
             self.bee.alert_pending = true;
         }
-        if damage > 0.0 && self.kind.species().temper == Temper::Neutral {
+        if damage > 0.0
+            && self.kind != MobKind::Golem
+            && self.kind.species().temper == Temper::Neutral
+        {
             self.anger_time = if self.kind == MobKind::Bee && self.bee.sting_death == 0.0 {
                 25.0
             } else {
@@ -184,6 +189,21 @@ impl Mob {
             )
     }
 
+    pub fn record_attacker(
+        &mut self,
+        source: crate::skeleton_ai::TargetId,
+        kind: Option<MobKind>,
+        damage: f32,
+    ) {
+        if !damage.is_finite() || damage <= 0.0 || self.health <= 0.0 {
+            return;
+        }
+        self.skeleton.hurt_by(source, kind);
+        if self.kind == MobKind::Golem && kind != Some(MobKind::Creeper) {
+            self.golem_target = Some(source);
+        }
+    }
+
     pub fn is_baby(&self) -> bool {
         self.animal.growth > 0.0
     }
@@ -192,6 +212,7 @@ impl Mob {
     pub fn movement_attribute(&self) -> f32 {
         match self.kind {
             MobKind::Cow => 0.2,
+            MobKind::Golem => 0.25,
             MobKind::Sheep => 0.23,
             MobKind::Pig => 0.25,
             _ => self.kind.species().speed / 10.75,
@@ -231,6 +252,9 @@ impl Mob {
     }
 
     pub fn is_hostile(&self) -> bool {
+        if self.kind == MobKind::Golem {
+            return self.golem_target.is_some();
+        }
         if self.kind == MobKind::Bee && (self.bee.sting_death > 0.0 || self.bee.inside) {
             return false;
         }
@@ -338,7 +362,7 @@ impl Mob {
     pub fn drop_item(&self) -> Option<(BlockType, u8)> {
         match self.kind {
             MobKind::Villager => None,
-            MobKind::Golem => Some((BlockType::IronIngot, 3)),
+            MobKind::Golem => Some((BlockType::IronIngot, rand::random_range(3..=5))),
             MobKind::Zombie => Some((BlockType::RawIron, 1)),
             MobKind::Skeleton => Some((BlockType::Bone, 1)),
             MobKind::Creeper => Some((BlockType::Gunpowder, 1)),
@@ -355,6 +379,12 @@ impl Mob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn golem_movement_attribute_matches_bedrock() {
+        let mob = Mob::new(MobKind::Golem, Vec3::ZERO, Vec3::ZERO, 0);
+        assert_eq!(mob.movement_attribute(), 0.25);
+    }
 
     #[test]
     fn skeleton_holds_firing_position_even_while_reloading() {
@@ -502,7 +532,9 @@ mod tests {
         assert_eq!(sh.drop_item(), Some((BlockType::Wool, 1)));
 
         let g = Mob::new(MobKind::Golem, pos, home, 0);
-        assert_eq!(g.drop_item(), Some((BlockType::IronIngot, 3)));
+        let (item, count) = g.drop_item().unwrap();
+        assert_eq!(item, BlockType::IronIngot);
+        assert!((3..=5).contains(&count));
         assert_eq!(g.health, 100.0);
 
         let v = Mob::new(MobKind::Villager, pos, home, 0);

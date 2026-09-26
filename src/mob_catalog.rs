@@ -150,7 +150,7 @@ macro_rules! species {
 
 species! {
     Villager, "Villager", "villager", Villager, Walk, Passive, Village, 1.9, 0.6, 20.0, 1.7, 0, [153,107,70], [203,157,116];
-    Golem, "Iron Golem", "iron_golem", Golem, Walk, Neutral, Village, 2.9, 1.4, 100.0, 1.15, 12, [203,202,181], [74,115,65];
+    Golem, "Iron Golem", "iron_golem", Golem, Walk, Neutral, Village, 2.9, 1.4, 100.0, 2.6875, 7, [203,202,181], [74,115,65];
     Zombie, "Zombie", "zombie", Person, Walk, Hostile, Night, 1.9, 0.6, 20.0, 1.5, 3, [55,139,144], [100,139,74];
     Skeleton, "Skeleton", "skeleton", Person, Walk, Hostile, Night, 1.9, 0.6, 20.0, 2.6875, 2, [210,207,185], [105,101,88];
     Creeper, "Creeper", "creeper", Creeper, Walk, Hostile, Night, 1.8, 0.6, 20.0, 1.4, 0, [84,159,66], [37,69,35];

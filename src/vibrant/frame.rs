@@ -208,7 +208,7 @@ mod tests {
         FrameInput {
             day_fraction: 0.0,
             camera_pos: Vec3::new(0.0, 70.0, 0.0),
-            view_proj: Mat4::perspective_rh(1.2, 1.6, 0.1, 1000.0),
+            view_proj: glam::camera::rh::proj::directx::perspective(1.2, 1.6, 0.1, 1000.0),
         }
     }
 

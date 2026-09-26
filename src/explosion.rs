@@ -132,8 +132,10 @@ pub fn explode(world: &mut World, x: i32, y: i32, z: i32, blast_size: i32, playe
             let impact = (1.0 - dist / max_impact_dist).clamp(0.0, 1.0);
             let dir = (mob_center - explosion_center).normalize_or_zero();
             let force = impact * 16.0;
-            mob.velocity += dir * force + Vec3::new(0.0, 3.0 * impact, 0.0);
-            mob.grounded = false;
+            if mob.kind != crate::mob::MobKind::Golem {
+                mob.velocity += dir * force + Vec3::new(0.0, 3.0 * impact, 0.0);
+                mob.grounded = false;
+            }
             if mob.take_damage(explosion_entity_damage(dist, size) as f32) {
                 dead_mobs.push(index);
             }

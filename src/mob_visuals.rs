@@ -227,7 +227,21 @@ fn design(kind: MobKind) -> Design {
             }
         }
         Shape::Golem => {
-            if kind == SnowGolem {
+            if kind == Golem {
+                d.cube(0, [-9.0, 21.0, -5.0], [18.0, 12.0, 11.0], Body);
+                d.cube(0, [-5.0, 15.5, -3.5], [10.0, 6.0, 7.0], Body);
+                let head = d.joint([0.0, 31.0, 2.0], Action::Head);
+                d.cube(head, [-4.0, 33.0, -0.5], [8.0, 10.0, 8.0], Head);
+                d.cube(head, [-1.0, 32.0, 7.5], [2.0, 4.0, 2.0], Muzzle);
+                for (x, sign) in [(-13.0, 1.0), (9.0, -1.0)] {
+                    let arm = d.joint([0.0, 31.0, 0.0], Action::Arm(sign));
+                    d.cube(arm, [x, 3.5, -3.0], [4.0, 30.0, 6.0], Body);
+                }
+                for (x, pivot, sign) in [(-7.5, -4.0, 1.0), (1.5, 5.0, -1.0)] {
+                    let leg = d.joint([pivot, 13.0, 0.0], Action::Stride(sign));
+                    d.cube(leg, [x, 0.0, -2.0], [6.0, 16.0, 5.0], Limb);
+                }
+            } else if kind == SnowGolem {
                 d.cube(0, [-6.0, 0.0, -6.0], [12.0, 12.0, 12.0], Body);
                 d.cube(0, [-5.0, 12.0, -5.0], [10.0, 8.0, 10.0], Body);
                 let h = d.joint([0.0, 20.0, 0.0], Action::Head);
@@ -1468,6 +1482,7 @@ pub fn render_height(mob: &Mob) -> f32 {
         return height * if mob.is_baby() { 0.5 } else { 1.0 };
     }
     let adult_height = match mob.kind {
+        MobKind::Golem => 43.0 / 16.0,
         MobKind::Horse | MobKind::SkeletonHorse | MobKind::ZombieHorse => 2.2,
         // Preserve 16 model units per block rather than fitting horns/wool to the hitbox.
         MobKind::Cat => 0.7,
@@ -1702,6 +1717,32 @@ fn variant_tint(mob: &Mob) -> Vec4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn golem_model_matches_reference_cubes_and_block_scale() {
+        let d = design(MobKind::Golem);
+        let expected = [
+            ([-9.0, 21.0, -5.0], [18.0, 12.0, 11.0]),
+            ([-5.0, 15.5, -3.5], [10.0, 6.0, 7.0]),
+            ([-4.0, 33.0, -0.5], [8.0, 10.0, 8.0]),
+            ([-1.0, 32.0, 7.5], [2.0, 4.0, 2.0]),
+            ([-13.0, 3.5, -3.0], [4.0, 30.0, 6.0]),
+            ([9.0, 3.5, -3.0], [4.0, 30.0, 6.0]),
+            ([-7.5, 0.0, -2.0], [6.0, 16.0, 5.0]),
+            ([1.5, 0.0, -2.0], [6.0, 16.0, 5.0]),
+        ];
+        assert_eq!(d.cubes.len(), expected.len());
+        for (cube, (min, size)) in d.cubes.iter().zip(expected) {
+            assert_eq!(cube.min, Vec3::from_array(min));
+            assert_eq!(cube.size, Vec3::from_array(size));
+        }
+        let mob = Mob::new(MobKind::Golem, Vec3::ZERO, Vec3::ZERO, 0);
+        assert_eq!(model_scale(&mob, 43.0), 1.0 / 16.0);
+        assert_eq!(d.joints[1].pivot, Vec3::new(0.0, 31.0, 2.0));
+        assert_eq!(d.joints[2].pivot, Vec3::new(0.0, 31.0, 0.0));
+        assert_eq!(d.joints[4].pivot, Vec3::new(-4.0, 13.0, 0.0));
+        assert_eq!(d.joints[5].pivot, Vec3::new(5.0, 13.0, 0.0));
+    }
 
     #[test]
     fn humanoid_limb_proportions_follow_bedrock_geometry() {
