@@ -720,15 +720,41 @@ pub fn celestial_sneak() -> Result<(), String> {
     std::fs::create_dir_all("target/test-artifacts").map_err(|e| e.to_string())?;
     let mvp = Mat4::perspective_rh(60f32.to_radians(), 4.0 / 3.0, 0.1, 1000.0)
         * Mat4::look_at_rh(Vec3::ZERO, Vec3::Z, Vec3::Y);
-    for i in 0..9 {
+    for i in 0..15 {
+        let (direction, view_projection) = if i >= 9 {
+            let (elevation, yaw) = if i < 12 {
+                ([35.0_f32, 45.0, 80.0][i as usize - 9], 0.0_f32)
+            } else {
+                (45.0, [-20.0_f32, 0.0, 20.0][i as usize - 12])
+            };
+            let elevation = elevation.to_radians();
+            let yaw = yaw.to_radians();
+            let pitch = elevation - 20.0_f32.to_radians();
+            let look = Vec3::new(
+                yaw.sin() * pitch.cos(),
+                pitch.sin(),
+                yaw.cos() * pitch.cos(),
+            );
+            (
+                -Vec3::new(0.0, elevation.sin(), elevation.cos()),
+                glam::camera::rh::proj::directx::perspective(
+                    90.0_f32.to_radians(),
+                    4.0 / 3.0,
+                    0.1,
+                    1000.0,
+                ) * glam::camera::rh::view::look_at_mat4(Vec3::ZERO, look, Vec3::Y),
+            )
+        } else {
+            (if i == 8 { Vec3::Z } else { -Vec3::Z }, mvp)
+        };
         target.bind();
         renderer::clear(0.025, 0.04, 0.075, 1.0);
         sky.draw(
             &shader,
             Vec3::ZERO,
-            if i == 8 { Vec3::Z } else { -Vec3::Z },
-            i % 8,
-            mvp,
+            direction,
+            if i >= 9 { 0 } else { i % 8 },
+            view_projection,
             true,
             1.0,
             false,

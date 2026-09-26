@@ -27,6 +27,9 @@ The sky draws an original procedural square sun with a warm glow and an
 eight-frame moon with generated crater markings. Both sprites are generated
 once in Rust and use additive blending. Geometry remains stable at the zenith,
 follows the camera, and shares the lighting orbit including orbital offsets.
+The sprite planes follow the sky orbit, not the camera's rotation. Looking
+around does not turn them toward the screen. Their world-space geometry stays
+square; normal perspective can make their projected outlines non-square.
 Celestial sprites do not write depth and render at the far plane, so terrain
 occludes them.
 
@@ -48,6 +51,8 @@ default to day zero. Native Bedrock `Time` includes full elapsed days.
 Generator-version compatibility remains unchanged.
 
 Run `cargo run --release -- --smoke-test-celestial-sneak` to capture the sun,
-eight phases, both first-person body poses, all third-person poses, and a GPU
+eight phases, off-axis full moons at 35, 45 and 80 degrees elevation,
+three camera headings around a fixed moon direction,
+both first-person body poses, all third-person poses, and a GPU
 sky-seam regression capture in `target/test-artifacts/`.
 Run `cargo run --release -- --smoke-test-lighting` for the full lighting cycle.

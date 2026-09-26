@@ -19,7 +19,7 @@ pub fn phase_uv(day: u64) -> Vec4 {
 }
 
 fn body_transform(eye: Vec3, direction: Vec3, half_size: f32) -> Mat4 {
-    // A fixed orbit axis avoids the old cross-with-up singularity at noon.
+    // A fixed orbit axis avoids the cross-with-up singularity at noon.
     let axis = if direction.x.abs() < 0.9 {
         Vec3::X
     } else {
@@ -144,6 +144,55 @@ impl Celestial {
 mod tests {
     use super::*;
     #[test]
+    fn bodies_follow_orbit_instead_of_camera() {
+        for (width, height) in [(800.0, 600.0), (1920.0, 1080.0), (600.0, 800.0)] {
+            for fov in [60.0_f32, 90.0, 110.0] {
+                for pitch in [0.0_f32, 30.0, 75.0] {
+                    for yaw in [-30.0_f32, 0.0, 30.0] {
+                        let eye = Vec3::new(71.0, 120.0, -35.0);
+                        let pitch = pitch.to_radians();
+                        let yaw = yaw.to_radians();
+                        let forward = Vec3::new(
+                            yaw.sin() * pitch.cos(),
+                            pitch.sin(),
+                            yaw.cos() * pitch.cos(),
+                        );
+                        let view =
+                            glam::camera::rh::view::look_at_mat4(eye, eye + forward, Vec3::Y);
+                        let mvp = glam::camera::rh::proj::directx::perspective(
+                            fov.to_radians(),
+                            width / height,
+                            0.1,
+                            1000.0,
+                        ) * view;
+                        for elevation in [35.0_f32, 45.0, 80.0, 90.0, 100.0, 145.0] {
+                            let elevation = elevation.to_radians();
+                            let dir = Vec3::new(0.0, elevation.sin(), elevation.cos());
+                            for size in [90.0, 135.0] {
+                                let model = body_transform(eye, dir, size);
+                                for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                                    let expected = eye
+                                        + dir * 450.0
+                                        + Vec3::X * (x * size)
+                                        + dir.cross(Vec3::X) * (y * size);
+                                    let actual = model.transform_point3(Vec3::new(x, y, 0.0));
+                                    assert!(
+                                        actual.abs_diff_eq(expected, 0.0001),
+                                        "camera changed orbit geometry: fov={fov}, pitch={pitch}, elevation={elevation}"
+                                    );
+                                    assert!(
+                                        (mvp * actual.extend(1.0))
+                                            .abs_diff_eq(mvp * expected.extend(1.0), 0.001)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn original_sprites_have_transparent_edges_and_eight_phases() {
         let sun = sun_pixels();
         assert_eq!(sun[3], 0);
@@ -176,11 +225,21 @@ mod tests {
     }
     #[test]
     fn orbit_is_finite_at_zenith_and_camera_anchored() {
-        for dir in [Vec3::Y, -Vec3::Y, Vec3::Z, Vec3::X] {
+        for dir in [
+            Vec3::Y,
+            -Vec3::Y,
+            Vec3::Z,
+            Vec3::X,
+            Vec3::new(-0.5, 0.75, 0.25).normalize(),
+        ] {
             let a = body_transform(Vec3::ZERO, dir, 135.0);
             let b = body_transform(Vec3::splat(70.0), dir, 135.0);
             assert!(a.is_finite());
-            assert_eq!(b.w_axis - a.w_axis, Vec3::splat(70.0).extend(0.0));
+            assert!(a.x_axis.truncate().dot(dir).abs() < 0.0001);
+            assert!(a.y_axis.truncate().dot(dir).abs() < 0.0001);
+            assert!((a.x_axis.length() - 135.0).abs() < 0.0001);
+            assert!((a.y_axis.length() - 135.0).abs() < 0.0001);
+            assert!((b.w_axis - a.w_axis).abs_diff_eq(Vec3::splat(70.0).extend(0.0), 0.0001));
         }
     }
 }
