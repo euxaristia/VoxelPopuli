@@ -1283,6 +1283,28 @@ pub fn generate_atlas_data() -> Vec<u8> {
         nb(&mut data, 12, 2, 215, 205, 160);
         nb(&mut data, 13, 2, 235, 235, 235);
 
+        // Colored Wool (row 12: 0..12, 14..15)
+        let wool_colors: [(i32, u8, u8, u8); 15] = [
+            (0, 249, 128, 29),  // Orange
+            (1, 199, 78, 189),  // Magenta
+            (2, 58, 179, 218),  // Light Blue
+            (3, 254, 216, 61),  // Yellow
+            (4, 112, 185, 25),  // Lime
+            (5, 237, 141, 172), // Pink
+            (6, 71, 79, 82),    // Gray
+            (7, 157, 157, 151), // Light Gray
+            (8, 22, 156, 156),  // Cyan
+            (9, 137, 50, 184),  // Purple
+            (10, 60, 68, 170),  // Blue
+            (11, 131, 84, 50),  // Brown
+            (12, 94, 124, 22),  // Green
+            (14, 176, 46, 38),  // Red
+            (15, 29, 29, 33),   // Black
+        ];
+        for (tx, r, g, b) in wool_colors {
+            nb(&mut data, tx, 12, r, g, b);
+        }
+
         // Bookshelf (14,2)
         for x in 0..16i32 {
             for y in 0..16i32 {
@@ -1991,6 +2013,41 @@ pub fn generate_atlas_data() -> Vec<u8> {
         for (x, y) in [(6, 6), (9, 7), (11, 8), (4, 7), (7, 5)] {
             sp(&mut data, 6 * 16 + x, 10 * 16 + y, 250, 250, 250, 230);
         }
+
+        // Dyes (row 13: 0..15)
+        let dye_colors: [(i32, u8, u8, u8); 16] = [
+            (0, 240, 240, 240), // White
+            (1, 249, 128, 29),  // Orange
+            (2, 199, 78, 189),  // Magenta
+            (3, 58, 179, 218),  // Light Blue
+            (4, 254, 216, 61),  // Yellow
+            (5, 112, 185, 25),  // Lime
+            (6, 237, 141, 172), // Pink
+            (7, 71, 79, 82),    // Gray
+            (8, 157, 157, 151), // Light Gray
+            (9, 22, 156, 156),  // Cyan
+            (10, 137, 50, 184), // Purple
+            (11, 60, 68, 170),  // Blue
+            (12, 131, 84, 50),  // Brown
+            (13, 94, 124, 22),  // Green
+            (14, 176, 46, 38),  // Red
+            (15, 25, 25, 25),   // Black
+        ];
+        for (tx, r, g, b) in dye_colors {
+            for x in 0..16i32 {
+                for y in 0..16i32 {
+                    let dx = (x - 8).abs();
+                    let dy = y - 9;
+                    if (0..=5).contains(&dy) && dx <= 5 - dy {
+                        let shade = ((dx * 5 + dy * 7) % 21 - 10) as i32;
+                        let nr = (r as i32 + shade).clamp(0, 255) as u8;
+                        let ng = (g as i32 + shade).clamp(0, 255) as u8;
+                        let nb = (b as i32 + shade).clamp(0, 255) as u8;
+                        sp(&mut data, tx * 16 + x, 13 * 16 + y, nr, ng, nb, 255);
+                    }
+                }
+            }
+        }
     }
 
     // Fire sprites (0..8, 11): magenta-rimmed PS1 flames, 8-frame loop.
@@ -2290,6 +2347,26 @@ mod tests {
         assert!(stage_counts[0] < TILE_SIZE * TILE_SIZE / 3);
         assert!(stage_counts[9] > stage_counts[0]);
         assert!(stage_counts[9] < TILE_SIZE * TILE_SIZE);
+    }
+
+    #[test]
+    fn colored_wool_and_dyes_tiles_are_present() {
+        let data = generate_atlas_data();
+        // Orange wool at (0, 12)
+        let [r, g, b, a] = pixel(&data, 8, 12 * TILE_SIZE + 8);
+        assert_eq!(a, 255);
+        assert!(
+            r > 200 && g > 100 && b < 60,
+            "orange wool color: ({r}, {g}, {b})"
+        );
+
+        // Red dye at (14, 13) center pixel (x=8, y=9)
+        let [r, g, b, a] = pixel(&data, 14 * TILE_SIZE + 8, 13 * TILE_SIZE + 9);
+        assert_eq!(a, 255);
+        assert!(
+            r > 150 && g < 60 && b < 60,
+            "red dye color: ({r}, {g}, {b})"
+        );
     }
 }
 

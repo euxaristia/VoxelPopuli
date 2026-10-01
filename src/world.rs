@@ -252,6 +252,7 @@ pub struct World {
     pub detonations: Vec<(glam::Vec3, i32)>,
     effects: Option<EffectMeshes>,
     pub is_loading: bool,
+    #[allow(dead_code)]
     pub loading_radius: i32,
     pub chunks_generated_count: i32,
     pub active_water: std::collections::HashSet<(i32, i32, i32)>,
@@ -285,6 +286,7 @@ pub struct World {
     mob_visuals: std::cell::OnceCell<crate::mob_visuals::MobVisuals>,
 }
 
+#[allow(dead_code)]
 impl World {
     pub fn new(seed: u64) -> Self {
         let mut world = Self::simulation(seed);

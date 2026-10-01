@@ -115,6 +115,34 @@ pub fn block(state: &NbtTag) -> Option<BlockType> {
             _ => return None,
         });
     }
+    if name == "minecraft:wool" {
+        let color = state
+            .get("states")
+            .and_then(|s| s.get("color"))
+            .and_then(|c| match c {
+                NbtTag::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("white");
+        return Some(match color {
+            "orange" => BlockType::OrangeWool,
+            "magenta" => BlockType::MagentaWool,
+            "light_blue" => BlockType::LightBlueWool,
+            "yellow" => BlockType::YellowWool,
+            "lime" => BlockType::LimeWool,
+            "pink" => BlockType::PinkWool,
+            "gray" => BlockType::GrayWool,
+            "silver" | "light_gray" => BlockType::LightGrayWool,
+            "cyan" => BlockType::CyanWool,
+            "purple" => BlockType::PurpleWool,
+            "blue" => BlockType::BlueWool,
+            "brown" => BlockType::BrownWool,
+            "green" => BlockType::GreenWool,
+            "red" => BlockType::RedWool,
+            "black" => BlockType::BlackWool,
+            _ => BlockType::Wool,
+        });
+    }
     // Palette-level conversion, not a per-voxel search.
     (0..BlockType::COUNT)
         .map(|id| BlockType::from_u16(id as u16))
@@ -169,5 +197,31 @@ mod tests {
             water.get("states").unwrap().get("liquid_depth"),
             Some(&NbtTag::Int(11))
         );
+    }
+
+    #[test]
+    fn test_bedrock_legacy_and_modern_wool_states() {
+        // Modern Bedrock round-trip
+        let modern_red = state(BlockType::RedWool, 0).unwrap();
+        assert_eq!(block(&modern_red), Some(BlockType::RedWool));
+
+        // Legacy Bedrock minecraft:wool with color state
+        let legacy_cyan = NbtTag::Compound(vec![
+            ("name".into(), NbtTag::String("minecraft:wool".into())),
+            (
+                "states".into(),
+                NbtTag::Compound(vec![("color".into(), NbtTag::String("cyan".into()))]),
+            ),
+        ]);
+        assert_eq!(block(&legacy_cyan), Some(BlockType::CyanWool));
+
+        let legacy_silver = NbtTag::Compound(vec![
+            ("name".into(), NbtTag::String("minecraft:wool".into())),
+            (
+                "states".into(),
+                NbtTag::Compound(vec![("color".into(), NbtTag::String("silver".into()))]),
+            ),
+        ]);
+        assert_eq!(block(&legacy_silver), Some(BlockType::LightGrayWool));
     }
 }

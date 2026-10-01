@@ -1057,6 +1057,491 @@ const RECIPES: &[Recipe] = &[
         output_count: 1,
         mirror: false,
     },
+    // === Colored Wool Beds ===
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                OrangeWool, OrangeWool, OrangeWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                MagentaWool,
+                MagentaWool,
+                MagentaWool,
+                OakPlanks,
+                OakPlanks,
+                OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                LightBlueWool,
+                LightBlueWool,
+                LightBlueWool,
+                OakPlanks,
+                OakPlanks,
+                OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                YellowWool, YellowWool, YellowWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                LimeWool, LimeWool, LimeWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                PinkWool, PinkWool, PinkWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                GrayWool, GrayWool, GrayWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                LightGrayWool,
+                LightGrayWool,
+                LightGrayWool,
+                OakPlanks,
+                OakPlanks,
+                OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                CyanWool, CyanWool, CyanWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                PurpleWool, PurpleWool, PurpleWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                BlueWool, BlueWool, BlueWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                BrownWool, BrownWool, BrownWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                GreenWool, GreenWool, GreenWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[RedWool, RedWool, RedWool, OakPlanks, OakPlanks, OakPlanks],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shaped {
+            width: 3,
+            height: 2,
+            pattern: &[
+                BlackWool, BlackWool, BlackWool, OakPlanks, OakPlanks, OakPlanks,
+            ],
+        },
+        output: Bed,
+        output_count: 1,
+        mirror: false,
+    },
+    // === Dye Extraction ===
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[BoneMeal],
+        },
+        output: WhiteDye,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Poppy],
+        },
+        output: RedDye,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Dandelion],
+        },
+        output: YellowDye,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Sunflower],
+        },
+        output: YellowDye,
+        output_count: 2,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Cornflower],
+        },
+        output: BlueDye,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Allium],
+        },
+        output: MagentaDye,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[OxeyeDaisy],
+        },
+        output: LightGrayDye,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[PinkPetals],
+        },
+        output: PinkDye,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[LapisLazuli],
+        },
+        output: BlueDye,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Coal],
+        },
+        output: BlackDye,
+        output_count: 1,
+        mirror: false,
+    },
+    // === Dye Mixing ===
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[RedDye, YellowDye],
+        },
+        output: OrangeDye,
+        output_count: 2,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[RedDye, BlueDye],
+        },
+        output: PurpleDye,
+        output_count: 2,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[BlueDye, GreenDye],
+        },
+        output: CyanDye,
+        output_count: 2,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[RedDye, WhiteDye],
+        },
+        output: PinkDye,
+        output_count: 2,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[GreenDye, WhiteDye],
+        },
+        output: LimeDye,
+        output_count: 2,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[BlueDye, WhiteDye],
+        },
+        output: LightBlueDye,
+        output_count: 2,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[BlackDye, WhiteDye],
+        },
+        output: GrayDye,
+        output_count: 2,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[GrayDye, WhiteDye],
+        },
+        output: LightGrayDye,
+        output_count: 2,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[BlackDye, WhiteDye, WhiteDye],
+        },
+        output: LightGrayDye,
+        output_count: 3,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[PurpleDye, PinkDye],
+        },
+        output: MagentaDye,
+        output_count: 2,
+        mirror: false,
+    },
+    // === Wool Dyeing ===
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, WhiteDye],
+        },
+        output: Wool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, OrangeDye],
+        },
+        output: OrangeWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, MagentaDye],
+        },
+        output: MagentaWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, LightBlueDye],
+        },
+        output: LightBlueWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, YellowDye],
+        },
+        output: YellowWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, LimeDye],
+        },
+        output: LimeWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, PinkDye],
+        },
+        output: PinkWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, GrayDye],
+        },
+        output: GrayWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, LightGrayDye],
+        },
+        output: LightGrayWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, CyanDye],
+        },
+        output: CyanWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, PurpleDye],
+        },
+        output: PurpleWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, BlueDye],
+        },
+        output: BlueWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, BrownDye],
+        },
+        output: BrownWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, GreenDye],
+        },
+        output: GreenWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, RedDye],
+        },
+        output: RedWool,
+        output_count: 1,
+        mirror: false,
+    },
+    Recipe {
+        shape: RecipeShape::Shapeless {
+            ingredients: &[Wool, BlackDye],
+        },
+        output: BlackWool,
+        output_count: 1,
+        mirror: false,
+    },
 ];
 
 // ── Furnace Smelting & Fuel Database ─────────────────────────────────────────
@@ -1072,7 +1557,7 @@ pub fn smelt_item(input: BlockType) -> Option<(BlockType, u8)> {
         Sand => Some((Glass, 1)),
         Clay => Some((Brick, 1)),
         OakLog | SpruceLog | BirchLog | MangroveLog | CherryLog => Some((Coal, 1)),
-        Cactus => Some((Sand, 1)),
+        Cactus => Some((GreenDye, 1)),
         _ => None,
     }
 }
@@ -1094,7 +1579,70 @@ pub fn fuel_burn_time(fuel: BlockType) -> f32 {
     }
 }
 
-// ── Recipe matching engine ──────────────────────────────────────────────────
+pub fn is_wool(b: BlockType) -> bool {
+    matches!(
+        b,
+        Wool | OrangeWool
+            | MagentaWool
+            | LightBlueWool
+            | YellowWool
+            | LimeWool
+            | PinkWool
+            | GrayWool
+            | LightGrayWool
+            | CyanWool
+            | PurpleWool
+            | BlueWool
+            | BrownWool
+            | GreenWool
+            | RedWool
+            | BlackWool
+    )
+}
+
+pub fn is_dye(b: BlockType) -> bool {
+    matches!(
+        b,
+        WhiteDye
+            | OrangeDye
+            | MagentaDye
+            | LightBlueDye
+            | YellowDye
+            | LimeDye
+            | PinkDye
+            | GrayDye
+            | LightGrayDye
+            | CyanDye
+            | PurpleDye
+            | BlueDye
+            | BrownDye
+            | GreenDye
+            | RedDye
+            | BlackDye
+    )
+}
+
+pub fn dye_to_wool(dye: BlockType) -> Option<BlockType> {
+    match dye {
+        WhiteDye => Some(Wool),
+        OrangeDye => Some(OrangeWool),
+        MagentaDye => Some(MagentaWool),
+        LightBlueDye => Some(LightBlueWool),
+        YellowDye => Some(YellowWool),
+        LimeDye => Some(LimeWool),
+        PinkDye => Some(PinkWool),
+        GrayDye => Some(GrayWool),
+        LightGrayDye => Some(LightGrayWool),
+        CyanDye => Some(CyanWool),
+        PurpleDye => Some(PurpleWool),
+        BlueDye => Some(BlueWool),
+        BrownDye => Some(BrownWool),
+        GreenDye => Some(GreenWool),
+        RedDye => Some(RedWool),
+        BlackDye => Some(BlackWool),
+        _ => None,
+    }
+}
 
 /// Find a matching recipe for the given grid.
 /// `grid` is a flat array of Option<BlockType>, `grid_width` x `grid_height`.
@@ -1148,6 +1696,19 @@ pub fn find_recipe(
             }
         }
     }
+
+    // Shapeless wool re-dyeing fallback: Any wool + Any dye -> Colored wool
+    let grid_items: Vec<BlockType> = grid.iter().filter_map(|s| *s).collect();
+    if grid_items.len() == 2 {
+        let wool = grid_items.iter().find(|&&b| is_wool(b));
+        let dye = grid_items.iter().find(|&&b| is_dye(b));
+        if let (Some(_), Some(&d)) = (wool, dye) {
+            if let Some(target_wool) = dye_to_wool(d) {
+                return Some((target_wool, 1));
+            }
+        }
+    }
+
     None
 }
 
@@ -2320,6 +2881,7 @@ mod tests {
         assert_eq!(smelt_item(Sand), Some((Glass, 1)));
         assert_eq!(smelt_item(Clay), Some((Brick, 1)));
         assert_eq!(smelt_item(OakLog), Some((Coal, 1)));
+        assert_eq!(smelt_item(Cactus), Some((GreenDye, 1)));
         assert_eq!(smelt_item(Dirt), None);
     }
 
@@ -2390,5 +2952,57 @@ mod tests {
         ];
         let result = find_recipe(&grid, 3, 3);
         assert_eq!(result, Some((IronChestplate, 1)));
+    }
+
+    #[test]
+    fn test_dye_extraction_and_mixing() {
+        // Poppy -> RedDye
+        assert_eq!(find_recipe(&[s(Poppy)], 1, 1), Some((RedDye, 1)));
+        // Dandelion -> YellowDye
+        assert_eq!(find_recipe(&[s(Dandelion)], 1, 1), Some((YellowDye, 1)));
+        // Sunflower -> 2 YellowDye
+        assert_eq!(find_recipe(&[s(Sunflower)], 1, 1), Some((YellowDye, 2)));
+        // Cornflower -> BlueDye
+        assert_eq!(find_recipe(&[s(Cornflower)], 1, 1), Some((BlueDye, 1)));
+        // BoneMeal -> WhiteDye
+        assert_eq!(find_recipe(&[s(BoneMeal)], 1, 1), Some((WhiteDye, 1)));
+
+        // Dye mixing: Red + Yellow -> 2 Orange
+        assert_eq!(
+            find_recipe(&[s(RedDye), s(YellowDye)], 2, 1),
+            Some((OrangeDye, 2))
+        );
+        // Blue + Green -> 2 Cyan
+        assert_eq!(
+            find_recipe(&[s(BlueDye), s(GreenDye)], 2, 1),
+            Some((CyanDye, 2))
+        );
+    }
+
+    #[test]
+    fn test_wool_dyeing_and_colored_beds() {
+        // White wool + Red dye -> Red wool
+        assert_eq!(find_recipe(&[s(Wool), s(RedDye)], 2, 1), Some((RedWool, 1)));
+        // Red wool + Blue dye -> Blue wool (re-dyeing)
+        assert_eq!(
+            find_recipe(&[s(RedWool), s(BlueDye)], 2, 1),
+            Some((BlueWool, 1))
+        );
+
+        // 3 RedWool + 3 OakPlanks -> Bed
+        #[rustfmt::skip]
+        let grid = vec![
+            s(RedWool), s(RedWool), s(RedWool),
+            s(OakPlanks), s(OakPlanks), s(OakPlanks),
+        ];
+        assert_eq!(find_recipe(&grid, 3, 2), Some((Bed, 1)));
+
+        // 3 BlueWool + 3 BirchPlanks -> Bed (wood substitution)
+        #[rustfmt::skip]
+        let grid = vec![
+            s(BlueWool), s(BlueWool), s(BlueWool),
+            s(BirchPlanks), s(BirchPlanks), s(BirchPlanks),
+        ];
+        assert_eq!(find_recipe(&grid, 3, 2), Some((Bed, 1)));
     }
 }

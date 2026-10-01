@@ -457,7 +457,7 @@ mod tests {
             rand::random::<u64>()
         ));
         std::fs::create_dir(&root).unwrap();
-        let mut world = World::simulation(42);
+        let world = World::simulation(42);
         world.install_edits(&[((-17, 80, -1), BlockType::DiamondOre)]);
         let save = GameSave::capture(
             &world,

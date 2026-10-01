@@ -30,6 +30,21 @@ pub fn is_flammable(block: BlockType) -> bool {
             | BlockType::Chest
             | BlockType::Bookshelf
             | BlockType::Wool
+            | BlockType::OrangeWool
+            | BlockType::MagentaWool
+            | BlockType::LightBlueWool
+            | BlockType::YellowWool
+            | BlockType::LimeWool
+            | BlockType::PinkWool
+            | BlockType::GrayWool
+            | BlockType::LightGrayWool
+            | BlockType::CyanWool
+            | BlockType::PurpleWool
+            | BlockType::BlueWool
+            | BlockType::BrownWool
+            | BlockType::GreenWool
+            | BlockType::RedWool
+            | BlockType::BlackWool
             | BlockType::Wheat
             | BlockType::Grass
             | BlockType::SnowyGrass

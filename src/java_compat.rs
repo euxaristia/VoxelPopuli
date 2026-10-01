@@ -151,6 +151,21 @@ pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
         Obsidian => JavaBlockState::new("minecraft:obsidian"),
         Sponge => JavaBlockState::new("minecraft:sponge"),
         Wool => JavaBlockState::new("minecraft:white_wool"),
+        OrangeWool => JavaBlockState::new("minecraft:orange_wool"),
+        MagentaWool => JavaBlockState::new("minecraft:magenta_wool"),
+        LightBlueWool => JavaBlockState::new("minecraft:light_blue_wool"),
+        YellowWool => JavaBlockState::new("minecraft:yellow_wool"),
+        LimeWool => JavaBlockState::new("minecraft:lime_wool"),
+        PinkWool => JavaBlockState::new("minecraft:pink_wool"),
+        GrayWool => JavaBlockState::new("minecraft:gray_wool"),
+        LightGrayWool => JavaBlockState::new("minecraft:light_gray_wool"),
+        CyanWool => JavaBlockState::new("minecraft:cyan_wool"),
+        PurpleWool => JavaBlockState::new("minecraft:purple_wool"),
+        BlueWool => JavaBlockState::new("minecraft:blue_wool"),
+        BrownWool => JavaBlockState::new("minecraft:brown_wool"),
+        GreenWool => JavaBlockState::new("minecraft:green_wool"),
+        RedWool => JavaBlockState::new("minecraft:red_wool"),
+        BlackWool => JavaBlockState::new("minecraft:black_wool"),
         LapisOre => JavaBlockState::new("minecraft:lapis_ore"),
         LapisBlock => JavaBlockState::new("minecraft:lapis_block"),
         Sandstone => JavaBlockState::new("minecraft:sandstone"),
@@ -191,7 +206,9 @@ pub fn classic_java_block_state(block: BlockType) -> Option<JavaBlockState> {
         | LeatherLeggings | LeatherBoots | IronHelmet | IronChestplate | IronLeggings
         | IronBoots | GoldHelmet | GoldChestplate | GoldLeggings | GoldBoots | DiamondHelmet
         | DiamondChestplate | DiamondLeggings | DiamondBoots | Bow | Arrow | Bucket
-        | WaterBucket | LavaBucket | WheatSeeds | Bone | BoneMeal => return None,
+        | WaterBucket | LavaBucket | WheatSeeds | Bone | BoneMeal | WhiteDye | OrangeDye
+        | MagentaDye | LightBlueDye | YellowDye | LimeDye | PinkDye | GrayDye | LightGrayDye
+        | CyanDye | PurpleDye | BlueDye | BrownDye | GreenDye | RedDye | BlackDye => return None,
     })
 }
 
@@ -1349,6 +1366,21 @@ pub fn java_block_name_to_block_type(name: &str) -> BlockType {
         "minecraft:obsidian" => Obsidian,
         "minecraft:sponge" => Sponge,
         "minecraft:white_wool" => Wool,
+        "minecraft:orange_wool" => OrangeWool,
+        "minecraft:magenta_wool" => MagentaWool,
+        "minecraft:light_blue_wool" => LightBlueWool,
+        "minecraft:yellow_wool" => YellowWool,
+        "minecraft:lime_wool" => LimeWool,
+        "minecraft:pink_wool" => PinkWool,
+        "minecraft:gray_wool" => GrayWool,
+        "minecraft:light_gray_wool" => LightGrayWool,
+        "minecraft:cyan_wool" => CyanWool,
+        "minecraft:purple_wool" => PurpleWool,
+        "minecraft:blue_wool" => BlueWool,
+        "minecraft:brown_wool" => BrownWool,
+        "minecraft:green_wool" => GreenWool,
+        "minecraft:red_wool" => RedWool,
+        "minecraft:black_wool" => BlackWool,
         "minecraft:lapis_ore" => LapisOre,
         "minecraft:lapis_block" => LapisBlock,
         "minecraft:sandstone" => Sandstone,

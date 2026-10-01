@@ -316,6 +316,7 @@ impl Mers {
         }
     }
 
+    #[allow(dead_code)]
     pub fn to_array(self) -> [f32; 4] {
         [
             self.metalness,

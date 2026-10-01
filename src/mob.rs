@@ -368,7 +368,27 @@ impl Mob {
             MobKind::Creeper => Some((BlockType::Gunpowder, 1)),
             MobKind::Pig => Some((BlockType::RawPorkchop, 1 + (rand::random::<u8>() % 3))),
             MobKind::Cow => Some((BlockType::RawBeef, 1 + (rand::random::<u8>() % 3))),
-            MobKind::Sheep => Some((BlockType::Wool, 1)),
+            MobKind::Sheep => {
+                let wool = match self.variant % 16 {
+                    0 => BlockType::Wool,
+                    1 => BlockType::OrangeWool,
+                    2 => BlockType::MagentaWool,
+                    3 => BlockType::LightBlueWool,
+                    4 => BlockType::YellowWool,
+                    5 => BlockType::LimeWool,
+                    6 => BlockType::PinkWool,
+                    7 => BlockType::GrayWool,
+                    8 => BlockType::LightGrayWool,
+                    9 => BlockType::CyanWool,
+                    10 => BlockType::PurpleWool,
+                    11 => BlockType::BlueWool,
+                    12 => BlockType::BrownWool,
+                    13 => BlockType::GreenWool,
+                    14 => BlockType::RedWool,
+                    _ => BlockType::BlackWool,
+                };
+                Some((wool, 1))
+            }
             MobKind::Mooshroom => Some((BlockType::RawBeef, 2)),
             MobKind::Stray | MobKind::Bogged | MobKind::Parched => Some((BlockType::Bone, 1)),
             _ => None,
@@ -584,5 +604,17 @@ mod tests {
         assert_eq!(zombie.health, 15.0);
         assert!(zombie.take_damage(15.0));
         assert_eq!(zombie.health, 0.0);
+    }
+
+    #[test]
+    fn test_sheep_drops_variant_wool() {
+        let white_sheep = Mob::new(MobKind::Sheep, Vec3::ZERO, Vec3::ZERO, 0);
+        assert_eq!(white_sheep.drop_item(), Some((BlockType::Wool, 1)));
+
+        let red_sheep = Mob::new(MobKind::Sheep, Vec3::ZERO, Vec3::ZERO, 14);
+        assert_eq!(red_sheep.drop_item(), Some((BlockType::RedWool, 1)));
+
+        let blue_sheep = Mob::new(MobKind::Sheep, Vec3::ZERO, Vec3::ZERO, 11);
+        assert_eq!(blue_sheep.drop_item(), Some((BlockType::BlueWool, 1)));
     }
 }

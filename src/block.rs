@@ -230,11 +230,46 @@ pub enum BlockType {
     Cornflower,
     Allium,
     OxeyeDaisy,
+
+    // === Colored Wool (156-170) ===
+    OrangeWool,
+    MagentaWool,
+    LightBlueWool,
+    YellowWool,
+    LimeWool,
+    PinkWool,
+    GrayWool,
+    LightGrayWool,
+    CyanWool,
+    PurpleWool,
+    BlueWool,
+    BrownWool,
+    GreenWool,
+    RedWool,
+    BlackWool,
+
+    // === Dyes (171-186) ===
+    WhiteDye,
+    OrangeDye,
+    MagentaDye,
+    LightBlueDye,
+    YellowDye,
+    LimeDye,
+    PinkDye,
+    GrayDye,
+    LightGrayDye,
+    CyanDye,
+    PurpleDye,
+    BlueDye,
+    BrownDye,
+    GreenDye,
+    RedDye,
+    BlackDye,
 }
 
 #[allow(dead_code)]
 impl BlockType {
-    pub const COUNT: usize = 156;
+    pub const COUNT: usize = 187;
 
     pub fn from_u16(value: u16) -> Self {
         if (value as usize) < Self::COUNT {
@@ -321,6 +356,22 @@ impl BlockType {
                 | BlockType::GlassBottle
                 | BlockType::HoneyBottle
                 | BlockType::Shears
+                | BlockType::WhiteDye
+                | BlockType::OrangeDye
+                | BlockType::MagentaDye
+                | BlockType::LightBlueDye
+                | BlockType::YellowDye
+                | BlockType::LimeDye
+                | BlockType::PinkDye
+                | BlockType::GrayDye
+                | BlockType::LightGrayDye
+                | BlockType::CyanDye
+                | BlockType::PurpleDye
+                | BlockType::BlueDye
+                | BlockType::BrownDye
+                | BlockType::GreenDye
+                | BlockType::RedDye
+                | BlockType::BlackDye
         )
     }
 
@@ -471,7 +522,22 @@ impl BlockType {
             | BlockType::CherryLeaves
             | BlockType::Sponge
             | BlockType::Bookshelf
-            | BlockType::Wool => 0.2,
+            | BlockType::Wool
+            | BlockType::OrangeWool
+            | BlockType::MagentaWool
+            | BlockType::LightBlueWool
+            | BlockType::YellowWool
+            | BlockType::LimeWool
+            | BlockType::PinkWool
+            | BlockType::GrayWool
+            | BlockType::LightGrayWool
+            | BlockType::CyanWool
+            | BlockType::PurpleWool
+            | BlockType::BlueWool
+            | BlockType::BrownWool
+            | BlockType::GreenWool
+            | BlockType::RedWool
+            | BlockType::BlackWool => 0.2,
             BlockType::TNT
             | BlockType::Glass
             | BlockType::Torch
@@ -493,7 +559,7 @@ mod tests {
 
     #[test]
     fn test_count() {
-        assert_eq!(BlockType::COUNT, 156);
+        assert_eq!(BlockType::COUNT, 187);
     }
 
     #[test]

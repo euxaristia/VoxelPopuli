@@ -84,7 +84,9 @@ pub fn block_properties(b: BlockType) -> BlockProperties {
         Clay => s(0.6, TT::Shovel, TM::None, false, Clay, 1),
         Farmland => s(0.6, TT::Shovel, TM::None, false, Dirt, 1),
         Sponge => s(0.6, TT::None, TM::None, false, Sponge, 1),
-        Wool => s(0.8, TT::None, TM::None, false, Wool, 1),
+        Wool | OrangeWool | MagentaWool | LightBlueWool | YellowWool | LimeWool | PinkWool
+        | GrayWool | LightGrayWool | CyanWool | PurpleWool | BlueWool | BrownWool | GreenWool
+        | RedWool | BlackWool => s(0.8, TT::None, TM::None, false, b, 1),
         Wheat => s(0.0, TT::None, TM::None, false, Wheat, 1),
         WheatStage0 | WheatStage1 | WheatStage2 => s(0.0, TT::None, TM::None, false, WheatSeeds, 1),
         Cactus => s(0.4, TT::None, TM::None, false, Cactus, 1),
@@ -364,6 +366,21 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         StoneBrick => (11, 2),
         Sandstone => (12, 2),
         Wool => (13, 2),
+        OrangeWool => (0, 12),
+        MagentaWool => (1, 12),
+        LightBlueWool => (2, 12),
+        YellowWool => (3, 12),
+        LimeWool => (4, 12),
+        PinkWool => (5, 12),
+        GrayWool => (6, 12),
+        LightGrayWool => (7, 12),
+        CyanWool => (8, 12),
+        PurpleWool => (9, 12),
+        BlueWool => (10, 12),
+        BrownWool => (11, 12),
+        GreenWool => (12, 12),
+        RedWool => (14, 12),
+        BlackWool => (15, 12),
         Bookshelf => (14, 2),
         Sponge => (15, 2),
         Chest => (0, 7),
@@ -494,6 +511,24 @@ pub fn atlas_uv(b: BlockType) -> (u8, u8) {
         StickyPiston => (10, 6),
         PistonHead => (12, 6),
         Fire => (0, 11),
+
+        // Row 13: dyes
+        WhiteDye => (0, 13),
+        OrangeDye => (1, 13),
+        MagentaDye => (2, 13),
+        LightBlueDye => (3, 13),
+        YellowDye => (4, 13),
+        LimeDye => (5, 13),
+        PinkDye => (6, 13),
+        GrayDye => (7, 13),
+        LightGrayDye => (8, 13),
+        CyanDye => (9, 13),
+        PurpleDye => (10, 13),
+        BlueDye => (11, 13),
+        BrownDye => (12, 13),
+        GreenDye => (13, 13),
+        RedDye => (14, 13),
+        BlackDye => (15, 13),
 
         // Default
         Air => (0, 0),
@@ -1385,6 +1420,17 @@ mod tests {
         let p = block_properties(BlockType::Wool);
         assert_eq!(p.hardness, 0.8);
         assert!(!p.requires_tool);
+        assert_eq!(p.drop, BlockType::Wool);
+
+        let red = block_properties(BlockType::RedWool);
+        assert_eq!(red.hardness, 0.8);
+        assert!(!red.requires_tool);
+        assert_eq!(red.drop, BlockType::RedWool);
+
+        let cyan = block_properties(BlockType::CyanWool);
+        assert_eq!(cyan.hardness, 0.8);
+        assert!(!cyan.requires_tool);
+        assert_eq!(cyan.drop, BlockType::CyanWool);
     }
 
     #[test]

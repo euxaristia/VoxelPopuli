@@ -1694,10 +1694,23 @@ fn joint_transforms(joints: &[Joint], mob: &Mob, time: f32, viewer: Vec3) -> Vec
 
 fn variant_tint(mob: &Mob) -> Vec4 {
     let rgb = if mob.kind == MobKind::Sheep {
-        match mob.variant % 5 {
-            0..=2 => [255, 255, 255],
-            3 => [240, 169, 188],
-            _ => [141, 130, 119],
+        match mob.variant % 16 {
+            0 => [255, 255, 255], // White
+            1 => [249, 128, 29],  // Orange
+            2 => [199, 78, 189],  // Magenta
+            3 => [58, 179, 218],  // Light Blue
+            4 => [254, 216, 61],  // Yellow
+            5 => [112, 185, 25],  // Lime
+            6 => [237, 141, 172], // Pink
+            7 => [71, 79, 82],    // Gray
+            8 => [157, 157, 151], // Light Gray
+            9 => [22, 156, 156],  // Cyan
+            10 => [137, 50, 184], // Purple
+            11 => [60, 68, 170],  // Blue
+            12 => [131, 84, 50],  // Brown
+            13 => [94, 124, 22],  // Green
+            14 => [176, 46, 38],  // Red
+            _ => [29, 29, 33],    // Black
         }
     } else {
         match mob.variant % 3 {
