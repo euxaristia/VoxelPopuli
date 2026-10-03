@@ -2,8 +2,19 @@
 // persistent uniform values, meshes draw against whatever state is set,
 // and the frame is recorded into passes that submit on end_frame.
 use crate::chunk::{CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH};
+mod cinematic;
+#[cfg(test)]
+mod lighting_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod post_tests;
+pub use cinematic::{
+    cinematic_begin_frame, cinematic_begin_water, cinematic_capture_begin, cinematic_capture_save,
+    cinematic_enabled, cinematic_finish_world, cinematic_upload_volume, configure_cinematic,
+    shadow_begin, shadow_end, water_depth_begin, water_depth_end,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -85,19 +96,17 @@ struct StateFlags {
 
 #[derive(Clone, PartialEq)]
 enum Target {
+    Shadow {
+        depth: wgpu::TextureView,
+    },
+    SurfaceHand,
     Surface,
     Offscreen {
         color: wgpu::TextureView,
         depth: wgpu::TextureView,
     },
     /// Deferred geometry pass: four color attachments plus depth.
-    GBuffer {
-        albedo: wgpu::TextureView,
-        normal: wgpu::TextureView,
-        mers: wgpu::TextureView,
-        lighting: wgpu::TextureView,
-        depth: wgpu::TextureView,
-    },
+    GBuffer(Box<GBufferTarget>),
     /// The lighting resolve. No depth attachment: the resolve writes every
     /// pixel, and it *samples* the G-buffer depth, which a pass may not do
     /// while also holding that texture as a depth attachment.
@@ -112,11 +121,21 @@ enum Target {
     },
 }
 
+#[derive(Clone, PartialEq)]
+struct GBufferTarget {
+    albedo: wgpu::TextureView,
+    normal: wgpu::TextureView,
+    mers: wgpu::TextureView,
+    lighting: wgpu::TextureView,
+    depth: wgpu::TextureView,
+}
+
 /// The attachment layout of a target. Pipelines are compatible across
 /// targets of the same kind, so this and not the view identity is what
 /// keys the pipeline cache.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum TargetKind {
+    Shadow,
     Surface,
     Offscreen,
     GBuffer,
@@ -126,30 +145,26 @@ enum TargetKind {
 impl Target {
     fn kind(&self) -> TargetKind {
         match self {
-            Target::Surface => TargetKind::Surface,
+            Target::Shadow { .. } => TargetKind::Shadow,
+            Target::Surface | Target::SurfaceHand => TargetKind::Surface,
             Target::Offscreen { .. } => TargetKind::Offscreen,
-            Target::GBuffer { .. } => TargetKind::GBuffer,
+            Target::GBuffer(_) => TargetKind::GBuffer,
             Target::HdrResolve { .. } | Target::Hdr { .. } => TargetKind::Hdr,
         }
     }
 
     fn color_views(&self, frame_view: &wgpu::TextureView) -> Vec<wgpu::TextureView> {
         match self {
-            Target::Surface => vec![frame_view.clone()],
+            Target::Shadow { .. } => vec![],
+            Target::Surface | Target::SurfaceHand => vec![frame_view.clone()],
             Target::Offscreen { color, .. }
             | Target::Hdr { color, .. }
             | Target::HdrResolve { color } => vec![color.clone()],
-            Target::GBuffer {
-                albedo,
-                normal,
-                mers,
-                lighting,
-                ..
-            } => vec![
-                albedo.clone(),
-                normal.clone(),
-                mers.clone(),
-                lighting.clone(),
+            Target::GBuffer(target) => vec![
+                target.albedo.clone(),
+                target.normal.clone(),
+                target.mers.clone(),
+                target.lighting.clone(),
             ],
         }
     }
@@ -159,10 +174,10 @@ impl Target {
         surface_depth: &'a wgpu::TextureView,
     ) -> Option<&'a wgpu::TextureView> {
         match self {
-            Target::Surface => Some(surface_depth),
-            Target::Offscreen { depth, .. }
-            | Target::GBuffer { depth, .. }
-            | Target::Hdr { depth, .. } => Some(depth),
+            Target::Shadow { depth } => Some(depth),
+            Target::Surface | Target::SurfaceHand => Some(surface_depth),
+            Target::Offscreen { depth, .. } | Target::Hdr { depth, .. } => Some(depth),
+            Target::GBuffer(target) => Some(&target.depth),
             Target::HdrResolve { .. } => None,
         }
     }
@@ -173,6 +188,7 @@ impl TargetKind {
     /// passed in because the swapchain format is chosen at init.
     fn color_formats(self, surface: wgpu::TextureFormat) -> Vec<wgpu::TextureFormat> {
         match self {
+            TargetKind::Shadow => vec![],
             TargetKind::Surface => vec![surface],
             TargetKind::Offscreen => vec![OFFSCREEN_FORMAT],
             TargetKind::GBuffer => vec![
@@ -194,11 +210,12 @@ struct PoolBuffer {
 }
 
 struct DrawRec {
-    shader: Arc<ShaderInner>,
+    shader: Rc<ShaderInner>,
     flags: StateFlags,
     uniform_offset: u32,
     texture: wgpu::BindGroup,
     texture_id: u64,
+    effects: Option<wgpu::BindGroup>,
     buffer: PoolBuffer,
     vertex_count: u32,
     // When set, the draw's vertex count comes from this GPU-written
@@ -223,7 +240,13 @@ enum Step {
     Fullscreen(FullscreenRec),
 }
 
+struct TextureCopy {
+    source: wgpu::Texture,
+    destination: wgpu::Texture,
+}
+
 struct PassRec {
+    copies: Vec<TextureCopy>,
     target: Target,
     clear_color: Option<[f64; 4]>,
     clear_depth: bool,
@@ -233,6 +256,7 @@ struct PassRec {
 impl PassRec {
     fn new(target: Target) -> Self {
         Self {
+            copies: Vec::new(),
             target,
             clear_color: None,
             clear_depth: false,
@@ -327,6 +351,12 @@ struct Ctx {
     tonemap_module: wgpu::ShaderModule,
     tonemap_layout: wgpu::PipelineLayout,
     deferred: Option<Deferred>,
+    cinematic: Option<cinematic::Cinematic>,
+    cinematic_layout: wgpu::BindGroupLayout,
+    cinematic_draw_layout: wgpu::PipelineLayout,
+    hand_depth: wgpu::TextureView,
+    material_mers: wgpu::TextureView,
+    material_normals: wgpu::TextureView,
     sampler: wgpu::Sampler,
     white_texture: wgpu::BindGroup,
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
@@ -344,7 +374,7 @@ struct Ctx {
     passes: Vec<PassRec>,
     uniform_arena: Vec<u8>,
     state: StateFlags,
-    bound_shader: Option<Arc<ShaderInner>>,
+    bound_shader: Option<Rc<ShaderInner>>,
     bound_texture: Option<(u64, wgpu::BindGroup)>,
     gpu_voxel_pool: Option<GpuVoxelPool>,
     #[allow(dead_code)]
@@ -379,7 +409,10 @@ fn make_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::T
         format: DEPTH_FORMAT,
         // TEXTURE_BINDING so the deferred lighting pass can read depth back
         // to rebuild world position.
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     })
 }
@@ -544,7 +577,19 @@ async fn init_surface(
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            cinematic::texture_entry(2, wgpu::TextureViewDimension::D2, false),
+            cinematic::texture_entry(3, wgpu::TextureViewDimension::D2, false),
         ],
+    });
+    let cinematic_layout = cinematic::make_layout(&device);
+    let cinematic_draw_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("cinematic geometry"),
+        bind_group_layouts: &[
+            Some(&uniform_layout),
+            Some(&texture_layout),
+            Some(&cinematic_layout),
+        ],
+        immediate_size: 0,
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("main"),
@@ -641,15 +686,27 @@ async fn init_surface(
     ));
     let tonemap_module = load_shader("tonemap.wgsl");
 
+    let material_mers = cinematic::upload_map(&device, &queue, &[0, 0, 255, 0], 1, 1);
+    let material_normals = cinematic::upload_map(&device, &queue, &[128, 128, 255, 255], 1, 1);
     let ctx = Ctx {
+        hand_depth: make_depth(&device, config.width, config.height),
+        cinematic: None,
+        cinematic_layout,
+        cinematic_draw_layout,
+        material_mers: material_mers.clone(),
+        material_normals: material_normals.clone(),
         white_texture: make_texture_bind_group(
             &device,
             &queue,
             &texture_layout,
             &sampler,
-            &[255, 255, 255, 255],
-            1,
-            1,
+            &material_mers,
+            &material_normals,
+            RgbaTextureData {
+                data: &[255, 255, 255, 255],
+                width: 1,
+                height: 1,
+            },
         )
         .1,
         instance,
@@ -1549,6 +1606,7 @@ fn gpu_mesh_m3_draw_impl(tinted: bool) {
             uniform_offset,
             texture,
             texture_id,
+            effects: c.cinematic.as_ref().map(|s| s.group.clone()),
             buffer,
             vertex_count: if M3_DEBUG_DIRECT_DRAW {
                 debug_vertex_count
@@ -1564,15 +1622,26 @@ fn gpu_mesh_m3_draw_impl(tinted: bool) {
     });
 }
 
+struct RgbaTextureData<'a> {
+    data: &'a [u8],
+    width: u32,
+    height: u32,
+}
+
 fn make_texture_bind_group(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
-    data: &[u8],
-    width: u32,
-    height: u32,
+    mers: &wgpu::TextureView,
+    normals: &wgpu::TextureView,
+    image: RgbaTextureData<'_>,
 ) -> (wgpu::Texture, wgpu::BindGroup) {
+    let RgbaTextureData {
+        data,
+        width,
+        height,
+    } = image;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
@@ -1622,6 +1691,14 @@ fn make_texture_bind_group(
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(mers),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(normals),
+            },
         ],
     });
     (texture, bind_group)
@@ -1667,7 +1744,22 @@ pub fn clear(r: f32, g: f32, b: f32, a: f32) {
 /// Used only after all world geometry, before the first-person viewmodel.
 pub fn clear_viewmodel_depth() {
     with_ctx(|c| {
-        let target = c.passes.last().unwrap().target.clone();
+        let target = match c.passes.last().unwrap().target.clone() {
+            Target::Hdr { color, .. } => Target::Hdr {
+                color,
+                depth: c
+                    .deferred
+                    .as_ref()
+                    .map(|d| d.hand_depth.clone())
+                    .unwrap_or_else(|| c.hand_depth.clone()),
+            },
+            Target::Offscreen { color, .. } => Target::Offscreen {
+                color,
+                depth: c.hand_depth.clone(),
+            },
+            Target::Surface => Target::SurfaceHand,
+            other => other,
+        };
         let mut pass = PassRec::new(target);
         pass.clear_depth = true;
         c.passes.push(pass);
@@ -1709,6 +1801,7 @@ struct ShaderInner {
     // past this many are left unwritten rather than validated against a
     // shader that has nothing to put in them.
     outputs: usize,
+    cinematic: bool,
     staging: RefCell<[u8; UNIFORM_SIZE]>,
     // Draws reuse the last uniform slot while no set_* happened this frame.
     dirty: std::cell::Cell<bool>,
@@ -1717,17 +1810,19 @@ struct ShaderInner {
 }
 
 pub struct Shader {
-    inner: Arc<ShaderInner>,
+    inner: Rc<ShaderInner>,
 }
 
 impl Shader {
     /// Compiles a shader whose fragment stage writes one color attachment.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(source: &str) -> Result<Self, String> {
         Self::with_outputs(source, 1)
     }
 
     /// Compiles a shader that writes `outputs` color attachments, for the
     /// deferred geometry pass.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_outputs(source: &str, outputs: usize) -> Result<Self, String> {
         block_on(Self::with_outputs_async(source, outputs))
     }
@@ -1769,16 +1864,21 @@ impl Shader {
             }
         }
         Ok(Self {
-            inner: Arc::new(ShaderInner {
+            inner: Rc::new(ShaderInner {
                 id: SHADER_IDS.fetch_add(1, Ordering::Relaxed),
                 module,
                 outputs,
+                cinematic: source.contains("@group(2)"),
                 staging: RefCell::new(initial_uniform_staging()),
                 dirty: std::cell::Cell::new(true),
                 cached_offset: std::cell::Cell::new(0),
                 cached_frame: std::cell::Cell::new(u64::MAX),
             }),
         })
+    }
+
+    pub async fn cinematic_async(source: &str) -> Result<Self, String> {
+        Self::new_async(&cinematic::compose(source)).await
     }
 
     pub fn bind(&self) {
@@ -1844,9 +1944,13 @@ impl Texture2D {
                 &c.queue,
                 &c.texture_layout,
                 &c.sampler,
-                data,
-                width as u32,
-                height as u32,
+                &c.material_mers,
+                &c.material_normals,
+                RgbaTextureData {
+                    data,
+                    width: width as u32,
+                    height: height as u32,
+                },
             )
         });
         Self {
@@ -1856,6 +1960,52 @@ impl Texture2D {
             width,
             height,
         }
+    }
+
+    pub fn set_material_maps(&mut self, mers: &[u8], normals: &[u8]) -> Result<(), String> {
+        let expected = self.width as usize * self.height as usize * 4;
+        if mers.len() != expected || normals.len() != expected {
+            return Err("Material maps must match the albedo extent and RGBA8 layout".into());
+        }
+        with_ctx(|c| {
+            let mers = cinematic::upload_map(
+                &c.device,
+                &c.queue,
+                mers,
+                self.width as u32,
+                self.height as u32,
+            );
+            let normals = cinematic::upload_map(
+                &c.device,
+                &c.queue,
+                normals,
+                self.width as u32,
+                self.height as u32,
+            );
+            self.bind_group = c.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("albedo MERS normals"),
+                layout: &c.texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view_of(&self.texture)),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&c.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&mers),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&normals),
+                    },
+                ],
+            });
+        });
+        Ok(())
     }
 
     pub fn from_file(path: &str) -> Self {
@@ -1975,6 +2125,7 @@ impl Mesh {
                 uniform_offset,
                 texture,
                 texture_id,
+                effects: c.cinematic.as_ref().map(|s| s.group.clone()),
                 buffer: self.buffer.clone(),
                 vertex_count: self.vertex_count as u32,
                 indirect: None,
@@ -2101,11 +2252,13 @@ struct Deferred {
     height: u32,
     albedo: wgpu::TextureView,
     normal: wgpu::TextureView,
+    normal_texture: wgpu::Texture,
     mers: wgpu::TextureView,
     lighting: wgpu::TextureView,
     // Kept as the texture, not a view: the geometry pass needs a render
     // view and the lighting pass needs a sampleable one.
     depth: wgpu::Texture,
+    hand_depth: wgpu::TextureView,
     hdr: wgpu::TextureView,
     // Sampled by the tone-map pass.
     #[allow(dead_code)]
@@ -2141,7 +2294,10 @@ fn make_attachment(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     })
 }
@@ -2165,6 +2321,7 @@ pub fn deferred_resize(width: i32, height: i32) {
             return;
         }
         c.deferred = Some(build_deferred(c, width, height));
+        cinematic::resize(c, width, height);
     });
 }
 
@@ -2259,9 +2416,11 @@ fn build_deferred(c: &Ctx, width: u32, height: u32) -> Deferred {
         height,
         albedo: albedo_view,
         normal: normal_view,
+        normal_texture: normal,
         mers: mers_view,
         lighting: lighting_view,
         depth,
+        hand_depth: make_depth(device, width, height),
         hdr: hdr_view,
         hdr_texture,
         uniform_buffer,
@@ -2282,13 +2441,13 @@ pub fn deferred_begin_geometry() {
         let Some(d) = c.deferred.as_ref() else {
             return;
         };
-        let target = Target::GBuffer {
+        let target = Target::GBuffer(Box::new(GBufferTarget {
             albedo: d.albedo.clone(),
             normal: d.normal.clone(),
             mers: d.mers.clone(),
             lighting: d.lighting.clone(),
             depth: view_of(&d.depth),
-        };
+        }));
         switch_target_inner(c, target);
         let pass = c.passes.last_mut().unwrap();
         pass.clear_color = Some([0.0, 0.0, 0.0, 0.0]);
@@ -2299,6 +2458,10 @@ pub fn deferred_begin_geometry() {
 /// Resolves the G-buffer into the HDR target with the given lighting.
 pub fn deferred_resolve(uniforms: &DeferredUniforms) {
     with_ctx(|c| {
+        if c.cinematic.is_some() {
+            cinematic::resolve(c, uniforms);
+            return;
+        }
         let Some(d) = c.deferred.as_ref() else {
             return;
         };
@@ -2476,7 +2639,7 @@ fn save_texture_png(
     drop(data);
     buffer.unmap();
     if bgra {
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
     }
@@ -2624,6 +2787,7 @@ pub fn end_frame_capture(width: i32, height: i32, path: Option<&std::path::Path>
             c.config.height = height as u32;
             c.surface.configure(&c.device, &c.config);
             c.surface_depth = make_depth(&c.device, c.config.width, c.config.height);
+            c.hand_depth = make_depth(&c.device, c.config.width, c.config.height);
         }
         use wgpu::CurrentSurfaceTexture as Cst;
         let frame = match c.surface.get_current_texture() {
@@ -2714,7 +2878,11 @@ pub fn end_frame_capture(width: i32, height: i32, path: Option<&std::path::Path>
                 if !c.pipelines.contains_key(&key) {
                     let pipeline = build_pipeline(
                         &c.device,
-                        &c.pipeline_layout,
+                        if draw.shader.cinematic {
+                            &c.cinematic_draw_layout
+                        } else {
+                            &c.pipeline_layout
+                        },
                         &draw.shader.module,
                         draw.flags,
                         &kind.color_formats(c.config.format),
@@ -2729,12 +2897,35 @@ pub fn end_frame_capture(width: i32, height: i32, path: Option<&std::path::Path>
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         for pass in &passes {
-            if pass.is_empty() && pass.clear_color.is_none() {
+            for copy in &pass.copies {
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &copy.source,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &copy.destination,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    copy.source.size(),
+                );
+            }
+            if pass.is_empty() && pass.clear_color.is_none() && !pass.clear_depth {
                 continue;
             }
             let kind = pass.target.kind();
             let color_views = pass.target.color_views(&frame_view);
-            let depth_view = pass.target.depth_view(&c.surface_depth);
+            let depth_view =
+                pass.target
+                    .depth_view(if matches!(pass.target, Target::SurfaceHand) {
+                        &c.hand_depth
+                    } else {
+                        &c.surface_depth
+                    });
             let color_attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = color_views
                 .iter()
                 .enumerate()
@@ -2824,6 +3015,15 @@ pub fn end_frame_capture(width: i32, height: i32, path: Option<&std::path::Path>
                 if last_texture != Some(draw.texture_id) {
                     rpass.set_bind_group(1, &draw.texture, &[]);
                     last_texture = Some(draw.texture_id);
+                }
+                if draw.shader.cinematic {
+                    rpass.set_bind_group(
+                        2,
+                        draw.effects
+                            .as_ref()
+                            .expect("cinematic draw requires configured frame resources"),
+                        &[],
+                    );
                 }
                 if last_buffer != Some(draw.buffer.id) {
                     rpass.set_vertex_buffer(0, draw.buffer.buffer.slice(..));

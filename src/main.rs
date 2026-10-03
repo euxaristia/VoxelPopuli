@@ -1,5 +1,6 @@
-// The parallel storage profile checks Chunk's nested wgpu Send/Sync types.
-#![cfg_attr(test, recursion_limit = "256")]
+// Chunk meshes carry wgpu resources, and the cinematic pass types make the
+// generated Send check deeper than rustc's default recursion limit.
+#![recursion_limit = "256"]
 
 #[cfg(target_arch = "wasm32")]
 use crate::web_window as glfw;
@@ -50,7 +51,8 @@ use crate::hud::*;
 use crate::inventory::*;
 use crate::player::Player;
 use crate::save::{GameSave, GameSettings, SAVE_FILE};
-use crate::world::{CLOUD_HEIGHT, World};
+use crate::vibrant::quality::GraphicsQuality;
+use crate::world::World;
 use block::BlockType;
 use glam::{Mat4, Vec2, Vec3};
 use profiler::FrameProfiler;
@@ -320,8 +322,10 @@ fn smoke_tests_never_call_the_os_cursor_api() {
 }
 
 async fn run() {
-    // Entry point
-    let args: Vec<String> = platform::args();
+    run_with_args(platform::args()).await;
+}
+
+async fn run_with_args(args: Vec<String>) {
     #[cfg(not(target_arch = "wasm32"))]
     if args.iter().any(|arg| arg == "--smoke-test-celestial-sneak") {
         if let Err(error) = smoke::celestial_sneak() {
@@ -365,8 +369,11 @@ async fn run() {
     }
     let smoke_hand = args.iter().any(|arg| arg == "--smoke-test-hand");
     let smoke_lighting = args.iter().any(|arg| arg == "--smoke-test-lighting");
-    let smoke_world =
-        smoke_hand || smoke_lighting || args.iter().any(|arg| arg == "--smoke-test-world");
+    let smoke_rendering = args.iter().any(|arg| arg == "--smoke-test-rendering");
+    let smoke_world = smoke_rendering
+        || smoke_hand
+        || smoke_lighting
+        || args.iter().any(|arg| arg == "--smoke-test-world");
     let reset_spawn = args.iter().any(|arg| arg == "--reset-spawn");
     let smoke_saved = smoke_world && args.iter().any(|arg| arg == "--smoke-saved-world");
     let save_path = match save_path_from_args(&args) {
@@ -429,7 +436,9 @@ async fn run() {
         .as_ref()
         .map(|save| save.seed as i64)
         .unwrap_or_else(|| {
-            if smoke_world {
+            if smoke_rendering {
+                1074691402050369410
+            } else if smoke_world {
                 -112651535689168126
             } else {
                 resolve_world_seed()
@@ -606,7 +615,6 @@ async fn run() {
         world.pending_stacks = save.pending_stacks.clone();
         world.dropped_items = save.dropped_items.clone();
     }
-    world.generate_atlas();
     world.init_celestial();
     match village::nearest_village(world_seed as u64, 32, 32, 8) {
         Some(v) => {
@@ -636,9 +644,24 @@ async fn run() {
     for warning in &vibrant_pack.warnings {
         eprintln!("Vibrant Visuals pack: {warning}");
     }
+    world
+        .generate_atlas(&vibrant_pack)
+        .expect("Material atlas does not match the color atlas");
     let water_shader = Shader::new_async(&load_shader("water.wgsl"))
         .await
         .expect("Failed to compile water shader");
+    let cinematic_water = Shader::cinematic_async(&load_shader("cinematic_water.wgsl"))
+        .await
+        .expect("Failed to compile cinematic water");
+    let cinematic_glass = Shader::cinematic_async(&load_shader("cinematic_glass.wgsl"))
+        .await
+        .expect("Failed to compile cinematic glass");
+    let shadow_shader = Shader::with_outputs_async(&load_shader("shadow.wgsl"), 0)
+        .await
+        .expect("Failed to compile shadow shader");
+    let water_depth_shader = Shader::with_outputs_async(&load_shader("water_depth.wgsl"), 0)
+        .await
+        .expect("Failed to compile water depth shader");
     let flat_shader = Shader::new_async(&load_shader("flat.wgsl"))
         .await
         .expect("Failed to compile FLAT shader");
@@ -708,7 +731,13 @@ async fn run() {
         settings.view_distance
     };
     let mut fov_setting = settings.fov;
-    let mut fancy_gfx_setting = smoke_world || settings.fancy_graphics;
+    let mut graphics_quality_setting = if smoke_world {
+        vibrant::quality::GraphicsQuality::High
+    } else {
+        settings.graphics_quality
+    };
+    let mut presented_quality = graphics_quality_setting;
+    let mut presented_first_person = true;
     let mut export_status_msg = String::new();
     let mut selected_skin = settings.selected_skin;
     // Built white once: the skin, shirt and trouser colours are applied per
@@ -753,7 +782,9 @@ async fn run() {
         );
         let frame_start = platform::Instant::now();
         let current_time = glfw.get_time();
-        let delta_time = if smoke_hand {
+        let delta_time = if smoke_rendering {
+            0.0
+        } else if smoke_hand {
             1.0 / 60.0
         } else {
             ((current_time - last_time) as f32).clamp(0.0, 0.1)
@@ -864,8 +895,7 @@ async fn run() {
                     4.0,
                     4.0,
                     [255, 255, 255, brightness],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
             }
 
@@ -883,8 +913,7 @@ async fn run() {
                 bar_w + 2.0,
                 bar_h + 2.0,
                 [255, 255, 255, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             // BG (Inside border)
             draw_rect(
@@ -894,8 +923,7 @@ async fn run() {
                 bar_w,
                 bar_h,
                 [30, 30, 30, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             // Progress Fill (tracks fully meshed & GPU ready chunks)
@@ -915,8 +943,7 @@ async fn run() {
                 bar_w * progress,
                 bar_h,
                 [255, 255, 255, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             // 4. Percentage Text
@@ -1346,8 +1373,8 @@ async fn run() {
                                 PauseClick::SetFov(fov) => {
                                     fov_setting = fov;
                                 }
-                                PauseClick::ToggleFancy => {
-                                    fancy_gfx_setting = !fancy_gfx_setting;
+                                PauseClick::CycleGraphicsQuality => {
+                                    graphics_quality_setting = graphics_quality_setting.next();
                                 }
                                 PauseClick::SetDifficulty(difficulty) => {
                                     world.difficulty = difficulty;
@@ -1446,35 +1473,33 @@ async fn run() {
                                 place_repeat_timer = 0.0;
                                 if bow_charge > 0.1
                                     && inv_slots[player.selected_slot]
-                                        .map_or(false, |s| s.block == BlockType::Bow)
+                                        .is_some_and(|s| s.block == BlockType::Bow)
+                                    && let Some(arrow_idx) = inv_slots.iter().position(|slot| {
+                                        slot.is_some_and(|s| s.block == BlockType::Arrow)
+                                    })
                                 {
-                                    if let Some(arrow_idx) = inv_slots.iter().position(|slot| {
-                                        slot.map_or(false, |s| s.block == BlockType::Arrow)
-                                    }) {
-                                        let s = inv_slots[arrow_idx].as_mut().unwrap();
-                                        s.count -= 1;
-                                        if s.count == 0 {
-                                            inv_slots[arrow_idx] = None;
-                                        }
-                                        let eye_pos = player.eye_position();
-                                        let look_dir = Vec3::new(
-                                            camera_angle.y.cos() * camera_angle.x.sin(),
-                                            camera_angle.y.sin(),
-                                            camera_angle.y.cos() * camera_angle.x.cos(),
-                                        )
-                                        .normalize();
-                                        let speed = bow_charge * 30.0;
-                                        world.arrows.push(crate::block::ArrowEntity {
-                                            position: eye_pos + look_dir * 0.5,
-                                            velocity: look_dir * speed,
-                                            life: 60.0,
-                                            in_ground: false,
-                                            damage: (bow_charge * 9.0 + 1.0).round(),
-                                            is_critical: bow_charge >= 1.0,
-                                            from_player: true,
-                                            owner: None,
-                                        });
+                                    let s = inv_slots[arrow_idx].as_mut().unwrap();
+                                    s.count -= 1;
+                                    if s.count == 0 {
+                                        inv_slots[arrow_idx] = None;
                                     }
+                                    let eye_pos = player.eye_position();
+                                    let look_dir = Vec3::new(
+                                        camera_angle.y.cos() * camera_angle.x.sin(),
+                                        camera_angle.y.sin(),
+                                        camera_angle.y.cos() * camera_angle.x.cos(),
+                                    )
+                                    .normalize();
+                                    let speed = bow_charge * 30.0;
+                                    world.arrows.push(crate::block::ArrowEntity {
+                                        position: eye_pos + look_dir * 0.5,
+                                        velocity: look_dir * speed,
+                                        life: 60.0,
+                                        in_ground: false,
+                                        damage: (bow_charge * 9.0 + 1.0).round(),
+                                        from_player: true,
+                                        owner: None,
+                                    });
                                 }
                                 bow_charge = 0.0;
                             }
@@ -1567,8 +1592,8 @@ async fn run() {
                                 }
                             }
 
-                            if res.hit {
-                                if try_place_block_with_lock(
+                            if res.hit
+                                && try_place_block_with_lock(
                                     &mut world,
                                     &mut inv_slots,
                                     player.selected_slot,
@@ -1576,9 +1601,9 @@ async fn run() {
                                     look_dir,
                                     &player,
                                     &mut placement_lock,
-                                ) {
-                                    place_repeat_timer = 0.20;
-                                }
+                                )
+                            {
+                                place_repeat_timer = 0.20;
                             }
                         }
                     }
@@ -1710,6 +1735,13 @@ async fn run() {
             prev_gp_lb = lb;
         }
 
+        if smoke_rendering {
+            let yaw = [0.0, 0.45, -0.45][(smoke_frames / 16) as usize];
+            camera_angle = Vec2::new(std::f32::consts::PI + yaw, -0.25);
+            player.sandbox = true;
+            player.velocity = Vec3::ZERO;
+            world.day_time = 900.0;
+        }
         let forward = Vec3::new(camera_angle.x.sin(), 0.0, camera_angle.x.cos());
         let right = forward.cross(Vec3::Y);
         let mut move_dir = Vec3::ZERO;
@@ -1758,10 +1790,10 @@ async fn run() {
 
         if game_state == GameState::Playing {
             if right_mouse_held
-                && inv_slots[player.selected_slot].map_or(false, |s| s.block == BlockType::Bow)
+                && inv_slots[player.selected_slot].is_some_and(|s| s.block == BlockType::Bow)
                 && inv_slots
                     .iter()
-                    .any(|slot| slot.map_or(false, |s| s.block == BlockType::Arrow))
+                    .any(|slot| slot.is_some_and(|s| s.block == BlockType::Arrow))
             {
                 bow_charge = (bow_charge + delta_time * 1.5).min(1.0);
             } else if !right_mouse_held {
@@ -1786,7 +1818,7 @@ async fn run() {
             world.player_targetable = !player.sandbox && player.health > 0;
             world.player_sneaking = player.sneaking;
             world.check_enderman_gaze(eye_pos, look_dir);
-            let earned_xp = world.update(player.position, delta_time as f32, held);
+            let earned_xp = world.update(player.position, delta_time, held);
             profiler.world_update_ms = t_wu.elapsed().as_secs_f32() * 1000.0;
             if earned_xp > 0 {
                 player.add_xp(earned_xp);
@@ -1973,7 +2005,7 @@ async fn run() {
             world.day_time = smoke::lighting_time(smoke_frames);
         }
         let dusk_time = world.day_time;
-        if fancy_gfx_setting {
+        if !graphics_quality_setting.is_deferred() {
             world.update_clouds(player.position, dusk_time);
         }
         let (sun_angle, sun_y) = {
@@ -2017,7 +2049,7 @@ async fn run() {
         };
         let (framebuffer_width, framebuffer_height) = window.get_framebuffer_size();
         let (target_width, target_height) =
-            render_target_size_for_framebuffer(framebuffer_width, framebuffer_height);
+            graphics_quality_setting.render_size(framebuffer_width, framebuffer_height);
         if target.texture.width != target_width || target.texture.height != target_height {
             target = RenderTexture2D::new(target_width, target_height);
         }
@@ -2057,7 +2089,14 @@ async fn run() {
         // original forward renderer, which is also the fallback if the
         // deferred targets could not be built.
         renderer::deferred_resize(target.texture.width, target.texture.height);
-        let deferred = fancy_gfx_setting && renderer::deferred_ready();
+        if let Err(error) = renderer::configure_cinematic(graphics_quality_setting) {
+            eprintln!("Cinematic renderer unavailable: {error}");
+        }
+        let deferred = graphics_quality_setting.is_deferred() && renderer::deferred_ready();
+        let cinematic = deferred && renderer::cinematic_enabled();
+        let diagnostic = (smoke_rendering && smoke_frames % 16 == 15)
+            .then(|| format!("render-debug-{}", smoke_frames / 16));
+        renderer::cinematic_capture_begin(diagnostic.as_deref());
         let player_biome = chunk::biome_at_version(
             camera_pos.x,
             camera_pos.z,
@@ -2085,7 +2124,13 @@ async fn run() {
         } else {
             1.0
         };
-        for forward_shader in [&shader, &flat_shader, &water_shader] {
+        for forward_shader in [
+            &shader,
+            &flat_shader,
+            &water_shader,
+            &cinematic_water,
+            &cinematic_glass,
+        ] {
             forward_shader.set_float(forward_shader.get_uniform_location("uHdrScale"), hdr_scale);
             forward_shader.set_int(
                 forward_shader.get_uniform_location("uHdrOutput"),
@@ -2120,6 +2165,53 @@ async fn run() {
         // Opaque geometry writes the G-buffer when deferred, and shades
         // itself when not. Both shaders read the same uniform names.
         let world_shader = if deferred { &gbuffer_shader } else { &shader };
+        let camera_cut = graphics_quality_setting != presented_quality
+            || perspective.first_person() != presented_first_person;
+        presented_quality = graphics_quality_setting;
+        presented_first_person = perspective.first_person();
+        if cinematic {
+            world.sync_render_volume(camera_pos);
+        }
+        let frame = if cinematic {
+            Some(renderer::cinematic_begin_frame(
+                mvp,
+                camera_pos,
+                (0.1, 1000.0),
+                current_time as f32,
+                delta_time,
+                camera_cut,
+                &deferred_uniforms,
+            ))
+        } else {
+            None
+        };
+        let draw_mvp = frame.as_ref().map(|frame| frame.view_proj).unwrap_or(mvp);
+        if let Some(frame) = &frame {
+            renderer::set_blend(false);
+            renderer::set_depth_test(true);
+            renderer::set_depth_write(true);
+            renderer::set_cull(true);
+            renderer::set_polygon_offset(true);
+            for (cascade, shadow_matrix) in frame.shadow_matrices.iter().enumerate() {
+                renderer::shadow_begin(cascade);
+                shadow_shader.bind();
+                shadow_shader.set_mat4(shadow_shader.get_uniform_location("uMVP"), shadow_matrix);
+                shadow_shader.set_mat4(
+                    shadow_shader.get_uniform_location("uModel"),
+                    &Mat4::IDENTITY,
+                );
+                let light_frustum = world::Frustum::from_matrix(shadow_matrix);
+                world.render_shadow_casters(&shadow_shader, &light_frustum);
+                world.render_mobs(&shadow_shader, player.position);
+                renderer::shadow_end();
+            }
+            renderer::set_polygon_offset(false);
+        }
+        let sun_dir = if deferred {
+            Vec3::from_slice(&deferred_uniforms.sun_direction_illuminance)
+        } else {
+            sun_dir
+        };
 
         if let Some(atlas) = &world.atlas {
             atlas.bind(0);
@@ -2129,20 +2221,20 @@ async fn run() {
         } else {
             target.bind();
             renderer::clear(sky_c.x, sky_c.y, sky_c.z, 1.0);
-            world.render_stars(camera_pos, dusk_time, &flat_shader, &mvp);
+            world.render_stars(camera_pos, dusk_time, &flat_shader, &draw_mvp);
             celestial.draw(
                 &celestial_shader,
                 camera_pos,
                 Vec3::from_slice(&deferred_uniforms.sun_direction_illuminance),
                 world.day_count,
-                mvp,
+                draw_mvp,
                 true,
                 hdr_scale,
                 deferred,
             );
         }
         world_shader.bind();
-        world_shader.set_mat4(world_shader.get_uniform_location("uMVP"), &mvp);
+        world_shader.set_mat4(world_shader.get_uniform_location("uMVP"), &draw_mvp);
         world_shader.set_mat4(world_shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
         world_shader.set_float(
             world_shader.get_uniform_location("uTime"),
@@ -2164,11 +2256,11 @@ async fn run() {
             glam::Vec4::ZERO,
         );
         let frustum = world::Frustum::from_matrix(&mvp);
-        world.compute_visible_chunks(&frustum);
+        world.compute_visible_chunks(&frustum, camera_pos);
         world.render_opaque(world_shader, &frustum);
 
         // Opaque effects belong in the G-buffer alongside the terrain.
-        world.render_explosives(world_shader, &mvp, current_time as f32);
+        world.render_explosives(world_shader, &draw_mvp, current_time as f32);
         world.render_dropped_items(world_shader, current_time as f32);
         world.render_arrows(world_shader);
         world.render_xp_orbs(world_shader, current_time as f32);
@@ -2178,19 +2270,18 @@ async fn run() {
             let held_block = inv_slots[player.selected_slot]
                 .map(|s| s.block)
                 .filter(|b| *b != BlockType::Air);
-            if let Some(block) = held_block {
-                if held_item_mesh
+            if let Some(block) = held_block
+                && held_item_mesh
                     .as_ref()
                     .is_none_or(|(cached, _)| *cached != block)
-                {
-                    held_item_mesh = Some((block, hand::build_item_mesh(block)));
-                }
+            {
+                held_item_mesh = Some((block, hand::build_item_mesh(block)));
             }
             if let Some(atlas) = world.atlas.as_ref() {
                 avatar.draw(
                     world_shader,
                     atlas,
-                    &mvp,
+                    &draw_mvp,
                     selected_skin,
                     player.position,
                     camera_angle.x,
@@ -2215,7 +2306,7 @@ async fn run() {
                     atlas,
                     &torso_mesh,
                     &leg_mesh,
-                    &mvp,
+                    &draw_mvp,
                     selected_skin,
                     player.position,
                     camera_angle.x,
@@ -2232,22 +2323,20 @@ async fn run() {
         // forward into the lit HDR target.
         if deferred {
             renderer::deferred_resolve(&deferred_uniforms);
-            world.render_stars(camera_pos, dusk_time, &flat_shader, &mvp);
-            // Depth-tested here, unlike the forward path where the sky is
-            // drawn first and painted over by the terrain.
+            world.render_stars(camera_pos, dusk_time, &flat_shader, &draw_mvp);
             celestial.draw(
                 &celestial_shader,
                 camera_pos,
                 Vec3::from_slice(&deferred_uniforms.sun_direction_illuminance),
                 world.day_count,
-                mvp,
+                draw_mvp,
                 false,
                 hdr_scale,
                 deferred,
             );
         }
         shader.bind();
-        shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+        shader.set_mat4(shader.get_uniform_location("uMVP"), &draw_mvp);
         shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
         shader.set_float(shader.get_uniform_location("uTime"), current_time as f32);
         shader.set_vec3(shader.get_uniform_location("sunDir"), sun_dir);
@@ -2258,18 +2347,49 @@ async fn run() {
 
         crack_overlay.draw(&world, eye_pos, mining_state.crack_stage());
 
-        world.render_particles(&shader, &mvp);
+        world.render_particles(&shader, &draw_mvp);
 
-        // Transparency render order depends on whether the camera is above or below
-        // the cloud layer, so each transparent layer is drawn back-to-front.
-        let above_clouds = camera_pos.y > CLOUD_HEIGHT;
+        // Block clouds remain the fast-preset sky. Cinematic and High march a
+        // procedural layer in the atmosphere pass instead.
+        let above_clouds = camera_pos.y > crate::world::CLOUD_HEIGHT;
 
-        if fancy_gfx_setting && !above_clouds {
-            world.render_clouds(&flat_shader, &mvp);
+        if !deferred && !above_clouds {
+            world.render_clouds(&flat_shader, &draw_mvp);
         }
 
-        shader.bind();
-        world.render_transparent(&shader, &frustum);
+        let liquid_shader = if cinematic {
+            &cinematic_water
+        } else {
+            &water_shader
+        };
+        if cinematic {
+            renderer::water_depth_begin();
+            water_depth_shader.bind();
+            water_depth_shader.set_mat4(water_depth_shader.get_uniform_location("uMVP"), &draw_mvp);
+            water_depth_shader.set_mat4(
+                water_depth_shader.get_uniform_location("uModel"),
+                &Mat4::IDENTITY,
+            );
+            world.render_water_depth(&water_depth_shader);
+            renderer::water_depth_end();
+            cinematic_glass.bind();
+            cinematic_glass.set_mat4(cinematic_glass.get_uniform_location("uMVP"), &draw_mvp);
+            cinematic_glass.set_mat4(
+                cinematic_glass.get_uniform_location("uModel"),
+                &Mat4::IDENTITY,
+            );
+            cinematic_glass.set_vec3(cinematic_glass.get_uniform_location("viewPos"), camera_pos);
+            cinematic_glass.set_vec4(
+                cinematic_glass.get_uniform_location("colDiffuse"),
+                glam::Vec4::ONE,
+            );
+            cinematic_glass.set_int(cinematic_glass.get_uniform_location("uBodyType"), 1);
+            world.render_transparent(&cinematic_glass, &frustum);
+            renderer::cinematic_begin_water();
+        } else {
+            shader.bind();
+            world.render_transparent(&shader, &frustum);
+        }
 
         let wave_depth = if vibrant_pack.water.waves.enabled {
             vibrant_pack.water.waves.depth
@@ -2282,39 +2402,47 @@ async fn run() {
             1.0
         };
 
-        water_shader.bind();
-        water_shader.set_mat4(water_shader.get_uniform_location("uMVP"), &mvp);
-        water_shader.set_float(
-            water_shader.get_uniform_location("uTime"),
+        liquid_shader.bind();
+        liquid_shader.set_mat4(liquid_shader.get_uniform_location("uMVP"), &draw_mvp);
+        liquid_shader.set_float(
+            liquid_shader.get_uniform_location("uTime"),
             (current_time as f32) * (wave_speed * 0.5),
         );
-        water_shader.set_vec3(water_shader.get_uniform_location("sunDir"), sun_dir);
-        water_shader.set_vec3(water_shader.get_uniform_location("viewPos"), camera_pos);
-        water_shader.set_vec4(water_shader.get_uniform_location("skyCol"), forward_sky);
-        water_shader.set_vec4(
-            water_shader.get_uniform_location("colDiffuse"),
+        liquid_shader.set_vec3(liquid_shader.get_uniform_location("sunDir"), sun_dir);
+        liquid_shader.set_vec3(liquid_shader.get_uniform_location("viewPos"), camera_pos);
+        liquid_shader.set_vec4(liquid_shader.get_uniform_location("skyCol"), forward_sky);
+        liquid_shader.set_vec4(
+            liquid_shader.get_uniform_location("colDiffuse"),
             forward_zenith,
         );
-        water_shader.set_vec4(
-            water_shader.get_uniform_location("uColor"),
+        liquid_shader.set_vec4(
+            liquid_shader.get_uniform_location("uColor"),
             glam::Vec4::new(water_color[0], water_color[1], water_color[2], wave_depth),
         );
-        water_shader.set_vec2(
-            water_shader.get_uniform_location("uScreenSize"),
+        liquid_shader.set_vec2(
+            liquid_shader.get_uniform_location("uScreenSize"),
             glam::Vec2::new(
                 vibrant_pack.water.waves.frequency,
                 vibrant_pack.water.waves.pull,
             ),
         );
-        world.render_water(&water_shader, &frustum);
+        world.render_water(liquid_shader, &frustum);
+        if cinematic {
+            cinematic_glass.bind();
+            cinematic_glass.set_int(cinematic_glass.get_uniform_location("uBodyType"), 2);
+            world.render_transparent(&cinematic_glass, &frustum);
+        }
 
         shader.bind();
-        shader.set_mat4(shader.get_uniform_location("uMVP"), &mvp);
+        shader.set_mat4(shader.get_uniform_location("uMVP"), &draw_mvp);
         shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);
         world.render_fire(&shader, current_time as f32);
 
-        if fancy_gfx_setting && above_clouds {
-            world.render_clouds(&flat_shader, &mvp);
+        if !deferred && above_clouds {
+            world.render_clouds(&flat_shader, &draw_mvp);
+        }
+        if cinematic {
+            renderer::cinematic_finish_world();
         }
         // Viewmodel goes last, after terrain, water and effects, with its own depth.
         if game_state == GameState::Playing && !player.inventory_open && perspective.first_person()
@@ -2370,7 +2498,8 @@ async fn run() {
             camera_pos.y.floor() as i32,
             camera_pos.z.floor() as i32,
         );
-        if cam_block == BlockType::Water || cam_block == BlockType::Lava {
+        let camera_submerged = world::render_volume::camera_in_water(&world, camera_pos);
+        if cam_block == BlockType::Lava || (camera_submerged && !deferred) {
             renderer::set_blend(true);
             renderer::set_depth_test(false);
             let tint = if cam_block == BlockType::Lava {
@@ -2409,12 +2538,28 @@ async fn run() {
             } else {
                 [85, 85, 85, 220]
             };
-            draw_rect(&ui_shader, rx, ry, 36.0, 36.0, bg, sw, sh);
+            draw_rect(&ui_shader, rx, ry, 36.0, 36.0, bg, (sw, sh));
             // Slot border (black outline)
-            draw_rect(&ui_shader, rx, ry, 36.0, 1.0, [0, 0, 0, 255], sw, sh);
-            draw_rect(&ui_shader, rx, ry + 35.0, 36.0, 1.0, [0, 0, 0, 255], sw, sh);
-            draw_rect(&ui_shader, rx, ry, 1.0, 36.0, [0, 0, 0, 255], sw, sh);
-            draw_rect(&ui_shader, rx + 35.0, ry, 1.0, 36.0, [0, 0, 0, 255], sw, sh);
+            draw_rect(&ui_shader, rx, ry, 36.0, 1.0, [0, 0, 0, 255], (sw, sh));
+            draw_rect(
+                &ui_shader,
+                rx,
+                ry + 35.0,
+                36.0,
+                1.0,
+                [0, 0, 0, 255],
+                (sw, sh),
+            );
+            draw_rect(&ui_shader, rx, ry, 1.0, 36.0, [0, 0, 0, 255], (sw, sh));
+            draw_rect(
+                &ui_shader,
+                rx + 35.0,
+                ry,
+                1.0,
+                36.0,
+                [0, 0, 0, 255],
+                (sw, sh),
+            );
             // Selected slot: bright white border
             if player.selected_slot == i {
                 draw_rect(
@@ -2424,8 +2569,7 @@ async fn run() {
                     40.0,
                     2.0,
                     [255, 255, 255, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
                 draw_rect(
                     &ui_shader,
@@ -2434,8 +2578,7 @@ async fn run() {
                     40.0,
                     2.0,
                     [255, 255, 255, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
                 draw_rect(
                     &ui_shader,
@@ -2444,8 +2587,7 @@ async fn run() {
                     2.0,
                     40.0,
                     [255, 255, 255, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
                 draw_rect(
                     &ui_shader,
@@ -2454,8 +2596,7 @@ async fn run() {
                     2.0,
                     40.0,
                     [255, 255, 255, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
             }
             if let Some(s) = inv_slot {
@@ -2482,8 +2623,7 @@ async fn run() {
                 4.0,
                 4.4,
                 [255, 255, 255, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
         }
 
@@ -2595,10 +2735,9 @@ async fn run() {
                 pw + 4.0,
                 ph + 4.0,
                 [55, 55, 55, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
-            draw_rect(&ui_shader, px, py, pw, ph, [139, 120, 100, 255], sw, sh);
+            draw_rect(&ui_shader, px, py, pw, ph, [139, 120, 100, 255], (sw, sh));
             draw_rect(
                 &ui_shader,
                 px + 2.0,
@@ -2606,8 +2745,7 @@ async fn run() {
                 pw - 4.0,
                 ph - 4.0,
                 [198, 182, 161, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             // Separator
@@ -2618,8 +2756,7 @@ async fn run() {
                 pw - 12.0,
                 2.0,
                 [85, 75, 65, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 &ui_shader,
@@ -2628,8 +2765,7 @@ async fn run() {
                 pw - 12.0,
                 1.0,
                 [220, 200, 180, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             // "Crafting" label area
@@ -2640,8 +2776,7 @@ async fn run() {
                 130.0,
                 12.0,
                 [85, 75, 65, 120],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             let ss = 36.0f32;
@@ -2655,14 +2790,13 @@ async fn run() {
                     ss + 2.0,
                     ss + 2.0,
                     [55, 55, 55, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
                 // Slot bg
-                draw_rect(&ui_shader, rx, ry, ss, ss, [140, 130, 118, 255], sw, sh);
+                draw_rect(&ui_shader, rx, ry, ss, ss, [140, 130, 118, 255], (sw, sh));
                 // Bevel
-                draw_rect(&ui_shader, rx, ry, ss, 2.0, [100, 90, 80, 255], sw, sh);
-                draw_rect(&ui_shader, rx, ry, 2.0, ss, [100, 90, 80, 255], sw, sh);
+                draw_rect(&ui_shader, rx, ry, ss, 2.0, [100, 90, 80, 255], (sw, sh));
+                draw_rect(&ui_shader, rx, ry, 2.0, ss, [100, 90, 80, 255], (sw, sh));
                 let _ = (slot_idx, st); // suppress unused
             };
 
@@ -2693,8 +2827,7 @@ async fn run() {
                 40.0,
                 4.0,
                 [85, 75, 65, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 &ui_shader,
@@ -2703,8 +2836,7 @@ async fn run() {
                 4.0,
                 20.0,
                 [85, 75, 65, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             // Output slot
@@ -2717,10 +2849,9 @@ async fn run() {
                     ss + 4.0,
                     ss + 4.0,
                     [55, 55, 55, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
-                draw_rect(&ui_shader, rx, ry, ss, ss, [165, 155, 140, 255], sw, sh);
+                draw_rect(&ui_shader, rx, ry, ss, ss, [165, 155, 140, 255], (sw, sh));
                 if let Some(s) = craft_table_slots[9] {
                     draw_item_icon(
                         world.atlas.as_ref().unwrap(),
@@ -2818,10 +2949,9 @@ async fn run() {
                 pw + 4.0,
                 ph + 4.0,
                 [55, 55, 55, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
-            draw_rect(&ui_shader, px, py, pw, ph, [139, 120, 100, 255], sw, sh); // brownish MC
+            draw_rect(&ui_shader, px, py, pw, ph, [139, 120, 100, 255], (sw, sh)); // brownish MC
             draw_rect(
                 &ui_shader,
                 px + 2.0,
@@ -2829,8 +2959,7 @@ async fn run() {
                 pw - 4.0,
                 ph - 4.0,
                 [198, 182, 161, 255],
-                sw,
-                sh,
+                (sw, sh),
             ); // lighter inset
 
             // ── Separator line between upper and lower sections
@@ -2841,8 +2970,7 @@ async fn run() {
                 pw - 12.0,
                 2.0,
                 [85, 75, 65, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 &ui_shader,
@@ -2851,8 +2979,7 @@ async fn run() {
                 pw - 12.0,
                 1.0,
                 [220, 200, 180, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             let (mx, my) = inventory_cursor(
@@ -2875,8 +3002,7 @@ async fn run() {
                 pw_doll,
                 ph_doll,
                 [45, 40, 36, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 &ui_shader,
@@ -2885,8 +3011,7 @@ async fn run() {
                 pw_doll,
                 2.0,
                 [25, 22, 20, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 &ui_shader,
@@ -2895,8 +3020,7 @@ async fn run() {
                 2.0,
                 ph_doll,
                 [25, 22, 20, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 &ui_shader,
@@ -2905,8 +3029,7 @@ async fn run() {
                 pw_doll,
                 1.0,
                 [85, 75, 68, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 &ui_shader,
@@ -2915,8 +3038,7 @@ async fn run() {
                 1.0,
                 ph_doll,
                 [85, 75, 68, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             // Compute mouse-aware look angles (Bedrock live_player_renderer / look_at_target_ui)
@@ -3030,7 +3152,7 @@ async fn run() {
                 } else {
                     [100, 88, 78, 255]
                 };
-                draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, sw, sh);
+                draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, (sw, sh));
                 draw_rect(
                     &ui_shader,
                     sx + 2.0,
@@ -3038,12 +3160,11 @@ async fn run() {
                     sw2 - 4.0,
                     sh2 - 4.0,
                     [75, 65, 58, 180],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
                 // Armor piece color hint
                 let c = armor_labels[i];
-                draw_rect(&ui_shader, sx + 8.0, sy + 8.0, 20.0, 20.0, c, sw, sh);
+                draw_rect(&ui_shader, sx + 8.0, sy + 8.0, 20.0, 20.0, c, (sw, sh));
                 if let Some(s) = inv_slots[36 + i] {
                     draw_item_icon(
                         world.atlas.as_ref().unwrap(),
@@ -3068,7 +3189,7 @@ async fn run() {
                 } else {
                     [100, 88, 78, 255]
                 };
-                draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, sw, sh);
+                draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, (sw, sh));
                 draw_rect(
                     &ui_shader,
                     sx + 2.0,
@@ -3076,8 +3197,7 @@ async fn run() {
                     sw2 - 4.0,
                     sh2 - 4.0,
                     [75, 65, 58, 200],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
                 if let Some(s) = inv_slot {
                     draw_item_icon(
@@ -3101,8 +3221,7 @@ async fn run() {
                 18.0,
                 8.0,
                 [85, 75, 65, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 &ui_shader,
@@ -3111,8 +3230,7 @@ async fn run() {
                 6.0,
                 22.0,
                 [85, 75, 65, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             // Craft output slot (slot 44) – larger
             {
@@ -3130,10 +3248,9 @@ async fn run() {
                     sw2 + 4.0,
                     sh2 + 4.0,
                     [55, 45, 35, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
-                draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, sw, sh);
+                draw_rect(&ui_shader, sx, sy, sw2, sh2, bg, (sw, sh));
                 if let Some(s) = inv_slots[44] {
                     draw_item_icon(
                         world.atlas.as_ref().unwrap(),
@@ -3170,7 +3287,7 @@ async fn run() {
                 } else {
                     [100, 88, 78, 255]
                 };
-                draw_rect(shader, sx, sy, ss, ss, bg, sw, sh);
+                draw_rect(shader, sx, sy, ss, ss, bg, (sw, sh));
                 draw_rect(
                     shader,
                     sx + 2.0,
@@ -3178,8 +3295,7 @@ async fn run() {
                     ss - 4.0,
                     ss - 4.0,
                     [75, 65, 55, 200],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
                 if let Some(s) = item {
                     draw_item_icon(
@@ -3224,44 +3340,41 @@ async fn run() {
                     }
                     if let (Some(dur), Some(tool_props)) =
                         (s.durability, item::tool_properties(s.block))
+                        && tool_props.durability > 0
                     {
-                        if tool_props.durability > 0 {
-                            let max_dur = tool_props.durability as f32;
-                            let pct = (dur as f32 / max_dur).clamp(0.0, 1.0);
-                            let bar_max_w = ss - 8.0;
-                            let bar_w = (bar_max_w * pct).round();
-                            let bar_y = sy + ss - 6.0;
-                            let red = if pct > 0.5 {
-                                ((1.0 - pct) * 2.0 * 255.0) as u8
-                            } else {
-                                255
-                            };
-                            let green = if pct > 0.5 {
-                                255
-                            } else {
-                                (pct * 2.0 * 255.0) as u8
-                            };
-                            draw_rect(
-                                shader,
-                                sx + 4.0,
-                                bar_y,
-                                bar_max_w,
-                                2.0,
-                                [0, 0, 0, 255],
-                                sw,
-                                sh,
-                            );
-                            draw_rect(
-                                shader,
-                                sx + 4.0,
-                                bar_y,
-                                bar_w,
-                                2.0,
-                                [red, green, 0, 255],
-                                sw,
-                                sh,
-                            );
-                        }
+                        let max_dur = tool_props.durability as f32;
+                        let pct = (dur as f32 / max_dur).clamp(0.0, 1.0);
+                        let bar_max_w = ss - 8.0;
+                        let bar_w = (bar_max_w * pct).round();
+                        let bar_y = sy + ss - 6.0;
+                        let red = if pct > 0.5 {
+                            ((1.0 - pct) * 2.0 * 255.0) as u8
+                        } else {
+                            255
+                        };
+                        let green = if pct > 0.5 {
+                            255
+                        } else {
+                            (pct * 2.0 * 255.0) as u8
+                        };
+                        draw_rect(
+                            shader,
+                            sx + 4.0,
+                            bar_y,
+                            bar_max_w,
+                            2.0,
+                            [0, 0, 0, 255],
+                            (sw, sh),
+                        );
+                        draw_rect(
+                            shader,
+                            sx + 4.0,
+                            bar_y,
+                            bar_w,
+                            2.0,
+                            [red, green, 0, 255],
+                            (sw, sh),
+                        );
                     }
                 }
             };
@@ -3296,8 +3409,7 @@ async fn run() {
                         ss + 4.0,
                         ss + 4.0,
                         [255, 255, 255, 180],
-                        sw,
-                        sh,
+                        (sw, sh),
                     );
                 }
                 draw_slot(
@@ -3340,8 +3452,7 @@ async fn run() {
                         dsz,
                         dsz,
                         [255, 255, 255, 255],
-                        sw,
-                        sh,
+                        (sw, sh),
                     );
                 }
             }
@@ -3396,8 +3507,7 @@ async fn run() {
                 xp_bar_w + 2.0,
                 xp_bar_h + 2.0,
                 [20, 20, 20, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 &ui_shader,
@@ -3406,8 +3516,7 @@ async fn run() {
                 xp_bar_w,
                 xp_bar_h,
                 [35, 45, 30, 230],
-                sw,
-                sh,
+                (sw, sh),
             );
             let fill_w = (xp_bar_w * player.xp_progress.clamp(0.0, 1.0)).round();
             if fill_w > 0.0 {
@@ -3418,8 +3527,7 @@ async fn run() {
                     fill_w,
                     xp_bar_h,
                     [110, 230, 50, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
             }
             if player.xp_level > 0 {
@@ -3467,8 +3575,7 @@ async fn run() {
                     bar_w + 2.0,
                     bar_h + 2.0,
                     [20, 20, 20, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
                 draw_rect(
                     &ui_shader,
@@ -3477,8 +3584,7 @@ async fn run() {
                     bar_w * bow_charge,
                     bar_h,
                     [60, 220, 80, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
             }
         }
@@ -3508,7 +3614,7 @@ async fn run() {
                     selected_skin,
                     render_dist_setting,
                     fov_setting,
-                    fancy_gfx_setting,
+                    graphics_quality_setting,
                     world.difficulty,
                 );
                 if player.sandbox {
@@ -3534,14 +3640,16 @@ async fn run() {
         let lighting_capture = smoke_lighting
             .then(|| smoke::lighting_capture(smoke_frames))
             .flatten();
-        let capture_path = if let Some(name) = lighting_capture.as_ref().or(hand_capture.as_ref()) {
+        let capture_path = if let Some(name) = &diagnostic {
+            Some(smoke::frame_capture_path(name).expect("Could not create diagnostic directory"))
+        } else if let Some(name) = lighting_capture.as_ref().or(hand_capture.as_ref()) {
             Some(smoke::frame_capture_path(name).expect("Could not create the capture directory"))
         } else if !smoke_hand
             && !smoke_lighting
             && smoke_world
             && (smoke_frames == 7 || smoke_frames == 15)
         {
-            let mode = if fancy_gfx_setting { "fancy" } else { "fast" };
+            let mode = graphics_quality_setting.label();
             Some(smoke::frame_capture_path(mode).expect("Could not create the capture directory"))
         } else {
             None
@@ -3554,6 +3662,18 @@ async fn run() {
 
         if smoke_world {
             assert!(presented, "World smoke test did not present a frame");
+            if smoke_rendering {
+                renderer::cinematic_capture_save().expect("Could not save render diagnostics");
+                if let Some(name) = &diagnostic {
+                    smoke::verify_render_diagnostics(name)
+                        .expect("Invalid normal or glow regression");
+                }
+                smoke_frames += 1;
+                if smoke_frames == 48 {
+                    return;
+                }
+                continue;
+            }
             if smoke_lighting {
                 if let Some(name) = lighting_capture {
                     smoke::capture_lighting(&target, &name).expect("Lighting capture failed");
@@ -3579,7 +3699,11 @@ async fn run() {
                     smoke::capture_world(&target, &name).expect("Hand rendering smoke test failed");
                 }
                 smoke_frames += 1;
-                fancy_gfx_setting = smoke_frames < 72;
+                graphics_quality_setting = if smoke_frames < 72 {
+                    GraphicsQuality::High
+                } else {
+                    GraphicsQuality::Fast
+                };
                 if smoke_frames == 144 {
                     #[cfg(not(target_arch = "wasm32"))]
                     world::combat_smoke::run();
@@ -3606,7 +3730,7 @@ async fn run() {
             }
             smoke_frames += 1;
             if smoke_frames == 8 || smoke_frames == 16 {
-                let mode = if fancy_gfx_setting { "fancy" } else { "fast" };
+                let mode = graphics_quality_setting.label();
                 smoke::capture_world(&target, mode).expect("World rendering smoke test failed");
                 println!(
                     "World smoke: {mode}, player={:?}, camera={camera_angle:?}, eye={eye_pos:?}, block={:?}, day_time={}, visible_chunks={}",
@@ -3619,7 +3743,7 @@ async fn run() {
                     world.day_time,
                     world.visible_chunks.len()
                 );
-                fancy_gfx_setting = false;
+                graphics_quality_setting = GraphicsQuality::Fast;
             }
             if smoke_frames == 16 {
                 return;
@@ -3638,7 +3762,7 @@ async fn run() {
                 let settings = GameSettings {
                     view_distance: render_dist_setting,
                     fov: fov_setting,
-                    fancy_graphics: fancy_gfx_setting,
+                    graphics_quality: graphics_quality_setting,
                     selected_skin,
                 }
                 .clamped();
@@ -3672,6 +3796,9 @@ async fn run() {
             world.mobs.len(),
         );
     }
+    if smoke_world {
+        return;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let (xw, yw) = window.get_pos();
@@ -3692,7 +3819,7 @@ async fn run() {
     let settings = GameSettings {
         view_distance: render_dist_setting,
         fov: fov_setting,
-        fancy_graphics: fancy_gfx_setting,
+        graphics_quality: graphics_quality_setting,
         selected_skin,
     }
     .clamped();
@@ -3711,7 +3838,6 @@ async fn run() {
         if web::save_result(result).await {
             web::finished();
         }
-        return;
     }
     #[cfg(not(target_arch = "wasm32"))]
     let result = result.and_then(|save| {
@@ -3732,6 +3858,16 @@ fn inventory_cursor(cursor: (f64, f64), window: (i32, i32), framebuffer: (i32, i
         cursor.0 as f32 * framebuffer.0 as f32 / window.0.max(1) as f32,
         cursor.1 as f32 * framebuffer.1 as f32 / window.1.max(1) as f32,
     )
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+#[ignore = "renders the generated regression seed in a hidden GPU window"]
+fn hidden_cinematic_rendering_regression() {
+    renderer::block_on(run_with_args(vec![
+        "VoxelPopuli".into(),
+        "--smoke-test-rendering".into(),
+    ]));
 }
 
 #[cfg(test)]

@@ -43,8 +43,11 @@ left/right click to mine/place, E for inventory, 1–9 for the hotbar, and Esc
 to release the mouse and pause. Standard-mapped gamepads are supported during
 play. Use **Fullscreen** or F11 to expand the game.
 
-Worlds persist in IndexedDB in the current browser using VoxelPopuli's version 7
-save format with 16-bit block/item IDs. Versions 1–6 remain readable. Existing
+Worlds persist in IndexedDB in the current browser using VoxelPopuli's version 8
+save format with the historical 16-bit block/item layout and an explicit graphics
+preset extension. Versions 1-7 remain readable. Old Fancy settings become High;
+old Fast settings remain Fast. Older binaries cannot read newly written version 8
+records. Existing
 worlds keep their original terrain generator; new worlds get the additional
 [bee habitats and trees](world-generation.md). Desktop
 worlds use native Bedrock storage; browser saves do not contain a Bedrock database.
@@ -60,7 +63,12 @@ other browsers/devices.
 The browser defaults to a four-chunk view distance, with a maximum of eight.
 Generation and meshing each process at most one job per frame on the main
 thread; initial loading and streaming can be slower than the native worker
-pool. The browser build includes the existing fancy/fast rendering modes.
+pool. New browser worlds default to High graphics. Open Settings from Esc and
+click Graphics Quality to cycle Cinematic, High, and Fast. High targets 75% of
+framebuffer width and height; Cinematic targets native resolution and can cost
+substantially more GPU time and memory. Fast retains the cheaper forward path
+and approximately 1125x633 pixel budget. The HUD stays at output resolution.
+Existing worlds keep their migrated preset. See [rendering and limitations](rendering.md).
 Java filesystem world import/export and custom resource-pack directories remain
 desktop features. Touch-only controls and a WebGL fallback are not included.
 
@@ -77,12 +85,19 @@ The JavaScript tests use Node's built-in test runner (Node 22 or later); no npm
 dependencies are required. `bun test web/` also runs them. Before deployment,
 verify the generated build in a WebGPU browser: load terrain, capture/release the
 pointer, move and jump, mine/place blocks, open inventory, resize, save, and
-reload. Verify both graphics modes and check the browser console for GPU errors.
+reload. Verify all three quality presets and check the browser console for GPU
+errors. These are future interactive checks, not results of the current code-only
+remaster work; no browser or GPU smoke validation was performed for that work.
 
-For the automated WebGPU smoke test, run
-`node scripts/test-web-browser.mjs <chromium-executable>` after building, using
-an installed Chrome/Chromium executable. It starts its own localhost server
-under `/VoxelPopuli/`, launches a temporary browser profile, and checks startup,
-pointer capture, movement, inventory, graphics settings, resizing, durable
-save/reload, and Save & Quit. Screenshots and diagnostics stay under `target/`.
-The test requires a working WebGPU adapter and keeps the browser sandbox enabled.
+The automated WebGPU smoke test acquires pointer lock and sends input events.
+Headless mode and a temporary profile do not isolate the physical mouse, and
+this test can disrupt other desktop apps. It refuses to launch without explicit
+`--allow-desktop-input` consent. Do not run it on an active desktop under a promise
+of input isolation.
+
+When that desktop-input risk is explicitly accepted, run
+`node scripts/test-web-browser.mjs <chromium-executable> --allow-desktop-input`
+after building, with Node 22+ or Bun and an installed Chromium browser. It uses
+a temporary data profile and checks startup, movement, inventory, graphics,
+resizing, save/reload, and Save & Quit. Screenshots stay under `target/`; the
+browser sandbox remains enabled. Ordinary unit tests never acquire pointer lock.

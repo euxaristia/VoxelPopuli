@@ -23,7 +23,7 @@ impl Tree {
 
 fn tree_kind(biome: Biome, roll: u32) -> Option<Tree> {
     match biome {
-        Biome::Forest | Biome::FlowerForest => Some(if roll % 5 == 0 {
+        Biome::Forest | Biome::FlowerForest => Some(if roll.is_multiple_of(5) {
             Tree::Birch
         } else {
             Tree::Oak
@@ -31,11 +31,13 @@ fn tree_kind(biome: Biome, roll: u32) -> Option<Tree> {
         Biome::BirchForest => Some(Tree::Birch),
         Biome::CherryGrove => Some(Tree::Cherry),
         Biome::MangroveSwamp => Some(Tree::Mangrove),
-        Biome::Meadow | Biome::SunflowerPlains if roll % 8 == 0 => Some(if roll & 8 == 0 {
-            Tree::Birch
-        } else {
-            Tree::Oak
-        }),
+        Biome::Meadow | Biome::SunflowerPlains if roll.is_multiple_of(8) => {
+            Some(if roll & 8 == 0 {
+                Tree::Birch
+            } else {
+                Tree::Oak
+            })
+        }
         _ => None,
     }
 }
@@ -83,10 +85,11 @@ fn grow(chunk: &mut Chunk, x: usize, y: usize, z: usize, tree: Tree, roll: u32) 
         return false;
     }
     // Reject obstructed crowns instead of overwriting a neighboring tree or structure.
-    for xx in x - radius..=x + radius {
-        for zz in z - radius..=z + radius {
-            for yy in y + 1..=crown + 1 {
-                if !matches!(chunk.blocks[xx][yy][zz], BlockType::Air | BlockType::Water) {
+    for column in &chunk.blocks[x - radius..=x + radius] {
+        for (offset, _) in column[0][z - radius..=z + radius].iter().enumerate() {
+            let zz = z - radius + offset;
+            for row in &column[y + 1..=crown + 1] {
+                if !matches!(row[zz], BlockType::Air | BlockType::Water) {
                     return false;
                 }
             }
@@ -153,7 +156,7 @@ fn attach_nest(
         Biome::Forest | Biome::BirchForest => 500,
         _ => 20,
     };
-    if roll % denominator != 0 {
+    if !roll.is_multiple_of(denominator) {
         return;
     }
     let (_, leaves) = tree.blocks();
@@ -180,9 +183,8 @@ pub(super) fn decorate(chunk: &mut Chunk) {
         })
     });
     // Surface replacement uses per-column biomes, including shores under shallow water.
-    for x in 0..CHUNK_WIDTH {
-        for z in 0..CHUNK_DEPTH {
-            let biome = biomes[x][z];
+    for (x, column) in biomes.iter().enumerate() {
+        for (z, &biome) in column.iter().enumerate() {
             if biome == Biome::MangroveSwamp {
                 for y in (1..CHUNK_HEIGHT).rev() {
                     let b = chunk.blocks[x][y][z];
@@ -224,11 +226,10 @@ pub(super) fn decorate(chunk: &mut Chunk) {
             attach_nest(chunk, x, y, z, tree, rng.next_u32(), biome);
         }
     }
-    for x in 0..CHUNK_WIDTH {
-        for z in 0..CHUNK_DEPTH {
+    for (x, column) in biomes.iter().enumerate() {
+        for (z, &biome) in column.iter().enumerate() {
             let wx = chunk.x * 16 + x as i32;
             let wz = chunk.z * 16 + z as i32;
-            let biome = biomes[x][z];
             let roll = chunk_hash(chunk.seed, wx, wz, 0x464c4f57);
             let divisor = match biome {
                 Biome::FlowerForest | Biome::Meadow => 4,
@@ -236,7 +237,7 @@ pub(super) fn decorate(chunk: &mut Chunk) {
                 Biome::SunflowerPlains => 9,
                 _ => 40,
             };
-            if !biome.is_bee_habitat() || roll % divisor != 0 {
+            if !biome.is_bee_habitat() || !roll.is_multiple_of(divisor) {
                 continue;
             }
             let Some(y) = ground(chunk, x, z) else {

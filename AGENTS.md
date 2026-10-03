@@ -2,9 +2,9 @@
 
 ## Project Structure & Module Organization
 
-VoxelPopuli is a Rust 2024 voxel sandbox using OpenGL/GLFW. Core code lives in `src/`: `main.rs` owns the game loop, input, player physics, and UI; `world.rs` manages chunk streaming and world state; `chunk.rs` handles terrain generation, lighting, fluids, and meshing; `block.rs`, `item.rs`, `crafting.rs`, `mining.rs`, and `explosion.rs` contain gameplay rules. Rendering helpers are in `renderer.rs`, procedural textures in `atlas.rs`, and noise in `noise.rs`.
+VoxelPopuli is a Rust 2024 voxel sandbox using wgpu/WGSL, GLFW on desktop, and WebGPU in browsers. Core code lives in `src/`: `main.rs` owns the game loop, input, player physics, and UI; `world.rs` manages chunk streaming and world state; `chunk.rs` handles terrain generation, lighting, fluids, and meshing; `block.rs`, `item.rs`, `crafting.rs`, `mining.rs`, and `explosion.rs` contain gameplay rules. Rendering helpers are in `renderer.rs`, procedural textures in `atlas.rs`, and noise in `noise.rs`.
 
-Assets are under `assets/`, with GLSL shaders in `assets/shaders/`. Platform raylib archives are in `lib/`. Tests are mostly inline Rust unit tests in the relevant modules, with small Python visual/helper scripts at the repository root.
+Assets are under `assets/`, with WGSL shaders in `assets/shaders/`. Graphics quality and authored lighting/material settings live under `src/vibrant/`; presets are Cinematic, High, and Fast. Tests are mostly inline Rust unit tests in the relevant modules, with helper scripts under `scripts/` and browser tests under `web/`. See `docs/rendering.md` for quality costs, save migration, and the code-only validation boundary.
 
 ## Build, Test, and Development Commands
 

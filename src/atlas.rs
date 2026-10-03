@@ -1486,7 +1486,7 @@ pub fn generate_atlas_data() -> Vec<u8> {
         for y in 0..16i32 {
             for x in 0..16i32 {
                 let (r, g, b, a) = CACTUS_TOP[y as usize][x as usize];
-                sp(&mut data, 11 * 16 + x, 1 * 16 + y, r, g, b, a);
+                sp(&mut data, 11 * 16 + x, 16 + y, r, g, b, a);
             }
         }
 
@@ -1996,7 +1996,7 @@ pub fn generate_atlas_data() -> Vec<u8> {
             for y in 0..16i32 {
                 let dx = (x - 8).abs();
                 let dy = y - 9;
-                if dy >= 0 && dy <= 5 && dx <= 5 - dy {
+                if (0..=5).contains(&dy) && dx <= 5 - dy {
                     let shade = 220 + (dx * 5 + dy * 7) % 35;
                     sp(
                         &mut data,
@@ -2039,7 +2039,7 @@ pub fn generate_atlas_data() -> Vec<u8> {
                     let dx = (x - 8).abs();
                     let dy = y - 9;
                     if (0..=5).contains(&dy) && dx <= 5 - dy {
-                        let shade = ((dx * 5 + dy * 7) % 21 - 10) as i32;
+                        let shade = (dx * 5 + dy * 7) % 21 - 10;
                         let nr = (r as i32 + shade).clamp(0, 255) as u8;
                         let ng = (g as i32 + shade).clamp(0, 255) as u8;
                         let nb = (b as i32 + shade).clamp(0, 255) as u8;
@@ -2332,12 +2332,12 @@ mod tests {
         let data = generate_atlas_data();
         let mut stage_counts = [0usize; 10];
 
-        for stage in 0..10 {
+        for (stage, count) in stage_counts.iter_mut().enumerate() {
             for y in 0..TILE_SIZE {
                 for x in 0..TILE_SIZE {
                     let [_, _, _, a] = pixel(&data, stage * TILE_SIZE + x, 3 * TILE_SIZE + y);
                     if a > 0 {
-                        stage_counts[stage] += 1;
+                        *count += 1;
                     }
                 }
             }

@@ -125,12 +125,12 @@ pub fn decode_item(tag: &NbtTag) -> io::Result<Option<(usize, ItemStack)>> {
     if !(0.0..=127.0).contains(&slot) || slot.fract() != 0.0 {
         return Err(invalid("Invalid inventory slot"));
     }
-    if let Some(NbtTag::Compound(fields)) = tag.get("tag") {
-        if fields.iter().any(|(key, _)| key != "Damage") {
-            return Err(invalid(
-                "This inventory contains item data VoxelPopuli cannot yet preserve while moving items (such as enchantments or custom names)",
-            ));
-        }
+    if let Some(NbtTag::Compound(fields)) = tag.get("tag")
+        && fields.iter().any(|(key, _)| key != "Damage")
+    {
+        return Err(invalid(
+            "This inventory contains item data VoxelPopuli cannot yet preserve while moving items (such as enchantments or custom names)",
+        ));
     }
     let used = number(tag.get("tag").and_then(|tag| tag.get("Damage"))).unwrap_or(0.0);
     if used < 0.0 || used > u16::MAX as f64 || used.fract() != 0.0 {

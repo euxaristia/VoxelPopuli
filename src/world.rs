@@ -9,6 +9,7 @@ use crate::mob_catalog::Motion;
 mod bees;
 mod golems;
 mod mobs;
+pub mod render_volume;
 mod skeletons;
 mod streaming;
 use streaming::{GenerationResult, LoadedChunk};
@@ -97,6 +98,7 @@ fn compare_gpu_mesh_test(cpu: &[GpuMeshTestVertex], gpu: &[GpuMeshTestVertex], c
 
 pub const DEFAULT_VIEW_DISTANCE: i32 = if cfg!(target_arch = "wasm32") { 4 } else { 16 };
 pub const MAX_VIEW_DISTANCE: i32 = if cfg!(target_arch = "wasm32") { 8 } else { 16 };
+#[cfg(test)]
 pub const VIEW_DISTANCE: i32 = DEFAULT_VIEW_DISTANCE;
 pub const POOL_WIDTH: i32 = MAX_VIEW_DISTANCE * 2 + 1;
 pub const CHUNK_POOL_SIZE: usize = (POOL_WIDTH * POOL_WIDTH) as usize;
@@ -220,6 +222,7 @@ pub struct World {
     #[cfg(not(target_arch = "wasm32"))]
     pub bedrock: Option<std::sync::Arc<crate::bedrock::session::WorldStore>>,
     pub storage_error: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub dimension: i32,
     pub difficulty: crate::skeleton_ai::Difficulty,
     pub player_targetable: bool,
@@ -264,6 +267,7 @@ pub struct World {
     burn_timer: f32,
     pub crop_timer: f32,
     pub visible_chunks: Vec<usize>,
+    blended_chunks: Vec<usize>,
     pub meshing_in_flight: i32,
     next_mesh_job_id: u64,
     mesh_result_tx: std::sync::mpsc::Sender<MeshResult>,
@@ -284,6 +288,7 @@ pub struct World {
     imported: HashMap<(i32, i32), Box<Chunk>>,
     import_world: Option<PathBuf>,
     mob_visuals: std::cell::OnceCell<crate::mob_visuals::MobVisuals>,
+    render_volume: render_volume::RenderVolume,
 }
 
 #[allow(dead_code)]
@@ -312,6 +317,7 @@ impl World {
             #[cfg(not(target_arch = "wasm32"))]
             bedrock: None,
             storage_error: None,
+            #[cfg(not(target_arch = "wasm32"))]
             dimension: 0,
             generator_version: crate::chunk::GeneratorVersion::Habitats,
             seed,
@@ -360,6 +366,7 @@ impl World {
             burn_timer: 0.0,
             crop_timer: 0.0,
             visible_chunks: Vec::new(),
+            blended_chunks: Vec::new(),
             meshing_in_flight: 0,
             next_mesh_job_id: 1,
             mesh_result_tx,
@@ -377,6 +384,7 @@ impl World {
             imported: HashMap::new(),
             import_world: None,
             mob_visuals: std::cell::OnceCell::new(),
+            render_volume: render_volume::RenderVolume::default(),
         }
     }
 
@@ -1392,10 +1400,10 @@ impl World {
                 BlockType::SunflowerTop => Some((y - 1, BlockType::Sunflower)),
                 _ => None,
             };
-            if let Some((oy, expected)) = other {
-                if self.get_block(x, oy, z) == expected {
-                    self.set_block(x, oy, z, BlockType::Air);
-                }
+            if let Some((oy, expected)) = other
+                && self.get_block(x, oy, z) == expected
+            {
+                self.set_block(x, oy, z, BlockType::Air);
             }
         }
         if !matches!(
@@ -1499,9 +1507,24 @@ impl World {
         }
     }
 
-    pub fn generate_atlas(&mut self) {
+    pub fn sync_render_volume(&mut self, camera: Vec3) {
+        let mut volume = std::mem::take(&mut self.render_volume);
+        volume.update(self, camera, |origin, offset, extent, data| {
+            renderer::cinematic_upload_volume(origin, offset, extent, data);
+        });
+        self.render_volume = volume;
+    }
+
+    pub fn generate_atlas(&mut self, pack: &crate::vibrant::VibrantPack) -> Result<(), String> {
         let data = crate::atlas::generate_atlas_data();
-        self.atlas = Some(Texture2D::from_data(&data, 256, 256));
+        let materials = crate::vibrant::material::generate_material_atlas(pack, &data);
+        for warning in materials.warnings {
+            eprintln!("Material atlas: {warning}");
+        }
+        let mut atlas = Texture2D::from_data(&data, 256, 256);
+        atlas.set_material_maps(&materials.mers, &materials.normals)?;
+        self.atlas = Some(atlas);
+        Ok(())
     }
 
     pub fn raycast(&self, origin: Vec3, direction: Vec3, max_distance: f32) -> RaycastResult {
@@ -1644,16 +1667,17 @@ impl World {
         let import_world = self.import_world.clone();
         #[cfg(not(target_arch = "wasm32"))]
         let bedrock = self.bedrock.clone();
+        #[cfg(not(target_arch = "wasm32"))]
         let dimension = self.dimension;
         let tx = self.gen_result_tx.clone();
         crate::platform::spawn(move || {
             let result = (|| -> std::io::Result<Box<Chunk>> {
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(store) = &bedrock {
-                    if let Some(mut chunk) = store.read_chunk(x, z, dimension)? {
-                        chunk.generator_version = generator_version;
-                        return Ok(Box::new(chunk));
-                    }
+                if let Some(store) = &bedrock
+                    && let Some(mut chunk) = store.read_chunk(x, z, dimension)?
+                {
+                    chunk.generator_version = generator_version;
+                    return Ok(Box::new(chunk));
                 }
                 let imported = import_world
                     .as_ref()
@@ -1674,16 +1698,19 @@ impl World {
                 }
                 Ok(chunk)
             })();
+            #[cfg(not(target_arch = "wasm32"))]
             let result = result.and_then(|chunk| {
-                #[cfg(not(target_arch = "wasm32"))]
                 let containers = bedrock
                     .as_ref()
                     .map(|store| store.containers(x, z, dimension))
                     .transpose()?
                     .unwrap_or_default();
-                #[cfg(target_arch = "wasm32")]
-                let containers = Vec::new();
                 Ok(LoadedChunk { chunk, containers })
+            });
+            #[cfg(target_arch = "wasm32")]
+            let result = result.map(|chunk| LoadedChunk {
+                chunk,
+                containers: Vec::new(),
             });
             let _ = tx.send(result.map_err(|error| (x, z, error.to_string())));
         });
@@ -1775,6 +1802,7 @@ impl World {
                     && chunk.mesh_job_id == result.job_id
                 {
                     chunk.light = result.light;
+                    chunk.invalidate_render_volume();
                     chunk.meshing_in_progress = false;
                     if has_atlas {
                         chunk.upload_mesh(result.opaque, result.transparent, result.water);
@@ -1796,8 +1824,8 @@ impl World {
         // 2. Scan for dirty chunks and dispatch to background (skip if nothing dirty)
         if self.dirty_count > 0 && self.detonations.is_empty() {
             let mut dirty_indices = Vec::new();
-            for i in 0..CHUNK_POOL_SIZE {
-                if let Some(chunk) = &self.chunks[i]
+            for (i, slot) in self.chunks[..CHUNK_POOL_SIZE].iter().enumerate() {
+                if let Some(chunk) = slot
                     && chunk.dirty
                     && !chunk.meshing_in_progress
                 {
@@ -2173,11 +2201,12 @@ impl World {
         if b == BlockType::Cactus {
             let lx = x - ix as f32;
             let lz = z - iz as f32;
-            return lx >= 1.0 / 16.0 && lx <= 15.0 / 16.0 && lz >= 1.0 / 16.0 && lz <= 15.0 / 16.0;
+            return (1.0 / 16.0..=15.0 / 16.0).contains(&lx)
+                && (1.0 / 16.0..=15.0 / 16.0).contains(&lz);
         }
         if matches!(b, BlockType::OakDoor | BlockType::IronDoor) {
             let lz = z - iz as f32;
-            return lz >= 0.0 && lz <= 3.0 / 16.0;
+            return (0.0..=3.0 / 16.0).contains(&lz);
         }
         b.is_solid()
     }
@@ -2698,7 +2727,6 @@ impl World {
                             life: 8.0,
                             in_ground: false,
                             damage: 4.0,
-                            is_critical: false,
                             from_player: false,
                             owner: Some(mob.id),
                         });
@@ -3098,6 +3126,7 @@ impl World {
                 return;
             }
             chunk.liquid_levels[bx][y as usize][bz] = level;
+            chunk.invalidate_render_volume();
             if level > 0 {
                 if chunk.blocks[bx][y as usize][bz] != BlockType::Water {
                     chunk.blocks[bx][y as usize][bz] = BlockType::Water;
@@ -3113,13 +3142,11 @@ impl World {
                 self.dirty_count += 1;
             }
         }
-        if should_record_edit {
-            if let Ok(mut edits) = self.edits.write() {
-                if level == 1 {
-                    edits.insert((x, y, z), BlockType::Water);
-                } else if level == 0 {
-                    edits.remove(&(x, y, z));
-                }
+        if should_record_edit && let Ok(mut edits) = self.edits.write() {
+            if level == 1 {
+                edits.insert((x, y, z), BlockType::Water);
+            } else if level == 0 {
+                edits.remove(&(x, y, z));
             }
         }
     }
@@ -3316,28 +3343,27 @@ impl World {
                             | BlockType::WheatStage1
                             | BlockType::WheatStage2
                     );
-                    if !has_crop && !self.is_farmland_hydrated(x, y, z) {
-                        if rand::random::<f32>() < 0.10 {
-                            farmland_dehydrates.push((x, y, z));
-                        }
+                    if !has_crop
+                        && !self.is_farmland_hydrated(x, y, z)
+                        && rand::random::<f32>() < 0.10
+                    {
+                        farmland_dehydrates.push((x, y, z));
                     }
                 }
-                BlockType::Cactus => {
-                    if y + 1 < CHUNK_HEIGHT as i32 && self.get_block(x, y + 1, z) == BlockType::Air
-                    {
-                        let mut height = 1;
-                        while y - height >= 0
-                            && self.get_block(x, y - height, z) == BlockType::Cactus
-                        {
-                            height += 1;
-                        }
-                        if height < 3 {
-                            let cardinal_blocked = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                                .iter()
-                                .any(|(dx, dz)| self.get_block(x + dx, y + 1, z + dz).is_solid());
-                            if !cardinal_blocked && rand::random::<f32>() < 0.15 {
-                                crop_advances.push(((x, y + 1, z), BlockType::Cactus));
-                            }
+                BlockType::Cactus
+                    if y + 1 < CHUNK_HEIGHT as i32
+                        && self.get_block(x, y + 1, z) == BlockType::Air =>
+                {
+                    let mut height = 1;
+                    while y - height >= 0 && self.get_block(x, y - height, z) == BlockType::Cactus {
+                        height += 1;
+                    }
+                    if height < 3 {
+                        let cardinal_blocked = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                            .iter()
+                            .any(|(dx, dz)| self.get_block(x + dx, y + 1, z + dz).is_solid());
+                        if !cardinal_blocked && rand::random::<f32>() < 0.15 {
+                            crop_advances.push(((x, y + 1, z), BlockType::Cactus));
                         }
                     }
                 }
@@ -4055,7 +4081,7 @@ impl World {
         }
     }
 
-    pub fn compute_visible_chunks(&mut self, frustum: &Frustum) {
+    pub fn compute_visible_chunks(&mut self, frustum: &Frustum, camera: Vec3) {
         self.visible_chunks.clear();
         for (i, chunk_opt) in self.chunks.iter().enumerate() {
             if let Some(chunk) = chunk_opt {
@@ -4074,6 +4100,19 @@ impl World {
                 }
             }
         }
+        self.blended_chunks.clone_from(&self.visible_chunks);
+        self.blended_chunks.sort_unstable_by(|&a, &b| {
+            let distance = |index: usize| {
+                let chunk = self.chunks[index].as_ref().unwrap();
+                let center = Vec3::new(
+                    chunk.x as f32 * CHUNK_WIDTH as f32 + CHUNK_WIDTH as f32 * 0.5,
+                    camera.y,
+                    chunk.z as f32 * CHUNK_DEPTH as f32 + CHUNK_DEPTH as f32 * 0.5,
+                );
+                center.distance_squared(camera)
+            };
+            distance(b).total_cmp(&distance(a))
+        });
     }
 
     /// Chunk meshes are baked in world coordinates, so every chunk pass draws
@@ -4097,25 +4136,53 @@ impl World {
         }
     }
 
-    pub fn render_transparent(&self, shader: &Shader, _frustum: &Frustum) {
+    pub fn render_shadow_casters(&self, shader: &Shader, frustum: &Frustum) {
         Self::bind_identity_model(shader);
-        crate::renderer::set_blend(true);
-        crate::renderer::set_cull(true);
-        for &i in &self.visible_chunks {
-            if let Some(chunk) = &self.chunks[i]
-                && let Some(mesh) = &chunk.mesh_transparent
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
+        for chunk in self.chunks.iter().flatten() {
+            let min = Vec3::new(
+                chunk.x as f32 * CHUNK_WIDTH as f32,
+                0.0,
+                chunk.z as f32 * CHUNK_DEPTH as f32,
+            );
+            let max = min + Vec3::new(CHUNK_WIDTH as f32, CHUNK_HEIGHT as f32, CHUNK_DEPTH as f32);
+            if frustum.is_box_visible(min, max)
+                && let Some(mesh) = &chunk.mesh_opaque
             {
                 mesh.draw();
             }
         }
     }
 
-    pub fn render_water(&self, shader: &Shader, _frustum: &Frustum) {
+    pub fn render_transparent(&self, shader: &Shader, _frustum: &Frustum) {
         Self::bind_identity_model(shader);
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
         crate::renderer::set_blend(true);
         crate::renderer::set_depth_write(false);
         crate::renderer::set_cull(true);
-        for &i in &self.visible_chunks {
+        for &i in &self.blended_chunks {
+            if let Some(chunk) = &self.chunks[i]
+                && let Some(mesh) = &chunk.mesh_transparent
+            {
+                mesh.draw();
+            }
+        }
+        crate::renderer::set_depth_write(true);
+    }
+
+    pub fn render_water(&self, shader: &Shader, _frustum: &Frustum) {
+        Self::bind_identity_model(shader);
+        if let Some(atlas) = &self.atlas {
+            atlas.bind(0);
+        }
+        crate::renderer::set_blend(true);
+        crate::renderer::set_depth_write(false);
+        crate::renderer::set_cull(false);
+        for &i in &self.blended_chunks {
             if let Some(chunk) = &self.chunks[i]
                 && let Some(mesh) = &chunk.mesh_water
             {
@@ -4123,6 +4190,22 @@ impl World {
             }
         }
         crate::renderer::set_depth_write(true);
+        crate::renderer::set_cull(true);
+    }
+
+    pub fn render_water_depth(&self, shader: &Shader) {
+        Self::bind_identity_model(shader);
+        crate::renderer::set_blend(false);
+        crate::renderer::set_depth_write(true);
+        crate::renderer::set_cull(false);
+        for &index in &self.blended_chunks {
+            if let Some(chunk) = &self.chunks[index]
+                && let Some(mesh) = &chunk.mesh_water
+            {
+                mesh.draw();
+            }
+        }
+        crate::renderer::set_cull(true);
     }
 
     pub fn render_clouds(&self, shader: &Shader, mvp: &Mat4) {
@@ -4219,6 +4302,7 @@ pub mod combat_smoke {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn sunflowers_remove_both_halves_when_broken_or_unsupported() {
         let mut world = World::simulation(42);
@@ -4281,7 +4365,7 @@ mod tests {
     #[test]
     fn entity_render_passes_restore_the_model_matrix() {
         let src = include_str!("world.rs");
-        let src = &src[..src.find("#[cfg(test)]").expect("test module")];
+        let src = &src[..src.find("#[cfg(test)]\nmod tests {").expect("test module")];
         let mut checked = 0;
         for body in src.split("\n    pub fn ").skip(1) {
             let name = body.split('(').next().unwrap_or_default();
@@ -4312,7 +4396,7 @@ mod tests {
     #[test]
     fn chunk_render_passes_bind_their_own_model_matrix() {
         let src = include_str!("world.rs");
-        let src = &src[..src.find("#[cfg(test)]").expect("test module")];
+        let src = &src[..src.find("#[cfg(test)]\nmod tests {").expect("test module")];
         for name in ["render_opaque", "render_transparent", "render_water"] {
             let body = src
                 .split(&format!("\n    pub fn {name}("))
@@ -4372,7 +4456,7 @@ mod tests {
         assert_eq!(POOL_WIDTH, 33);
         assert_eq!(CHUNK_POOL_SIZE, 1089);
         assert_eq!(GPU_POOL_VIEW_DISTANCE, MAX_VIEW_DISTANCE);
-        assert!(CHUNK_POOL_SIZE < 35 * 35);
+        const { assert!(CHUNK_POOL_SIZE < 35 * 35) };
     }
 
     #[test]
@@ -4828,7 +4912,6 @@ mod tests {
             life: 5.0,
             in_ground: false,
             damage: 5.0,
-            is_critical: false,
             from_player: true,
             owner: None,
         });

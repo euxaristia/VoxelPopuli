@@ -185,10 +185,10 @@ impl WaterSettings {
         let settings = json.get("minecraft:water_settings")?;
         let mut out = WaterSettings::default();
 
-        if let Some(desc) = settings.get("description") {
-            if let Some(id) = desc.get("identifier").and_then(Json::as_str) {
-                out.identifier = id.to_string();
-            }
+        if let Some(desc) = settings.get("description")
+            && let Some(id) = desc.get("identifier").and_then(Json::as_str)
+        {
+            out.identifier = id.to_string();
         }
 
         if let Some(p) = settings.get("particle_concentrations") {

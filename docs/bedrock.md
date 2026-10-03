@@ -40,7 +40,11 @@ intentionally overwritten. Browser saves continue using the existing browser for
 - Ordinary chests and furnaces use native block entities. Unopened loot-table
   containers are rejected. Unimplemented block entity types remain in storage.
 - Crafting cursors, settings, and other engine bookkeeping use an additional
-  `voxelpopuli:session` database record. Minecraft ignores that record.
+  `voxelpopuli:session` database record. Minecraft ignores that record. Version 8
+  preserves the historical layout and adds the Cinematic/High/Fast graphics
+  preset. Versions 1-7 load with Fancy migrated to High and Fast unchanged.
+  Older VoxelPopuli binaries cannot read newly written version 8 records.
+  See [quality settings and migration](rendering.md).
 - Native actor interchange and dimension travel are still under implementation.
   Existing unknown actor records remain in storage; engine-specific entity state
   currently remains in the extra session record.

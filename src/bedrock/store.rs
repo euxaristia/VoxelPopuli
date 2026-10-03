@@ -153,6 +153,7 @@ pub fn read_level(path: &Path) -> io::Result<NbtTag> {
     Ok(root)
 }
 
+#[cfg(test)]
 pub fn read_database(path: &Path) -> io::Result<Database> {
     open_database(path, true, false)
 }
@@ -334,14 +335,13 @@ mod tests {
                     }
                     let y = key[key.len() - 1] as i8;
                     let decoded = super::super::palette::Subchunk::decode(value, y).unwrap();
-                    if subchunks == 0 {
-                        if let Some(state) = decoded
+                    if subchunks == 0
+                        && let Some(state) = decoded
                             .layers
                             .first()
                             .and_then(|layer| layer.palette.first())
-                        {
-                            println!("{name}: block state version {:?}", state.get("version"));
-                        }
+                    {
+                        println!("{name}: block state version {:?}", state.get("version"));
                     }
                     assert_eq!(
                         super::super::palette::Subchunk::decode(&decoded.encode().unwrap(), y)
@@ -355,20 +355,20 @@ mod tests {
             .unwrap();
             assert!(count > 0);
             assert!(subchunks > 0);
-            if let Some((x, z)) = sample_chunk {
-                if let (Some(chunk), Some(data)) = (
+            if let Some((x, z)) = sample_chunk
+                && let (Some(chunk), Some(data)) = (
                     super::super::terrain::read_chunk(&db, x, z, 0, 0).unwrap(),
                     db.get(&super::super::palette::chunk_key(x, z, 0, 0x2b, None))
                         .unwrap(),
-                ) {
-                    println!(
-                        "{name}: column top {:?}, stored height {}",
-                        (0..256)
-                            .rev()
-                            .find(|&y| chunk.blocks[0][y][0] != crate::block::BlockType::Air),
-                        i16::from_le_bytes(data[..2].try_into().unwrap())
-                    );
-                }
+                )
+            {
+                println!(
+                    "{name}: column top {:?}, stored height {}",
+                    (0..256)
+                        .rev()
+                        .find(|&y| chunk.blocks[0][y][0] != crate::block::BlockType::Air),
+                    i16::from_le_bytes(data[..2].try_into().unwrap())
+                );
             }
             println!("{name}: {count} database records, {subchunks} round-tripped subchunks");
         }

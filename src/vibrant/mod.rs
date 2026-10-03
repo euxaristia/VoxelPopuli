@@ -20,6 +20,8 @@ pub mod frame;
 pub mod json;
 pub mod keyframe;
 pub mod lighting;
+pub mod material;
+pub mod quality;
 pub mod texture_set;
 pub mod water;
 
@@ -37,7 +39,7 @@ const TEXTURE_SET_SUFFIX: &str = ".texture_set.json";
 // the wrong directory; stop before we stat the whole disk.
 const MAX_TEXTURE_SEARCH_DEPTH: usize = 8;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct VibrantPack {
     pub lighting: LightingSettings,
     pub atmospherics: AtmosphereSettings,
@@ -47,25 +49,13 @@ pub struct VibrantPack {
     /// Texture sets keyed by the texture base name, so `stone` resolves the
     /// set authored in `stone.texture_set.json`.
     texture_sets: Vec<(String, TextureSet)>,
+    material_root: Option<PathBuf>,
+    texture_set_dirs: Vec<(String, PathBuf)>,
+    material_fallback_authored: [bool; 2],
     /// True when manifest.json declares the "pbr" or "raytraced" capability.
     pub pbr_capable: bool,
     /// Non-fatal problems found while loading, for the log.
     pub warnings: Vec<String>,
-}
-
-impl Default for VibrantPack {
-    fn default() -> Self {
-        Self {
-            lighting: LightingSettings::default(),
-            atmospherics: AtmosphereSettings::default(),
-            local_lighting: LocalLightSettings::default(),
-            pbr_fallback: PbrFallbackSettings::default(),
-            water: WaterSettings::default(),
-            texture_sets: Vec::new(),
-            pbr_capable: false,
-            warnings: Vec::new(),
-        }
-    }
 }
 
 impl VibrantPack {
@@ -78,6 +68,7 @@ impl VibrantPack {
             return pack;
         }
 
+        pack.material_root = std::fs::canonicalize(dir).ok();
         pack.pbr_capable = read_capabilities(dir, &mut pack.warnings);
 
         if let Some(value) = read_json(&dir.join("lighting/global.json"), &mut pack.warnings) {
@@ -125,7 +116,17 @@ impl VibrantPack {
 
         if let Some(value) = read_json(&dir.join("pbr/global.json"), &mut pack.warnings) {
             match PbrFallbackSettings::parse(&value) {
-                Some(settings) => pack.pbr_fallback = settings,
+                Some(settings) => {
+                    pack.pbr_fallback = settings;
+                    for (index, category) in ["blocks", "items"].iter().enumerate() {
+                        pack.material_fallback_authored[index] = value
+                            .get("minecraft:pbr_fallback_settings")
+                            .and_then(|v| v.get(category))
+                            .and_then(|v| v.get("global_metalness_emissive_roughness_subsurface"))
+                            .and_then(keyframe::Color::parse)
+                            .is_some();
+                    }
+                }
                 None => pack
                     .warnings
                     .push("pbr/global.json: no minecraft:pbr_fallback_settings object".into()),
@@ -144,13 +145,26 @@ impl VibrantPack {
         let textures = dir.join("textures");
         if textures.is_dir() {
             let mut found = Vec::new();
-            collect_texture_sets(&textures, 0, &mut found, &mut pack.warnings);
+            collect_texture_sets(
+                &textures,
+                pack.material_root.as_deref().unwrap_or(dir),
+                0,
+                &mut found,
+                &mut pack.warnings,
+            );
+            found.sort_by(|a, b| a.1.cmp(&b.1));
             for (name, path) in found {
                 let Some(value) = read_json(&path, &mut pack.warnings) else {
                     continue;
                 };
                 match TextureSet::parse(&value) {
-                    Some(set) => pack.insert_texture_set(name, set),
+                    Some(set) => {
+                        if let Some(parent) = path.parent() {
+                            pack.texture_set_dirs
+                                .push((name.clone(), parent.to_path_buf()));
+                        }
+                        pack.insert_texture_set(name, set);
+                    }
                     None => pack.warnings.push(format!(
                         "{}: no minecraft:texture_set object",
                         path.display()
@@ -181,6 +195,7 @@ impl VibrantPack {
             .map(|(_, set)| set)
     }
 
+    #[cfg(test)]
     pub fn texture_set_count(&self) -> usize {
         self.texture_sets.len()
     }
@@ -268,10 +283,15 @@ fn parse_legacy_point_lights(root: &json::Json) -> Option<LocalLightSettings> {
 
 fn collect_texture_sets(
     dir: &Path,
+    root: &Path,
     depth: usize,
     out: &mut Vec<(String, PathBuf)>,
     warnings: &mut Vec<String>,
 ) {
+    if !std::fs::canonicalize(dir).is_ok_and(|path| path.starts_with(root)) {
+        warnings.push("textures: texture-set directory escapes pack root".into());
+        return;
+    }
     if depth > MAX_TEXTURE_SEARCH_DEPTH {
         warnings.push(format!(
             "{}: texture search stopped at depth {MAX_TEXTURE_SEARCH_DEPTH}",
@@ -288,10 +308,12 @@ fn collect_texture_sets(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        // Follows symlinks by design so a pack can share a texture tree;
-        // the depth cap is what stops a cycle.
+        if !std::fs::canonicalize(&path).is_ok_and(|path| path.starts_with(root)) {
+            warnings.push("textures: texture-set path escapes pack root".into());
+            continue;
+        }
         if path.is_dir() {
-            collect_texture_sets(&path, depth + 1, out, warnings);
+            collect_texture_sets(&path, root, depth + 1, out, warnings);
             continue;
         }
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {

@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: '22'
       - name: Test browser storage and input
-        run: node --test web/*.test.mjs
+        run: node --throw-deprecation --test web/*.test.mjs scripts/test-web-browser-guard.test.mjs
       - name: Install WASM packager
         run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
       - name: Build browser game

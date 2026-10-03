@@ -85,7 +85,7 @@ pub enum PauseClick {
     Back,
     SetRenderDistance(i32),
     SetFov(f32),
-    ToggleFancy,
+    CycleGraphicsQuality,
     SetDifficulty(crate::skeleton_ai::Difficulty),
     ExportJava,
     SelectSkin(u8),
@@ -171,7 +171,7 @@ pub fn pause_click(menu: PauseSubMenu, sw: f32, sh: f32, mx: f32, my: f32) -> Op
                 }
             }
             if in_rect(mx, my, panel_x + 340.0, panel_y + 222.0, 140.0, 32.0) {
-                return Some(PauseClick::ToggleFancy);
+                return Some(PauseClick::CycleGraphicsQuality);
             }
             for (i, difficulty) in crate::skeleton_ai::Difficulty::ALL.iter().enumerate() {
                 if in_rect(
@@ -225,8 +225,7 @@ pub fn draw_rect(
     w: f32,
     h: f32,
     color: [u8; 4],
-    screen_width: f32,
-    screen_height: f32,
+    (screen_width, screen_height): (f32, f32),
 ) {
     let verts = [
         x,
@@ -453,8 +452,7 @@ pub fn draw_debug_overlay(
         box_w,
         box_h,
         [0, 0, 0, 180],
-        sw,
-        sh,
+        (sw, sh),
     );
 
     let mut cur_y = margin + padding;
@@ -484,8 +482,7 @@ pub fn draw_debug_overlay(
         graph_w,
         graph_h,
         [0, 0, 0, 160],
-        sw,
-        sh,
+        (sw, sh),
     );
 
     let bar_w = graph_w / 120.0;
@@ -509,8 +506,7 @@ pub fn draw_debug_overlay(
             bar_w.max(1.0),
             height,
             color,
-            sw,
-            sh,
+            (sw, sh),
         );
     }
 }
@@ -738,94 +734,6 @@ pub fn draw_armor(
     batch.draw(shader, screen_width, screen_height);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn solid_quad_batch_encodes_six_vertices_and_colors_per_quad() {
-        let mut batch = SolidQuadBatch::with_capacity(2);
-        batch.push(2.0, 3.0, 5.0, 7.0, [10, 20, 30, 40]);
-        batch.push(-1.0, 4.0, 2.0, 3.0, [50, 60, 70, 80]);
-
-        assert_eq!(batch.vertex_count(), 12);
-        assert_eq!(batch.vertices.len(), 12 * 3);
-        assert_eq!(batch.colors.len(), 12 * 4);
-        assert_eq!(
-            &batch.vertices[..18],
-            &[
-                2.0, 3.0, 0.0, 7.0, 3.0, 0.0, 7.0, 10.0, 0.0, 2.0, 3.0, 0.0, 7.0, 10.0, 0.0, 2.0,
-                10.0, 0.0,
-            ]
-        );
-        assert_eq!(&batch.colors[..24], &[10, 20, 30, 40].repeat(6));
-        assert_eq!(&batch.colors[24..], &[50, 60, 70, 80].repeat(6));
-    }
-
-    #[test]
-    fn pause_click_matches_drawn_settings_and_profile_hitboxes() {
-        let sw = 1280.0;
-        let sh = 720.0;
-        let (sx, sy, _, _) = settings_panel(sw, sh);
-        for (i, difficulty) in crate::skeleton_ai::Difficulty::ALL.iter().enumerate() {
-            assert_eq!(
-                pause_click(
-                    PauseSubMenu::Settings,
-                    sw,
-                    sh,
-                    sx + 275.0 + i as f32 * 95.0,
-                    sy + 300.0
-                ),
-                Some(PauseClick::SetDifficulty(*difficulty))
-            );
-        }
-        assert_eq!(
-            pause_click(
-                PauseSubMenu::Settings,
-                sw,
-                sh,
-                sx + 340.0 + 2.0 * 75.0 + 4.0,
-                sy + 90.0
-            ),
-            Some(PauseClick::SetRenderDistance(12))
-        );
-        assert_eq!(
-            pause_click(
-                PauseSubMenu::Settings,
-                sw,
-                sh,
-                sx + 340.0 + 65.0 + 4.0,
-                sy + 160.0
-            ),
-            Some(PauseClick::SetFov(70.0))
-        );
-        assert_eq!(
-            pause_click(PauseSubMenu::Settings, sw, sh, sx + 250.0, sy + 430.0),
-            Some(PauseClick::Back)
-        );
-
-        let (px, py, _, _) = profile_panel(sw, sh);
-        assert_eq!(
-            pause_click(PauseSubMenu::Profile, sw, sh, px + 50.0, py + 135.0),
-            Some(PauseClick::SelectSkin(0))
-        );
-        assert_eq!(
-            pause_click(PauseSubMenu::Profile, sw, sh, px + 50.0, py + 185.0),
-            Some(PauseClick::SelectSkin(1))
-        );
-        assert_eq!(
-            pause_click(
-                PauseSubMenu::WorldInfo,
-                sw,
-                sh,
-                world_info_panel(sw, sh).0 + 50.0,
-                world_info_panel(sw, sh).1 + 230.0
-            ),
-            Some(PauseClick::ExportJava)
-        );
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn draw_bedrock_button(
     ui_shader: &Shader,
@@ -846,10 +754,9 @@ pub fn draw_bedrock_button(
         w + 4.0,
         h + 4.0,
         [20, 20, 20, 255],
-        sw,
-        sh,
+        (sw, sh),
     );
-    draw_rect(ui_shader, x, y, w, h, [198, 198, 198, 255], sw, sh);
+    draw_rect(ui_shader, x, y, w, h, [198, 198, 198, 255], (sw, sh));
     draw_rect(
         ui_shader,
         x + 2.0,
@@ -857,8 +764,7 @@ pub fn draw_bedrock_button(
         w - 4.0,
         2.0,
         [255, 255, 255, 255],
-        sw,
-        sh,
+        (sw, sh),
     );
     draw_rect(
         ui_shader,
@@ -867,8 +773,7 @@ pub fn draw_bedrock_button(
         2.0,
         h - 4.0,
         [255, 255, 255, 255],
-        sw,
-        sh,
+        (sw, sh),
     );
     draw_rect(
         ui_shader,
@@ -877,8 +782,7 @@ pub fn draw_bedrock_button(
         w - 4.0,
         2.0,
         [130, 130, 130, 255],
-        sw,
-        sh,
+        (sw, sh),
     );
     draw_rect(
         ui_shader,
@@ -887,8 +791,7 @@ pub fn draw_bedrock_button(
         2.0,
         h - 4.0,
         [130, 130, 130, 255],
-        sw,
-        sh,
+        (sw, sh),
     );
 
     let font_size = 18.0;
@@ -925,10 +828,10 @@ pub fn draw_pause_menu(
     selected_skin: u8,
     render_dist: i32,
     fov: f32,
-    fancy_gfx: bool,
+    graphics_quality: crate::vibrant::quality::GraphicsQuality,
     difficulty: crate::skeleton_ai::Difficulty,
 ) {
-    draw_rect(ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 180], sw, sh);
+    draw_rect(ui_shader, 0.0, 0.0, sw, sh, [0, 0, 0, 180], (sw, sh));
 
     match sub_menu {
         PauseSubMenu::Main => {
@@ -966,8 +869,7 @@ pub fn draw_pause_menu(
                     sbtn_s + 4.0,
                     sbtn_s + 4.0,
                     [20, 20, 20, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
                 draw_rect(
                     ui_shader,
@@ -976,8 +878,7 @@ pub fn draw_pause_menu(
                     sbtn_s,
                     sbtn_s,
                     [198, 198, 198, 255],
-                    sw,
-                    sh,
+                    (sw, sh),
                 );
 
                 if i == 0 {
@@ -988,8 +889,7 @@ pub fn draw_pause_menu(
                         24.0,
                         14.0,
                         [60, 60, 60, 255],
-                        sw,
-                        sh,
+                        (sw, sh),
                     );
                 } else if i == 1 {
                     draw_rect(
@@ -999,8 +899,7 @@ pub fn draw_pause_menu(
                         24.0,
                         16.0,
                         [60, 60, 60, 255],
-                        sw,
-                        sh,
+                        (sw, sh),
                     );
                     draw_rect(
                         ui_shader,
@@ -1009,8 +908,7 @@ pub fn draw_pause_menu(
                         8.0,
                         6.0,
                         [60, 60, 60, 255],
-                        sw,
-                        sh,
+                        (sw, sh),
                     );
                 } else if i == 2 {
                     draw_rect(
@@ -1020,8 +918,7 @@ pub fn draw_pause_menu(
                         12.0,
                         12.0,
                         [60, 60, 60, 255],
-                        sw,
-                        sh,
+                        (sw, sh),
                     );
                     draw_rect(
                         ui_shader,
@@ -1030,8 +927,7 @@ pub fn draw_pause_menu(
                         22.0,
                         14.0,
                         [60, 60, 60, 255],
-                        sw,
-                        sh,
+                        (sw, sh),
                     );
                 }
             }
@@ -1048,8 +944,7 @@ pub fn draw_pause_menu(
                 panel_w + 4.0,
                 panel_h + 4.0,
                 [20, 20, 20, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 ui_shader,
@@ -1058,8 +953,7 @@ pub fn draw_pause_menu(
                 panel_w,
                 panel_h,
                 [49, 49, 49, 230],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             draw_text(
@@ -1079,8 +973,7 @@ pub fn draw_pause_menu(
                 panel_w - 20.0,
                 2.0,
                 [80, 80, 80, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             draw_text(
@@ -1112,8 +1005,7 @@ pub fn draw_pause_menu(
                 panel_w - 20.0,
                 50.0,
                 [60, 60, 60, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 ui_shader,
@@ -1122,8 +1014,7 @@ pub fn draw_pause_menu(
                 30.0,
                 30.0,
                 skin_preview_color(selected_skin),
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_text(
                 font_tex,
@@ -1147,8 +1038,7 @@ pub fn draw_pause_menu(
                 panel_w + 4.0,
                 panel_h + 4.0,
                 [20, 20, 20, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 ui_shader,
@@ -1157,8 +1047,7 @@ pub fn draw_pause_menu(
                 panel_w,
                 panel_h,
                 [40, 42, 46, 245],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             draw_text(
@@ -1178,8 +1067,7 @@ pub fn draw_pause_menu(
                 panel_w - 40.0,
                 2.0,
                 [80, 80, 80, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             let rdist_label = format!("Render Distance: {} Chunks", render_dist);
@@ -1201,7 +1089,7 @@ pub fn draw_pause_menu(
                 } else {
                     [100, 100, 100, 255]
                 };
-                draw_rect(ui_shader, bx, panel_y + 82.0, 65.0, 32.0, col, sw, sh);
+                draw_rect(ui_shader, bx, panel_y + 82.0, 65.0, 32.0, col, (sw, sh));
                 draw_text(
                     font_tex,
                     &format!("{}c", d),
@@ -1234,7 +1122,7 @@ pub fn draw_pause_menu(
                 } else {
                     [100, 100, 100, 255]
                 };
-                draw_rect(ui_shader, bx, panel_y + 152.0, 58.0, 32.0, col, sw, sh);
+                draw_rect(ui_shader, bx, panel_y + 152.0, 58.0, 32.0, col, (sw, sh));
                 draw_text(
                     font_tex,
                     &format!("{:.0}", f),
@@ -1264,7 +1152,7 @@ pub fn draw_pause_menu(
                 } else {
                     [100, 100, 100, 255]
                 };
-                draw_rect(ui_shader, x, panel_y + 292.0, 90.0, 32.0, color, sw, sh);
+                draw_rect(ui_shader, x, panel_y + 292.0, 90.0, 32.0, color, (sw, sh));
                 draw_text(
                     font_tex,
                     value.label(),
@@ -1276,10 +1164,7 @@ pub fn draw_pause_menu(
                     sh,
                 );
             }
-            let gfx_label = format!(
-                "Graphics Quality: {}",
-                if fancy_gfx { "FANCY" } else { "FAST" }
-            );
+            let gfx_label = format!("Graphics Quality: {}", graphics_quality.label());
             draw_text(
                 font_tex,
                 &gfx_label,
@@ -1290,10 +1175,10 @@ pub fn draw_pause_menu(
                 sw,
                 sh,
             );
-            let gfx_col = if fancy_gfx {
-                [40, 160, 80, 255]
-            } else {
-                [100, 100, 100, 255]
+            let gfx_col = match graphics_quality {
+                crate::vibrant::quality::GraphicsQuality::Cinematic => [160, 120, 40, 255],
+                crate::vibrant::quality::GraphicsQuality::High => [40, 160, 80, 255],
+                crate::vibrant::quality::GraphicsQuality::Fast => [100, 100, 100, 255],
             };
             draw_rect(
                 ui_shader,
@@ -1302,16 +1187,11 @@ pub fn draw_pause_menu(
                 140.0,
                 32.0,
                 gfx_col,
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_text(
                 font_tex,
-                if fancy_gfx {
-                    "Fancy (AO/Clouds)"
-                } else {
-                    "Fast"
-                },
+                graphics_quality.label(),
                 panel_x + 348.0,
                 panel_y + 230.0,
                 14.0,
@@ -1344,8 +1224,7 @@ pub fn draw_pause_menu(
                 panel_w + 4.0,
                 panel_h + 4.0,
                 [20, 20, 20, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 ui_shader,
@@ -1354,8 +1233,7 @@ pub fn draw_pause_menu(
                 panel_w,
                 panel_h,
                 [40, 42, 46, 245],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             draw_text(
@@ -1375,8 +1253,7 @@ pub fn draw_pause_menu(
                 panel_w - 40.0,
                 2.0,
                 [80, 80, 80, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             draw_text(
@@ -1468,8 +1345,7 @@ pub fn draw_pause_menu(
                 panel_w + 4.0,
                 panel_h + 4.0,
                 [20, 20, 20, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
             draw_rect(
                 ui_shader,
@@ -1478,8 +1354,7 @@ pub fn draw_pause_menu(
                 panel_w,
                 panel_h,
                 [40, 42, 46, 245],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             draw_text(
@@ -1499,8 +1374,7 @@ pub fn draw_pause_menu(
                 panel_w - 40.0,
                 2.0,
                 [80, 80, 80, 255],
-                sw,
-                sh,
+                (sw, sh),
             );
 
             draw_text(
@@ -1522,7 +1396,7 @@ pub fn draw_pause_menu(
                 } else {
                     [70, 75, 82, 255]
                 };
-                draw_rect(ui_shader, panel_x + 40.0, sy, 340.0, 40.0, bg_col, sw, sh);
+                draw_rect(ui_shader, panel_x + 40.0, sy, 340.0, 40.0, bg_col, (sw, sh));
                 draw_text(
                     font_tex,
                     name,
@@ -1609,43 +1483,133 @@ pub fn draw_stack_item(
     }
 
     // Durability bar for tools
-    if let (Some(dur), Some(tool_props)) = (s.durability, item::tool_properties(s.block)) {
-        if tool_props.durability > 0 {
-            let max_dur = tool_props.durability as f32;
-            let pct = (dur as f32 / max_dur).clamp(0.0, 1.0);
-            let bar_max_w = slot_size - 8.0;
-            let bar_w = (bar_max_w * pct).round();
-            let bar_y = ry + slot_size - 6.0;
-            let red = if pct > 0.5 {
-                ((1.0 - pct) * 2.0 * 255.0) as u8
-            } else {
-                255
-            };
-            let green = if pct > 0.5 {
-                255
-            } else {
-                (pct * 2.0 * 255.0) as u8
-            };
-            draw_rect(
-                ui_shader,
-                rx + 4.0,
-                bar_y,
-                bar_max_w,
-                2.0,
-                [0, 0, 0, 255],
-                sw,
-                sh,
-            );
-            draw_rect(
-                ui_shader,
-                rx + 4.0,
-                bar_y,
-                bar_w,
-                2.0,
-                [red, green, 0, 255],
-                sw,
-                sh,
+    if let (Some(dur), Some(tool_props)) = (s.durability, item::tool_properties(s.block))
+        && tool_props.durability > 0
+    {
+        let max_dur = tool_props.durability as f32;
+        let pct = (dur as f32 / max_dur).clamp(0.0, 1.0);
+        let bar_max_w = slot_size - 8.0;
+        let bar_w = (bar_max_w * pct).round();
+        let bar_y = ry + slot_size - 6.0;
+        let red = if pct > 0.5 {
+            ((1.0 - pct) * 2.0 * 255.0) as u8
+        } else {
+            255
+        };
+        let green = if pct > 0.5 {
+            255
+        } else {
+            (pct * 2.0 * 255.0) as u8
+        };
+        draw_rect(
+            ui_shader,
+            rx + 4.0,
+            bar_y,
+            bar_max_w,
+            2.0,
+            [0, 0, 0, 255],
+            (sw, sh),
+        );
+        draw_rect(
+            ui_shader,
+            rx + 4.0,
+            bar_y,
+            bar_w,
+            2.0,
+            [red, green, 0, 255],
+            (sw, sh),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn solid_quad_batch_encodes_six_vertices_and_colors_per_quad() {
+        let mut batch = SolidQuadBatch::with_capacity(2);
+        batch.push(2.0, 3.0, 5.0, 7.0, [10, 20, 30, 40]);
+        batch.push(-1.0, 4.0, 2.0, 3.0, [50, 60, 70, 80]);
+
+        assert_eq!(batch.vertex_count(), 12);
+        assert_eq!(batch.vertices.len(), 12 * 3);
+        assert_eq!(batch.colors.len(), 12 * 4);
+        assert_eq!(
+            &batch.vertices[..18],
+            &[
+                2.0, 3.0, 0.0, 7.0, 3.0, 0.0, 7.0, 10.0, 0.0, 2.0, 3.0, 0.0, 7.0, 10.0, 0.0, 2.0,
+                10.0, 0.0,
+            ]
+        );
+        assert_eq!(&batch.colors[..24], &[10, 20, 30, 40].repeat(6));
+        assert_eq!(&batch.colors[24..], &[50, 60, 70, 80].repeat(6));
+    }
+
+    #[test]
+    fn pause_click_matches_drawn_settings_and_profile_hitboxes() {
+        let sw = 1280.0;
+        let sh = 720.0;
+        let (sx, sy, _, _) = settings_panel(sw, sh);
+        for (i, difficulty) in crate::skeleton_ai::Difficulty::ALL.iter().enumerate() {
+            assert_eq!(
+                pause_click(
+                    PauseSubMenu::Settings,
+                    sw,
+                    sh,
+                    sx + 275.0 + i as f32 * 95.0,
+                    sy + 300.0
+                ),
+                Some(PauseClick::SetDifficulty(*difficulty))
             );
         }
+        assert_eq!(
+            pause_click(
+                PauseSubMenu::Settings,
+                sw,
+                sh,
+                sx + 340.0 + 2.0 * 75.0 + 4.0,
+                sy + 90.0
+            ),
+            Some(PauseClick::SetRenderDistance(12))
+        );
+        assert_eq!(
+            pause_click(
+                PauseSubMenu::Settings,
+                sw,
+                sh,
+                sx + 340.0 + 65.0 + 4.0,
+                sy + 160.0
+            ),
+            Some(PauseClick::SetFov(70.0))
+        );
+        assert_eq!(
+            pause_click(PauseSubMenu::Settings, sw, sh, sx + 348.0, sy + 230.0),
+            Some(PauseClick::CycleGraphicsQuality)
+        );
+        assert_eq!(
+            pause_click(PauseSubMenu::Settings, sw, sh, sx + 250.0, sy + 430.0),
+            Some(PauseClick::Back)
+        );
+
+        let (px, py, _, _) = profile_panel(sw, sh);
+        assert_eq!(
+            pause_click(PauseSubMenu::Profile, sw, sh, px + 50.0, py + 135.0),
+            Some(PauseClick::SelectSkin(0))
+        );
+        assert_eq!(
+            pause_click(PauseSubMenu::Profile, sw, sh, px + 50.0, py + 185.0),
+            Some(PauseClick::SelectSkin(1))
+        );
+        assert_eq!(
+            pause_click(
+                PauseSubMenu::WorldInfo,
+                sw,
+                sh,
+                world_info_panel(sw, sh).0 + 50.0,
+                world_info_panel(sw, sh).1 + 230.0
+            ),
+            Some(PauseClick::ExportJava)
+        );
     }
 }

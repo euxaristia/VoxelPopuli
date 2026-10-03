@@ -93,7 +93,7 @@ impl Catalogue {
         count: usize,
     ) {
         let (ox, oy, s) = Self::transform(sw, sh);
-        let rect = |x, y, w, h, c| draw_rect(ui, ox + x * s, oy + y * s, w * s, h * s, c, sw, sh);
+        let rect = |x, y, w, h, c| draw_rect(ui, ox + x * s, oy + y * s, w * s, h * s, c, (sw, sh));
         let label = |text: &str, x, y, size, color| {
             draw_text_tinted(
                 font,
@@ -107,7 +107,7 @@ impl Catalogue {
                 color,
             )
         };
-        draw_rect(ui, 0.0, 0.0, sw, sh, [8, 15, 19, 195], sw, sh);
+        draw_rect(ui, 0.0, 0.0, sw, sh, [8, 15, 19, 195], (sw, sh));
         rect(0.0, 0.0, 900.0, 590.0, [28, 39, 43, 255]);
         rect(0.0, 0.0, 900.0, 4.0, [119, 187, 132, 255]);
         label("CREATURES", 24.0, 26.0, 25.0, [242, 238, 221, 255]);

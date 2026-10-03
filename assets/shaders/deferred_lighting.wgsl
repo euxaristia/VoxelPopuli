@@ -35,6 +35,11 @@ struct Deferred {
 @group(1) @binding(3) var g_lighting: texture_2d<f32>;
 @group(1) @binding(4) var g_depth: texture_depth_2d;
 
+fn emissive_radiance(illuminance:f32,exposure:f32)->f32 {
+    // Preserve daylight visibility without exposure turning night emitters white.
+    return min(max(16.0, illuminance * 0.12), 2.0 / max(exposure, 0.000001));
+}
+
 const PI: f32 = 3.14159265359;
 // Lambertian surfaces return irradiance / PI as radiance. Illuminance is
 // authored in lux, which would blow out an 8-bit target but is exactly
@@ -254,9 +259,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // lighting/global.json asks for.
     let luminance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
     let emissive_albedo = mix(albedo, vec3(luminance), u.sky_params.y);
-    // Scaled into lux so emissive surfaces survive tone mapping in
-    // daylight without being painfully bright at night.
-    radiance += emissive_albedo * emissive * 2000.0;
+    // Scale relative to exposure so emissive surfaces retain their color.
+    radiance += emissive_albedo * emissive * emissive_radiance(sky_lux, u.camera_pos_exposure.w);
 
     // Subsurface: light that entered the surface and left facing the
     // viewer, so it shows most when the light is behind the geometry.

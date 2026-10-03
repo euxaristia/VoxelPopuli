@@ -3,9 +3,10 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-// Run with Node 22+ or Bun and a Chromium executable. Only the temporary
-// profile and the generated target/web build are used; no personal tabs.
-if (!process.argv[2]) throw new Error('Usage: node scripts/test-web-browser.mjs <chromium-executable>');
+// A temporary profile isolates browser data, not physical mouse input.
+// Pointer lock can still affect the desktop in headless mode.
+if (!process.argv[2]) throw new Error('Usage: node scripts/test-web-browser.mjs <chromium-executable> --allow-desktop-input');
+if (!process.argv.includes('--allow-desktop-input')) throw new Error('This test requires explicit desktop-input consent (--allow-desktop-input). Headless pointer lock can affect the physical mouse.');
 const root = path.resolve('target/web');
 const server = createServer(async (request, response) => {
   try {
@@ -53,7 +54,6 @@ try {
   const call = (method, params) => send(method, params, sessionId);
   await call('Runtime.enable');
   await call('Page.enable');
-  await call('Page.bringToFront');
   await call('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await call('Page.navigate', { url });
   let state;

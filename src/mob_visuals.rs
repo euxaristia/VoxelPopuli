@@ -1150,7 +1150,7 @@ fn texel(
         }
         if kind == ZombieVillager
             && surface == Body
-            && ((x + y * 2) % 7 == 2 || (x * 3 + y) % 9 == 0)
+            && ((x + y * 2) % 7 == 2 || (x * 3 + y).is_multiple_of(9))
         {
             c = shade(s.accent, grain);
         }

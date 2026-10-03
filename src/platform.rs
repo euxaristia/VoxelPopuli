@@ -48,6 +48,39 @@ pub fn read(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<u8>> {
                 include_bytes!("../assets/shaders/deferred_lighting.wgsl")
             }
             "assets/shaders/tonemap.wgsl" => include_bytes!("../assets/shaders/tonemap.wgsl"),
+            "assets/shaders/ao.wgsl" => include_bytes!("../assets/shaders/ao.wgsl"),
+            "assets/shaders/atmosphere.wgsl" => include_bytes!("../assets/shaders/atmosphere.wgsl"),
+            "assets/shaders/atmosphere_composite.wgsl" => {
+                include_bytes!("../assets/shaders/atmosphere_composite.wgsl")
+            }
+            "assets/shaders/bloom_composite.wgsl" => {
+                include_bytes!("../assets/shaders/bloom_composite.wgsl")
+            }
+            "assets/shaders/bloom_down.wgsl" => include_bytes!("../assets/shaders/bloom_down.wgsl"),
+            "assets/shaders/bloom_extract.wgsl" => {
+                include_bytes!("../assets/shaders/bloom_extract.wgsl")
+            }
+            "assets/shaders/bloom_up.wgsl" => include_bytes!("../assets/shaders/bloom_up.wgsl"),
+            "assets/shaders/cinematic_common.wgsl" => {
+                include_bytes!("../assets/shaders/cinematic_common.wgsl")
+            }
+            "assets/shaders/cinematic_glass.wgsl" => {
+                include_bytes!("../assets/shaders/cinematic_glass.wgsl")
+            }
+            "assets/shaders/cinematic_lighting.wgsl" => {
+                include_bytes!("../assets/shaders/cinematic_lighting.wgsl")
+            }
+            "assets/shaders/cinematic_water.wgsl" => {
+                include_bytes!("../assets/shaders/cinematic_water.wgsl")
+            }
+            "assets/shaders/post_common.wgsl" => {
+                include_bytes!("../assets/shaders/post_common.wgsl")
+            }
+            "assets/shaders/shadow.wgsl" => include_bytes!("../assets/shaders/shadow.wgsl"),
+            "assets/shaders/temporal.wgsl" => include_bytes!("../assets/shaders/temporal.wgsl"),
+            "assets/shaders/water_depth.wgsl" => {
+                include_bytes!("../assets/shaders/water_depth.wgsl")
+            }
             "assets/shaders/chunk_mesh_test.wgsl" => {
                 include_bytes!("../assets/shaders/chunk_mesh_test.wgsl")
             }

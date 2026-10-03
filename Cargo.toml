@@ -16,9 +16,9 @@ glam = "0.33"
 png = "0.18.1"
 rand = "0.10"
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "gles", "vulkan", "wgsl"] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 bedrock-leveldb = { version = "0.3.1", default-features = false, features = ["zlib", "snappy"] }
 glfw = { version = "0.63.0", default-features = false, features = ["raw-window-handle-v0-6", "wayland", "x11", "native-handles", "src-build"] }
 mimalloc = "0.1"

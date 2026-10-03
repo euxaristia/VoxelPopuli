@@ -11,6 +11,8 @@ use std::{
     sync::Mutex,
 };
 
+pub type PositionedContainer = ((i32, i32, i32), crate::container::Container);
+
 pub struct WorldStore {
     database: Mutex<Database>,
     pub seed: u64,
@@ -30,7 +32,7 @@ impl WorldStore {
         x: i32,
         z: i32,
         dimension: i32,
-    ) -> io::Result<Vec<((i32, i32, i32), crate::container::Container)>> {
+    ) -> io::Result<Vec<PositionedContainer>> {
         let Some(bytes) = self.record(&chunk_key(x, z, dimension, 0x31, None))? else {
             return Ok(vec![]);
         };
@@ -206,12 +208,14 @@ fn new_chunk_metadata(chunk: &Chunk, dimension: i32) -> Vec<(Vec<u8>, Vec<u8>)> 
     let key = |tag| chunk_key(chunk.x, chunk.z, dimension, tag, None);
     // Data3D: 256 little-endian heights followed by 24 runtime-ID biome palettes.
     let mut biomes = Vec::with_capacity(632);
-    for z in 0..16 {
-        for x in 0..16 {
-            let top = (0..crate::chunk::CHUNK_HEIGHT)
+    for (z, _) in chunk.blocks[0][0].iter().enumerate() {
+        for column in chunk.blocks.iter() {
+            let top = column
+                .iter()
+                .enumerate()
                 .rev()
-                .find(|&y| chunk.blocks[x][y][z] != crate::block::BlockType::Air)
-                .map_or(0, |y| y + 1);
+                .find(|(_, row)| row[z] != crate::block::BlockType::Air)
+                .map_or(0, |(y, _)| y + 1);
             biomes.extend_from_slice(&((top + 64) as u16).to_le_bytes());
         }
     }
@@ -299,11 +303,8 @@ mod tests {
         let bytes = biome_storage(&chunk, 0);
         assert_eq!(bytes[0] & 1, 1);
         let width = (bytes[0] >> 1) as usize;
-        let words = if width == 0 {
-            0
-        } else {
-            4096usize.div_ceil(32 / width)
-        };
+        let cells_per_word = 32usize.checked_div(width);
+        let words = cells_per_word.map_or(0, |cells| 4096usize.div_ceil(cells));
         let mut offset = 1 + words * 4;
         let count = if width == 0 {
             1
@@ -313,16 +314,18 @@ mod tests {
             n
         };
         let ids: Vec<_> = bytes[offset..]
-            .chunks_exact(4)
-            .map(|b| i32::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| i32::from_le_bytes(*b))
             .collect();
         assert_eq!(ids.len(), count);
         assert!(ids.contains(&192));
-        if width > 0 {
+        if let Some(cells_per_word) = cells_per_word {
             for cell in 0..4096 {
-                let word = 1 + (cell / (32 / width)) * 4;
+                let word = 1 + (cell / cells_per_word) * 4;
                 let value = u32::from_le_bytes(bytes[word..word + 4].try_into().unwrap());
-                let index = (value >> ((cell % (32 / width)) * width)) & ((1 << width) - 1);
+                let index = (value >> ((cell % cells_per_word) * width)) & ((1 << width) - 1);
                 assert!((index as usize) < count);
             }
         }
@@ -406,6 +409,106 @@ mod tests {
             assert_eq!(chunk.blocks[x][y + 1][z], crate::block::BlockType::Air);
         }
     }
+    #[test]
+    fn native_session_graphics_quality_survives_write_and_reopen() {
+        use crate::{
+            inventory::INVENTORY_SLOT_COUNT,
+            player::Player,
+            save::{GameSave, GameSettings},
+            vibrant::quality::GraphicsQuality,
+            world::World,
+        };
+        use std::sync::Arc;
+
+        let path = std::env::temp_dir().join(format!(
+            "voxel-quality-session-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        for quality in [
+            GraphicsQuality::Cinematic,
+            GraphicsQuality::High,
+            GraphicsQuality::Fast,
+        ] {
+            let store = Arc::new(if path.exists() {
+                WorldStore::open(&path).unwrap()
+            } else {
+                let store = WorldStore::create(&path, 42).unwrap();
+                assert_eq!(
+                    GameSave::read_bedrock(&store)
+                        .unwrap()
+                        .settings
+                        .graphics_quality,
+                    GraphicsQuality::default()
+                );
+                store
+            });
+            let settings = GameSettings {
+                view_distance: 6,
+                fov: 90.0,
+                graphics_quality: quality,
+                selected_skin: 2,
+            };
+            let mut world = World::simulation(42);
+            world.bedrock = Some(store.clone());
+            let save = GameSave::capture(
+                &world,
+                &Player::new(70.0),
+                &[None; INVENTORY_SLOT_COUNT],
+                glam::Vec2::ZERO,
+                settings,
+                None,
+                None,
+                &[None; crate::inventory::CRAFT_TABLE_SLOT_COUNT],
+            )
+            .unwrap();
+            save.write_bedrock(&world).unwrap();
+            drop(world);
+            drop(store);
+            let reopened = WorldStore::open(&path).unwrap();
+            assert_eq!(
+                GameSave::read_bedrock(&reopened).unwrap().settings,
+                settings
+            );
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn native_session_historical_fancy_migrates_without_new_default() {
+        use crate::{save::GameSave, vibrant::quality::GraphicsQuality};
+
+        let path = std::env::temp_dir().join(format!(
+            "voxel-legacy-quality-session-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let store = WorldStore::create(&path, 42).unwrap();
+        for (fancy, expected) in [
+            (false, GraphicsQuality::Fast),
+            (true, GraphicsQuality::High),
+        ] {
+            let mut bytes = include_bytes!("../../tests/fixtures/legacy-save-v3.vps").to_vec();
+            bytes[130] = u8::from(fancy);
+            store
+                .save_chunks(
+                    std::iter::empty(),
+                    0,
+                    vec![(b"voxelpopuli:session".to_vec(), bytes)],
+                )
+                .unwrap();
+            assert_eq!(
+                GameSave::read_bedrock(&store)
+                    .unwrap()
+                    .settings
+                    .graphics_quality,
+                expected
+            );
+        }
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn generated_chunks_persist_and_dimensions_do_not_overlap() {
         let path = std::env::temp_dir().join(format!(

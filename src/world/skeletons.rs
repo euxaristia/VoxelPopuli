@@ -294,7 +294,6 @@ impl World {
                             life: 8.0,
                             in_ground: false,
                             damage: 4.0,
-                            is_critical: false,
                             from_player: false,
                             owner: Some(mob.id),
                         });
@@ -618,7 +617,6 @@ mod tests {
                 life: 8.0,
                 in_ground: false,
                 damage: 4.0,
-                is_critical: false,
                 from_player: false,
                 owner: Some(owner),
             });

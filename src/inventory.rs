@@ -393,23 +393,23 @@ pub fn try_place_block_with_lock(
         return false;
     }
 
-    if let Some(stack) = inv_slots[selected_slot] {
-        if let Some((drop, count)) = world.harvest_hive((res.x, res.y, res.z), stack.block) {
-            if stack.block == BlockType::Shears {
-                damage_selected_tool(inv_slots, selected_slot);
+    if let Some(stack) = inv_slots[selected_slot]
+        && let Some((drop, count)) = world.harvest_hive((res.x, res.y, res.z), stack.block)
+    {
+        if stack.block == BlockType::Shears {
+            damage_selected_tool(inv_slots, selected_slot);
+        } else {
+            inv_slots[selected_slot] = if stack.count > 1 {
+                Some(ItemStack::new(stack.block, stack.count - 1))
             } else {
-                inv_slots[selected_slot] = if stack.count > 1 {
-                    Some(ItemStack::new(stack.block, stack.count - 1))
-                } else {
-                    None
-                };
-            }
-            let remaining = inv_add(inv_slots, drop, count);
-            if remaining > 0 {
-                world.pending_stacks.push(ItemStack::new(drop, remaining));
-            }
-            return true;
+                None
+            };
         }
+        let remaining = inv_add(inv_slots, drop, count);
+        if remaining > 0 {
+            world.pending_stacks.push(ItemStack::new(drop, remaining));
+        }
+        return true;
     }
     if try_till_farmland(world, inv_slots, selected_slot, &res) {
         return true;
@@ -527,10 +527,10 @@ pub fn try_place_block_with_lock(
     if !s.block.is_item() {
         let (nx, ny, nz) = (res.x + res.nx, res.y + res.ny, res.z + res.nz);
 
-        if let Some(l) = lock {
-            if !l.matches((nx, ny, nz)) {
-                return false;
-            }
+        if let Some(l) = lock
+            && !l.matches((nx, ny, nz))
+        {
+            return false;
         }
 
         if world.get_block(nx, ny, nz) == BlockType::Air && !player.intersects_block(nx, ny, nz) {
@@ -628,10 +628,10 @@ pub fn inv_click(
                 _ => None,
             };
             if let Some(c) = *cursor {
-                if let Some(prop) = item::armor_properties(c.block) {
-                    if Some(prop.slot) == expected_slot {
-                        std::mem::swap(&mut slots[slot], cursor);
-                    }
+                if let Some(prop) = item::armor_properties(c.block)
+                    && Some(prop.slot) == expected_slot
+                {
+                    std::mem::swap(&mut slots[slot], cursor);
                 }
             } else {
                 std::mem::swap(&mut slots[slot], cursor);

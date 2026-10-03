@@ -133,10 +133,10 @@ impl LightingSettings {
                 };
             }
         }
-        if let Some(emissive) = settings.get("emissive") {
-            if let Some(desaturation) = emissive.get("desaturation").and_then(Json::as_f32) {
-                out.emissive_desaturation = desaturation.clamp(0.0, 1.0);
-            }
+        if let Some(emissive) = settings.get("emissive")
+            && let Some(desaturation) = emissive.get("desaturation").and_then(Json::as_f32)
+        {
+            out.emissive_desaturation = desaturation.clamp(0.0, 1.0);
         }
         if let Some(ambient) = settings.get("ambient") {
             out.ambient_illuminance = keyframed_or(ambient, "illuminance", 0.02);
@@ -279,6 +279,7 @@ impl LocalLightSettings {
             .map(|(_, light)| *light)
     }
 
+    #[cfg(test)]
     pub fn is_point_light(&self, block: BlockType) -> bool {
         self.get(block)
             .is_some_and(|l| l.light_type == LightType::Point)

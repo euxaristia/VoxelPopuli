@@ -35,9 +35,14 @@ cargo run --release -- --save playtest.vps
 10. Pause during smelting. Fuel, cooking progress, hunger, and daylight should
     remain unchanged until play resumes. Check inventory clicks at 100% and
     200% display scaling, and close the game normally without a shutdown crash.
+11. In pause settings, cycle Graphics Quality through Cinematic, High, and Fast.
+    Save and reload to check the selected preset persists. Check resize and camera
+    changes in each preset. These interactive checks remain deferred for the
+    code-only remaster; see [rendering status and costs](rendering.md).
 
 The world rendering check runs the real game loop in a hidden window, captures
-the scene and actual swapchain image in both graphics modes in
+the scene and actual swapchain image in High and Fast (the legacy Fancy/Fast
+coverage) in
 `target/test-artifacts`, and exits without saving:
 
 ```sh

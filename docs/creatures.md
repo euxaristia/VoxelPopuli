@@ -120,9 +120,12 @@ cargo run --release --locked --offline -- --smoke-test-world
 ```
 
 The creature smoke test renders every production model at rest and in motion,
-captures the catalogue and a scene in Fast/Fancy graphics, and exercises water,
+captures the catalogue and a scene in Fast/High graphics (the former Fancy
+preset), and exercises water,
 flight, collision, and capacity checks. It uses a hidden test window, writes
-images to `target/test-artifacts/`, and leaves world saves untouched.
+images to `target/test-artifacts/`, and leaves world saves untouched. This existing
+harness is not Cinematic remaster validation; no game or GPU smoke launch was run
+for the current code-only work. See [rendering status](rendering.md).
 
 Dolphins use a separate body, pitching tail, child fluke, and paired pectoral
 fins. Their stroke axes and cadence follow the official

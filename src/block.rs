@@ -25,7 +25,6 @@ pub struct ArrowEntity {
     pub life: f32,
     pub in_ground: bool,
     pub damage: f32,
-    pub is_critical: bool,
     pub from_player: bool,
     pub owner: Option<u32>,
 }
@@ -708,12 +707,10 @@ mod tests {
             life: 60.0,
             in_ground: false,
             damage: 10.0,
-            is_critical: true,
             from_player: true,
             owner: None,
         };
         assert_eq!(arr.damage, 10.0);
-        assert!(arr.is_critical);
         assert!(!arr.in_ground);
     }
 

@@ -110,6 +110,7 @@ pub fn can_spawn(
 
 pub struct Species {
     pub name: &'static str,
+    #[cfg(test)]
     pub id: &'static str,
     pub shape: Shape,
     pub motion: Motion,
@@ -134,13 +135,14 @@ macro_rules! species {
             pub fn species(self) -> &'static Species {
                 &SPECIES[self as usize]
             }
+            #[cfg(test)]
             pub fn from_id(id: &str) -> Option<Self> {
                 let id = id.strip_prefix("minecraft:").unwrap_or(id);
                 Self::ALL.iter().copied().find(|kind| kind.species().id == id)
             }
         }
         pub const SPECIES: &[Species] = &[$(Species {
-            name: $name, id: $id, shape: Shape::$shape, motion: Motion::$motion,
+            name: $name, #[cfg(test)] id: $id, shape: Shape::$shape, motion: Motion::$motion,
             temper: Temper::$temper, habitat: Habitat::$habitat,
             height: $h, width: $w, health: $hp, speed: $speed, damage: $damage,
             coat: $coat, accent: $accent,

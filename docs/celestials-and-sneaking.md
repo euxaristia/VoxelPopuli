@@ -33,9 +33,11 @@ square; normal perspective can make their projected outlines non-square.
 Celestial sprites do not write depth and render at the far plane, so terrain
 occludes them.
 
-Fancy graphics uses VoxelPopuli's authored lighting and atmosphere defaults.
-Optional local JSON resource-pack settings can override those defaults.
-Fast graphics uses the same generated sprites with its simpler sky.
+Cinematic and High use VoxelPopuli's authored lighting and atmosphere defaults
+with the deferred renderer. Optional local JSON resource-pack settings can
+override those defaults. Fast uses the same generated sprites with its simpler
+forward sky. Graphics Quality in the pause settings cycles all three presets;
+old Fancy saves migrate to High. See [rendering and quality](rendering.md).
 No Mojang PNGs or sample JSON files are distributed or embedded in the build.
 Colours, patterns, scattering, angular sizing and tone mapping are local
 recreations; pixel-identical Vibrant Visuals output is not claimed.
@@ -46,8 +48,9 @@ directly as a power of a clamped cosine.
 See [Microsoft's atmosphere documentation](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/atmosphericscustomization?view=minecraft-bedrock-stable).
 
 The moon advances through eight phases on a 20-minute day cycle. Sleeping
-advances the day too. Save format 7 stores the day counter; formats 1–6
-default to day zero. Native Bedrock `Time` includes full elapsed days.
+advances the day too. Save formats 7 and 8 store the day counter; formats 1-6
+default to day zero. Version 8 adds the graphics preset without changing the
+historical day-counter layout. Native Bedrock `Time` includes full elapsed days.
 Generator-version compatibility remains unchanged.
 
 Run `cargo run --release -- --smoke-test-celestial-sneak` to capture the sun,
@@ -56,3 +59,5 @@ three camera headings around a fixed moon direction,
 both first-person body poses, all third-person poses, and a GPU
 sky-seam regression capture in `target/test-artifacts/`.
 Run `cargo run --release -- --smoke-test-lighting` for the full lighting cycle.
+These are existing GPU checks, not results of the current code-only remaster.
+No game launch or visual/GPU validation was performed for that work.

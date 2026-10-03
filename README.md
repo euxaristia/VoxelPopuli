@@ -6,7 +6,7 @@ A voxel sandbox written in Rust. Procedural terrain, survival gameplay, 77 creat
 
 ## Highlights
 
-- **Deferred wgpu renderer** with G-buffer geometry, HDR lighting, ACES tone mapping, ambient occlusion, and distance haze. Directional sun/moonlight, celestial bodies, dynamic clouds, moon phases, and animated water with sky reflection. 12 WGSL shaders.
+- **wgpu renderer** with Cinematic, High, and Fast quality presets. Deferred G-buffer geometry, HDR lighting, ACES tone mapping, directional sun/moonlight, celestial bodies, moon phases, and animated water. See [rendering, quality settings, and remaster status](docs/rendering.md).
 - **Survival loop**: health, hunger, saturation, armor defense, oxygen, starvation, sprinting exhaustion, beds, and respawn. Gather, craft, smelt, farm, fight.
 - **77 Overworld creatures** with original pixel textures, articulated models, habitat spawning, swimming, flight, skeleton archery AI, bee pollination, and a sandbox catalogue. See [creature coverage](docs/creatures.md).
 - **Procedural world**: biomes, Perlin noise heightmaps, Minecraft 1.0 ore veins, villages with pathways and mob spawns, caves, trees (oak, birch, mangrove, cherry), and bee habitats.
@@ -83,7 +83,7 @@ For the original starter kit and double-tap flight controls in a separate world:
 cargo run --release -- --sandbox --save sandbox
 ```
 
-Legacy version 1-3 `.vps` saves remain readable and are retained during migration. Current browser saves and desktop supplemental session records use version 7, with 16-bit block/item IDs. This adds 64 KiB to each loaded chunk's block array; the optional GPU voxel pool also uses 64 KiB more per chunk slot. New worlds include seven additional bee habitats and birch, mangrove, and cherry trees. Existing worlds keep their original generator. See [world generation and compatibility](docs/world-generation.md). The default `world.vps` migrates to `world/`; an explicit `--save survival.vps` migrates to `survival.bedrock/`. An unreadable save stops startup. `--seed` and `--import-world` require a new native save directory when one already exists.
+Legacy version 1-7 `.vps` saves remain readable and are retained during native migration. Current browser saves and desktop supplemental session records use version 8, preserving the historical 16-bit block/item layout and adding an explicit graphics preset. Old Fancy settings become High; old Fast settings stay Fast. Older binaries do not understand version 8 records. The existing 16-bit block representation uses 64 KiB more per loaded chunk than the original 8-bit representation; the optional GPU voxel pool likewise uses 64 KiB more per chunk slot. The version-8 graphics extension itself adds one byte per save record. New worlds include seven additional bee habitats and birch, mangrove, and cherry trees. Existing worlds keep their original generator. See [world generation and compatibility](docs/world-generation.md). The default `world.vps` migrates to `world/`; an explicit `--save survival.vps` migrates to `survival.bedrock/`. An unreadable save stops startup. `--seed` and `--import-world` require a new native save directory when one already exists.
 
 Chests hold 27 stacks. Furnaces have input, fuel, and output slots; one item takes 10 seconds to smelt, and one coal burns for 80 seconds. They continue cooking while closed during play; pausing freezes the simulation. Shift-click transfers stacks and right-click splits them. Broken containers release their contents. Items that do not fit in your inventory remain on the ground and are saved. Beds set your respawn point and advance night to morning. Death currently keeps your inventory and reloads terrain around your spawn before resuming.
 
@@ -124,6 +124,8 @@ The importer reads Anvil `.mca` region files, decompresses NBT chunk data, unpac
 | F6 | Creature catalogue (sandbox) |
 | Esc | Pause menu and settings |
 
+Open **Settings** from Esc and click **Graphics Quality** to cycle Cinematic, High, Fast, then Cinematic. New desktop worlds default to Cinematic; new browser worlds default to High. Cinematic targets native framebuffer resolution and costs more GPU time and memory. High uses 75% of each framebuffer dimension and lower effect budgets. Fast uses the inexpensive forward path with the existing approximately 1125x633 pixel budget. The HUD stays at output resolution. See [quality costs and save compatibility](docs/rendering.md).
+
 Sprinting continues while moving forward and stops when forward input is released, you sneak, hit a wall, open a menu, draw a bow, or run low on food. Gamepads use left-stick click or a quick double push forward. Sprinting and jumping consume exhaustion, which drains saturation before hunger; eating replenishes food. See [sprinting and hunger](docs/sprinting.md).
 
 ## Project layout
@@ -132,6 +134,7 @@ Sprinting continues while moving forward and stops when forward input is release
 |---|---|
 | `src/main.rs` | Entry point, game loop, input, pause menu |
 | `src/renderer.rs` | wgpu pipeline, deferred G-buffer, compute meshing, shaders |
+| `src/vibrant/quality.rs` | Graphics presets, render sizing, shadow and effect budgets |
 | `src/world.rs` | World state, chunk streaming, clouds, mobs, explosions |
 | `src/world/streaming.rs` | Background chunk load/save and mesh workers |
 | `src/world/mobs.rs` | Spawn validation, natural encounters, summoning |
@@ -170,7 +173,7 @@ Sprinting continues while moving forward and stops when forward input is release
 | `src/web.rs`, `src/web_window.rs` | Browser-specific windowing and event loop |
 | `src/smoke.rs` | Smoke-test harness |
 | `src/png_io.rs` | PNG read/write |
-| `assets/shaders/*.wgsl` | 12 WGSL shaders (G-buffer, deferred lighting, water, celestial, tone mapping, UI) |
+| `assets/shaders/*.wgsl` | WGSL shaders for geometry, lighting, water, celestials, tone mapping, and UI |
 
 ## Verification
 
@@ -186,16 +189,16 @@ The smoke test renders the production chest and furnace screens through wgpu in 
 
 PNG assets and screenshots use `png` directly, with no general-purpose image processing dependency. wgpu enables native DirectX 12, Vulkan, Metal and OpenGL backends plus WGSL; the browser build uses WebGPU.
 
-Fancy graphics uses linear-color lighting, ACES tone mapping, original procedural sun/moon textures, and authored lighting defaults with optional local resource-pack overrides. See [celestial rendering and sneaking](docs/celestials-and-sneaking.md) for the reference sources, camera/pose behavior, moon phases and parity limits. It also provides directional sunlight, moonlight, and subtle distance haze. Water has a muted blue-green tint, view-dependent sky reflection, and animated normals that leave block edges in place. Empty clicks punch, holding attack repeats the swing, and the arm extends past the bottom of the viewport throughout the animation. Its square forearm points forward, and a separate depth pass keeps the arm and held item visible against nearby terrain in both graphics modes.
+Cinematic and High use the deferred HDR path; Fast retains the cheaper forward path. Lighting uses original procedural sun/moon textures and authored defaults with optional local resource-pack overrides. See [celestial rendering and sneaking](docs/celestials-and-sneaking.md) for sources, camera/pose behavior, moon phases, and parity limits. Empty clicks punch and holding attack repeats the swing. The arm and held item use a separate depth pass so nearby terrain does not hide them.
 
-The renderer implements selected features from Microsoft's [Vibrant Visuals lighting](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/lightingcustomization?view=minecraft-bedrock-stable), [atmosphere](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/atmosphericscustomization?view=minecraft-bedrock-stable), and [water](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/watercustomization?view=minecraft-bedrock-stable) schemas: `water/water.json` supports bio-optical particle concentrations (CDOM, chlorophyll, suspended sediment) blended with Bedrock surface biome colors, frequency- and pull-controlled multi-octave waves, and procedural dynamic underwater caustics. Several wave parameters and `caustics.texture` remain unsupported. Shadow maps, screen-space reflections, and volumetric light shafts remain future work. Haze is an analytic approximation; water reflection samples the sky color rather than nearby geometry.
+The renderer supports selected features from Microsoft's [Vibrant Visuals lighting](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/lightingcustomization?view=minecraft-bedrock-stable), [atmosphere](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/atmosphericscustomization?view=minecraft-bedrock-stable), and [water](https://learn.microsoft.com/en-us/minecraft/creator/documents/vibrantvisuals/watercustomization?view=minecraft-bedrock-stable) schemas. `water/water.json` exposes bio-optical particle concentrations blended with biome colors, wave controls, and procedural caustics; several wave parameters and `caustics.texture` remain unsupported. The cinematic passes are wired in source: materials, cascaded shadows, atmosphere, scene-aware water, temporal reconstruction, and bloom. That wiring has not had visual or GPU validation. See [pipeline status and limitations](docs/rendering.md). Screen-space effects cannot reconstruct arbitrary offscreen geometry; no hardware ray tracing or FPS guarantee is claimed.
 
 ```bash
 cargo run --release --locked --offline -- --smoke-test-hand
 cargo run --release --locked --offline -- --smoke-test-lighting
 ```
 
-These hidden-window tests leave saves unchanged and capture the actual presented frames under `target/test-artifacts/`. They exercise press, release, and held attack in Fancy and Fast modes; arm and held-item visibility against a near-plane wall; noon, sunset, midnight, and sunrise; and GPU probes for color conversion, distance haze, cave visibility, hidden sun glare, cloud tint, and stars being occluded by terrain.
+These existing hidden-window tests leave saves unchanged and capture presented frames under `target/test-artifacts/`. Their legacy Fancy coverage maps to High, alongside Fast. They exercise attacks, near-plane hand visibility, day/night lighting, haze, cave visibility, clouds, and celestial occlusion. They do not establish Cinematic remaster correctness. The isolated GPU probes and hidden generated-world camera regression verify the invalid-normal glow fix. They do not establish full remaster parity or GPU performance.
 
 ## Direction
 
@@ -207,7 +210,7 @@ Current development focuses on closing the gap with Minecraft Bedrock survival g
 - **Audio**: spatial sound effects for block interactions, mob sounds, ambient music, and weather.
 - **Weather**: rain, snow, thunder, and lightning with gameplay effects.
 - **Enchanting**: enchantment table, anvil combining, and enchantment effects on tools and armor.
-- **Renderer**: shadow maps, screen-space reflections, and volumetric fog.
+- **Renderer**: finish and validate the cinematic remaster, including shadows, scene-aware water/reflections, atmosphere, and temporal stability.
 
 ## License
 

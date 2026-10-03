@@ -878,9 +878,10 @@ mod tests {
                     chunk.blocks[lx][feet - 1][lz].is_solid(),
                     "seed {seed}: no ground under spawn at {pos:?}"
                 );
-                for y in feet..feet + 3 {
+                for (offset, row) in chunk.blocks[lx][feet..feet + 3].iter().enumerate() {
+                    let y = feet + offset;
                     assert_eq!(
-                        chunk.blocks[lx][y][lz],
+                        row[lz],
                         BlockType::Air,
                         "seed {seed}: spawn blocked at {pos:?} y={y}"
                     );

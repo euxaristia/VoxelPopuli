@@ -2,9 +2,12 @@ use crate::block::BlockType;
 use crate::container::{CHEST_SLOTS, Container, Furnace, SMELT_SECONDS};
 use crate::inventory::{INVENTORY_SLOT_COUNT, ItemStack};
 use crate::player::Player;
+use crate::vibrant::quality::GraphicsQuality;
 use crate::world::World;
 use glam::{Vec2, Vec3};
-use std::io::{self, Write};
+use std::io;
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 mod bedrock;
@@ -12,7 +15,7 @@ mod bees;
 pub use bees::BeeSaveData;
 
 const MAGIC: &[u8; 8] = b"VPOPSAV\0";
-const VERSION: u32 = 7;
+const VERSION: u32 = 8;
 const MAX_EDITS: usize = 10_000_000;
 const MAX_CONTAINERS: usize = 100_000;
 const MAX_PENDING_STACKS: usize = 1_000_000;
@@ -81,7 +84,7 @@ impl SkeletonSave {
 pub struct GameSettings {
     pub view_distance: i32,
     pub fov: f32,
-    pub fancy_graphics: bool,
+    pub graphics_quality: GraphicsQuality,
     pub selected_skin: u8,
 }
 
@@ -90,7 +93,7 @@ impl Default for GameSettings {
         Self {
             view_distance: crate::world::DEFAULT_VIEW_DISTANCE,
             fov: 80.0,
-            fancy_graphics: true,
+            graphics_quality: GraphicsQuality::default(),
             selected_skin: 0,
         }
     }
@@ -101,7 +104,7 @@ impl GameSettings {
         Self {
             view_distance: self.view_distance.clamp(4, crate::world::MAX_VIEW_DISTANCE),
             fov: self.fov.clamp(60.0, 100.0),
-            fancy_graphics: self.fancy_graphics,
+            graphics_quality: self.graphics_quality,
             selected_skin: self.selected_skin.min(3),
         }
     }
@@ -272,6 +275,7 @@ impl GameSave {
         self.player.restore()
     }
 
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn write_to(&self, path: &Path) -> io::Result<()> {
         let bytes = self.encode()?;
         static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -291,6 +295,7 @@ impl GameSave {
         result
     }
 
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn read_from(path: &Path) -> io::Result<Self> {
         Self::decode(&std::fs::read(path)?)
     }
@@ -330,7 +335,7 @@ impl GameSave {
         put_f32(&mut out, self.camera_angle.y);
         put_i32(&mut out, self.settings.view_distance);
         put_f32(&mut out, self.settings.fov);
-        put_bool(&mut out, self.settings.fancy_graphics);
+        put_bool(&mut out, self.settings.graphics_quality.is_deferred());
         out.push(self.settings.selected_skin);
         let import_path = self
             .import_world
@@ -418,6 +423,8 @@ impl GameSave {
         self.bees.encode(&mut out)?;
         put_u32(&mut out, self.generator_version as u32);
         put_u64(&mut out, self.day_count);
+        // Version 8 retains the legacy Fancy byte and adds an explicit preset code.
+        out.push(self.settings.graphics_quality as u8);
         Ok(out)
     }
 
@@ -454,10 +461,10 @@ impl GameSave {
         let fall_distance = reader.f32()?;
         let spawn_point = reader.optional_vec3()?;
         let camera_angle = Vec2::new(reader.f32()?, reader.f32()?);
-        let settings = GameSettings {
+        let mut settings = GameSettings {
             view_distance: reader.i32()?,
             fov: reader.f32()?,
-            fancy_graphics: reader.bool()?,
+            graphics_quality: GraphicsQuality::from_legacy_fancy(reader.bool()?),
             selected_skin: reader.u8()?,
         }
         .clamped();
@@ -659,6 +666,10 @@ impl GameSave {
             crate::chunk::GeneratorVersion::Legacy
         };
         let day_count = if version >= 7 { reader.u64()? } else { 0 };
+        if version >= 8 {
+            settings.graphics_quality = GraphicsQuality::from_byte(reader.u8()?)
+                .ok_or_else(|| invalid("invalid graphics quality"))?;
+        }
         if reader.remaining() != 0 {
             return Err(invalid("trailing data in save file"));
         }
@@ -976,7 +987,7 @@ mod tests {
             settings: GameSettings {
                 view_distance: 6,
                 fov: 90.0,
-                fancy_graphics: false,
+                graphics_quality: GraphicsQuality::Fast,
                 selected_skin: 2,
             },
             import_world: Some(PathBuf::from("example-world")),
@@ -989,10 +1000,17 @@ mod tests {
         }
     }
 
+    fn version_seven_bytes(save: &GameSave) -> Vec<u8> {
+        let mut bytes = save.encode().unwrap();
+        bytes.pop().unwrap();
+        bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
+        bytes
+    }
+
     #[test]
     fn version_four_loads_without_bee_extension() {
         let save = sample_save();
-        let mut bytes = save.encode().unwrap();
+        let mut bytes = version_seven_bytes(&save);
         let mut extension = Vec::new();
         save.bees.encode(&mut extension).unwrap();
         bytes.truncate(bytes.len() - extension.len() - 12);
@@ -1000,6 +1018,121 @@ mod tests {
         let loaded = GameSave::decode(&bytes).unwrap();
         assert_eq!(loaded.bees, BeeSaveData::default());
         assert_eq!(loaded.inventory, save.inventory);
+    }
+
+    #[test]
+    fn graphics_settings_use_explicit_version_eight_extension() {
+        let bytes = sample_save().encode().unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 8);
+        assert_eq!(bytes.last(), Some(&2));
+    }
+
+    #[test]
+    fn version_eight_round_trips_every_graphics_preset() {
+        for quality in [
+            GraphicsQuality::Cinematic,
+            GraphicsQuality::High,
+            GraphicsQuality::Fast,
+        ] {
+            let mut save = sample_save();
+            save.settings.graphics_quality = quality;
+            assert_eq!(GameSave::decode(&save.encode().unwrap()).unwrap(), save);
+        }
+        assert_eq!(
+            GameSettings::default().graphics_quality,
+            GraphicsQuality::default()
+        );
+    }
+
+    #[test]
+    fn historical_versions_migrate_fancy_to_high_and_fast_to_fast() {
+        let fixture = include_bytes!("../tests/fixtures/legacy-save-v3.vps");
+        assert_eq!(fixture[130], 0);
+        for (fancy, expected) in [
+            (false, GraphicsQuality::Fast),
+            (true, GraphicsQuality::High),
+        ] {
+            for version in 1u32..=3 {
+                let mut bytes = fixture.to_vec();
+                bytes[130] = u8::from(fancy);
+                match version {
+                    1 => bytes.truncate(bytes.len() - 36),
+                    2 => bytes.truncate(bytes.len() - 5),
+                    _ => {}
+                }
+                bytes[8..12].copy_from_slice(&version.to_le_bytes());
+                let loaded = GameSave::decode(&bytes).unwrap();
+                assert_eq!(loaded.settings.graphics_quality, expected);
+                assert_eq!(
+                    GameSave::decode(&loaded.encode().unwrap())
+                        .unwrap()
+                        .settings
+                        .graphics_quality,
+                    expected
+                );
+            }
+            let mut save = sample_save();
+            save.settings.graphics_quality = expected;
+            for version in 4u32..=7 {
+                let mut bytes = version_seven_bytes(&save);
+                let mut bees = Vec::new();
+                save.bees.encode(&mut bees).unwrap();
+                let extension_bytes = match version {
+                    4 => bees.len() + 12,
+                    5 => 12,
+                    6 => 8,
+                    _ => 0,
+                };
+                bytes.truncate(bytes.len() - extension_bytes);
+                bytes[8..12].copy_from_slice(&version.to_le_bytes());
+                assert_eq!(
+                    GameSave::decode(&bytes).unwrap().settings.graphics_quality,
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn version_eight_keeps_the_version_seven_layout_before_its_extension() {
+        let mut save = sample_save();
+        save.settings.graphics_quality = GraphicsQuality::Cinematic;
+        let mut current = save.encode().unwrap();
+        assert_eq!(current.pop(), Some(GraphicsQuality::Cinematic as u8));
+        current[8..12].copy_from_slice(&7u32.to_le_bytes());
+        let mut legacy = save.clone();
+        legacy.settings.graphics_quality = GraphicsQuality::High;
+        assert_eq!(current, version_seven_bytes(&legacy));
+        let loaded = GameSave::decode(&current).unwrap();
+        assert_eq!(loaded.settings.graphics_quality, GraphicsQuality::High);
+        assert_eq!(loaded.player, save.player);
+        assert_eq!(loaded.inventory, save.inventory);
+        assert_eq!(loaded.edits, save.edits);
+    }
+
+    #[test]
+    fn version_eight_rejects_missing_invalid_and_unversioned_quality_extensions() {
+        let bytes = sample_save().encode().unwrap();
+        for end in 0..bytes.len() {
+            assert!(
+                GameSave::decode(&bytes[..end]).is_err(),
+                "accepted truncation at {end}"
+            );
+        }
+        for value in 3..=u8::MAX {
+            let mut invalid = bytes.clone();
+            *invalid.last_mut().unwrap() = value;
+            assert_eq!(
+                GameSave::decode(&invalid).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        let mut unversioned = bytes.clone();
+        unversioned[8..12].copy_from_slice(&7u32.to_le_bytes());
+        assert!(GameSave::decode(&unversioned).is_err());
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(GameSave::decode(&trailing).is_err());
     }
 
     #[test]
@@ -1012,7 +1145,7 @@ mod tests {
     fn lunar_day_round_trip_and_version_six_default() {
         let mut save = sample_save();
         save.day_count = 19;
-        let mut bytes = save.encode().unwrap();
+        let mut bytes = version_seven_bytes(&save);
         assert_eq!(GameSave::decode(&bytes).unwrap().day_count, 19);
         bytes.truncate(bytes.len() - 8);
         bytes[8..12].copy_from_slice(&6u32.to_le_bytes());
@@ -1031,7 +1164,7 @@ mod tests {
         use crate::chunk::GeneratorVersion;
         let mut save = sample_save();
         save.generator_version = GeneratorVersion::Habitats;
-        let bytes = save.encode().unwrap();
+        let bytes = version_seven_bytes(&save);
         assert_eq!(
             GameSave::decode(&bytes).unwrap().generator_version,
             GeneratorVersion::Habitats
@@ -1178,7 +1311,7 @@ mod tests {
         assert!(GameSave::decode(&bytes[..bytes.len() - 1]).is_err());
 
         let mut invalid = bytes;
-        let last = invalid.len() - 9; // Last byte of the generator ID, before day_count.
+        let last = invalid.len() - 10; // Last generator byte, before day_count and quality.
         invalid[last] = u8::MAX;
         assert!(GameSave::decode(&invalid).is_err());
     }
@@ -1195,7 +1328,7 @@ mod tests {
         put_stack(&mut encoded, Some(ItemStack::new(BlockType::Stone, 1))).unwrap();
         assert_eq!(encoded.len(), 8);
         assert_eq!(&encoded[1..3], &(BlockType::Stone as u16).to_le_bytes());
-        assert_eq!(VERSION, 7);
+        assert_eq!(VERSION, 8);
         assert_eq!(std::mem::size_of::<BlockType>(), 2);
     }
 
@@ -1221,7 +1354,7 @@ mod tests {
         let settings = GameSettings {
             view_distance: 99,
             fov: 12.0,
-            fancy_graphics: false,
+            graphics_quality: GraphicsQuality::Fast,
             selected_skin: 9,
         }
         .clamped();

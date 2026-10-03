@@ -231,15 +231,14 @@ impl GameSave {
                     }
                 }
             }
-            if let Some(NbtTag::List { tags, .. }) = root.get("Offhand") {
-                if tags
+            if let Some(NbtTag::List { tags, .. }) = root.get("Offhand")
+                && tags
                     .iter()
                     .any(|tag| n::number(tag.get("Count")).unwrap_or(0.0) != 0.0)
-                {
-                    return Err(n::invalid(
-                        "Offhand items are not yet supported; move the item to the main inventory in Bedrock first",
-                    ));
-                }
+            {
+                return Err(n::invalid(
+                    "Offhand items are not yet supported; move the item to the main inventory in Bedrock first",
+                ));
             }
             if let Some(NbtTag::List { tags, .. }) = root.get("Attributes") {
                 for attribute in tags {

@@ -180,7 +180,7 @@ mod tests {
         }"##;
         let settings = AtmosphereSettings::parse(&json::parse(source).unwrap()).unwrap();
         assert_eq!(settings.identifier, "my_pack:default_atmospherics");
-        assert_eq!(settings.rayleigh_strength.sample(0.0), 1.026124954);
+        assert_eq!(settings.rayleigh_strength.sample(0.0), 1.026_125);
         assert_eq!(settings.sun_mie_strength.sample(0.25), 3.0);
         assert_eq!(settings.horizon_blend_stops.start.sample(0.0), 0.25);
         // Midway between the two zenith stops.

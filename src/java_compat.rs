@@ -22,6 +22,8 @@ pub const SECTION_HEIGHT: usize = 16;
 pub const SECTIONS_PER_CHUNK: usize = CHUNK_HEIGHT / SECTION_HEIGHT;
 pub const REGION_CHUNKS: i32 = 32;
 
+type RegionChunk = (i32, i32, Vec<u8>);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JavaProperty {
     pub name: &'static str,
@@ -294,7 +296,7 @@ where
     }
     let _dimensions = classic_chunk_dimensions();
 
-    let mut regions: BTreeMap<(i32, i32), Vec<(i32, i32, Vec<u8>)>> = BTreeMap::new();
+    let mut regions: BTreeMap<(i32, i32), Vec<RegionChunk>> = BTreeMap::new();
     let mut chunks = 0usize;
     for chunk_x in -config.radius..=config.radius {
         for chunk_z in -config.radius..=config.radius {
@@ -665,6 +667,7 @@ pub fn build_entities(_chunk: &Chunk) -> Vec<NbtTag> {
     Vec::new()
 }
 
+#[cfg(test)]
 pub fn build_villager_entity_nbt(x: f64, y: f64, z: f64, yaw: f32) -> NbtTag {
     NbtTag::Compound(vec![
         nbt_field("id", NbtTag::String("minecraft:villager".to_owned())),
@@ -699,6 +702,7 @@ pub fn build_villager_entity_nbt(x: f64, y: f64, z: f64, yaw: f32) -> NbtTag {
     ])
 }
 
+#[cfg(test)]
 pub fn build_iron_golem_entity_nbt(x: f64, y: f64, z: f64) -> NbtTag {
     NbtTag::Compound(vec![
         nbt_field("id", NbtTag::String("minecraft:iron_golem".to_owned())),
@@ -718,6 +722,7 @@ pub fn build_iron_golem_entity_nbt(x: f64, y: f64, z: f64) -> NbtTag {
     ])
 }
 
+#[cfg(test)]
 pub fn build_mob_entity_nbt(mob: &crate::mob::Mob) -> NbtTag {
     let id = match mob.kind.species().id {
         "evocation_illager" => "evoker",
@@ -744,6 +749,7 @@ pub fn build_mob_entity_nbt(mob: &crate::mob::Mob) -> NbtTag {
     ])
 }
 
+#[cfg(test)]
 pub fn build_player_data_nbt(x: f64, y: f64, z: f64, yaw: f32, pitch: f32, health: f32) -> NbtTag {
     NbtTag::Compound(vec![
         nbt_field(
@@ -772,6 +778,7 @@ pub fn build_player_data_nbt(x: f64, y: f64, z: f64, yaw: f32, pitch: f32, healt
     ])
 }
 
+#[cfg(test)]
 pub fn build_tnt_entity_nbt(x: f64, y: f64, z: f64, fuse_ticks: i16) -> NbtTag {
     NbtTag::Compound(vec![
         nbt_field("id", NbtTag::String("minecraft:tnt".to_owned())),
@@ -799,9 +806,9 @@ fn build_sections(chunk: &Chunk) -> Vec<NbtTag> {
 
         for y in 0..SECTION_HEIGHT {
             let world_y = section_y * SECTION_HEIGHT + y;
-            for z in 0..CHUNK_DEPTH {
-                for x in 0..CHUNK_WIDTH {
-                    let block = chunk.blocks[x][world_y][z];
+            for (z, _) in chunk.blocks[0][world_y].iter().enumerate() {
+                for column in chunk.blocks.iter() {
+                    let block = column[world_y][z];
                     if block != BlockType::Air {
                         contains_non_air = true;
                     }
@@ -866,11 +873,11 @@ fn palette_entry_nbt(state: JavaBlockState) -> NbtTag {
 
 fn build_heightmap(chunk: &Chunk) -> Vec<i64> {
     let mut heights = Vec::<u16>::with_capacity(CHUNK_WIDTH * CHUNK_DEPTH);
-    for z in 0..CHUNK_DEPTH {
-        for x in 0..CHUNK_WIDTH {
+    for (z, _) in chunk.blocks[0][0].iter().enumerate() {
+        for column in chunk.blocks.iter() {
             let mut height = 0u16;
-            for y in (0..CHUNK_HEIGHT).rev() {
-                if chunk.blocks[x][y][z] != BlockType::Air {
+            for (y, row) in column.iter().enumerate().rev() {
+                if row[z] != BlockType::Air {
                     height = (y + 1) as u16;
                     break;
                 }
@@ -943,7 +950,7 @@ fn pack_values(values: &[u16], bits_per_value: usize) -> Vec<i64> {
     longs.into_iter().map(|value| value as i64).collect()
 }
 
-fn write_region_file(path: &Path, chunks: &[(i32, i32, Vec<u8>)]) -> io::Result<()> {
+fn write_region_file(path: &Path, chunks: &[RegionChunk]) -> io::Result<()> {
     const SECTOR_BYTES: usize = 4096;
     let mut header = vec![0u8; SECTOR_BYTES * 2];
     let mut body = Vec::new();
@@ -1507,12 +1514,12 @@ pub fn import_chunk_from_nbt(decompressed_nbt: &[u8]) -> io::Result<Chunk> {
                             {
                                 unknown_blocks.insert(name.clone());
                             }
-                            if btype == BlockType::Grass {
-                                if let Some(NbtTag::Compound(props)) = t.get("Properties") {
-                                    for (k, v) in props {
-                                        if k == "snowy" && v == &NbtTag::String("true".to_owned()) {
-                                            btype = BlockType::SnowyGrass;
-                                        }
+                            if btype == BlockType::Grass
+                                && let Some(NbtTag::Compound(props)) = t.get("Properties")
+                            {
+                                for (k, v) in props {
+                                    if k == "snowy" && v == &NbtTag::String("true".to_owned()) {
+                                        btype = BlockType::SnowyGrass;
                                     }
                                 }
                             }

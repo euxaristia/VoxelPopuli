@@ -441,10 +441,10 @@ fn compute_lighting(
 
     // Horizontal Sky Light Propagation
     let mut sky_queue = VecDeque::new();
-    for x in 0..CHUNK_WIDTH {
-        for y in 0..CHUNK_HEIGHT {
-            for z in 0..CHUNK_DEPTH {
-                if sky[x][y][z] > 1 {
+    for (x, column) in sky.iter().enumerate() {
+        for (y, row) in column.iter().enumerate() {
+            for (z, &light) in row.iter().enumerate() {
+                if light > 1 {
                     sky_queue.push_back((x, y, z));
                 }
             }
@@ -741,8 +741,15 @@ impl MeshSnapshot {
     }
 }
 
+static NEXT_RENDER_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_render_revision() -> u64 {
+    NEXT_RENDER_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct Chunk {
     pub generator_version: GeneratorVersion,
+    pub render_revision: u64,
     pub blocks: Box<[[[BlockType; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
     pub light: Box<[[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
     pub liquid_levels: Box<[[[u8; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]>,
@@ -763,6 +770,7 @@ impl Chunk {
     pub fn new(x: i32, z: i32, seed: u64) -> Self {
         Self {
             generator_version: GeneratorVersion::Habitats,
+            render_revision: next_render_revision(),
             blocks: Box::new([[[BlockType::Air; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
             light: Box::new([[[0; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
             liquid_levels: Box::new([[[0; CHUNK_DEPTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]),
@@ -778,7 +786,12 @@ impl Chunk {
         }
     }
 
+    pub fn invalidate_render_volume(&mut self) {
+        self.render_revision = next_render_revision();
+    }
+
     pub fn copy_terrain_from(&mut self, other: &Chunk) {
+        self.invalidate_render_volume();
         self.blocks = other.blocks.clone();
         self.light = other.light.clone();
         self.liquid_levels = other.liquid_levels.clone();
@@ -793,6 +806,7 @@ impl Chunk {
     }
 
     pub fn hydrate_fluids(&mut self) {
+        self.invalidate_render_volume();
         for x in 0..CHUNK_WIDTH {
             for y in 0..CHUNK_HEIGHT {
                 for z in 0..CHUNK_DEPTH {
@@ -1428,7 +1442,7 @@ impl Chunk {
                         .wrapping_add((self.x as i64 as u64).wrapping_mul(734287))
                         .wrapping_add((self.z as i64 as u64).wrapping_mul(912271))
                         .wrapping_add((x * 173 + z * 319) as u64);
-                    if hash % 47 != 0 {
+                    if !hash.is_multiple_of(47) {
                         continue;
                     }
                     for y in (1..CHUNK_HEIGHT - 1).rev() {
@@ -1438,7 +1452,7 @@ impl Chunk {
                         if self.blocks[x][y][z] == BlockType::Grass
                             && self.blocks[x][y + 1][z] == BlockType::Air
                         {
-                            self.blocks[x][y + 1][z] = if hash % 2 == 0 {
+                            self.blocks[x][y + 1][z] = if hash.is_multiple_of(2) {
                                 BlockType::Poppy
                             } else {
                                 BlockType::Dandelion
@@ -1488,6 +1502,7 @@ impl Chunk {
 
     pub fn calculate_lighting(&mut self) {
         compute_lighting(&self.blocks, &mut self.light);
+        self.invalidate_render_volume();
     }
 
     pub fn snapshot_data(&self) -> ChunkData {
@@ -1503,6 +1518,7 @@ impl Chunk {
     pub fn set_block(&mut self, x: usize, y: usize, z: usize, block: BlockType) {
         if x < CHUNK_WIDTH && y < CHUNK_HEIGHT && z < CHUNK_DEPTH {
             let old_block = self.blocks[x][y][z];
+            self.invalidate_render_volume();
             self.blocks[x][y][z] = block;
             if block == BlockType::Water || block == BlockType::Lava {
                 self.liquid_levels[x][y][z] = WATER_SOURCE;
@@ -1690,6 +1706,11 @@ impl ChunkData {
 
                     if block == BlockType::Water || block == BlockType::Lava {
                         let is_lava = block == BlockType::Lava;
+                        let (v_wa, t_wa, n_wa, c_wa) = if is_lava {
+                            (&mut v_op, &mut t_op, &mut n_op, &mut c_op)
+                        } else {
+                            (&mut v_wa, &mut t_wa, &mut n_wa, &mut c_wa)
+                        };
                         let level = if is_lava {
                             WATER_SOURCE
                         } else {
@@ -2004,7 +2025,7 @@ impl ChunkData {
                             | BlockType::WheatStage2
                     );
                     if is_crop {
-                        let (v, t, n, c) = (&mut v_tr, &mut t_tr, &mut n_tr, &mut c_tr);
+                        let (v, t, n, c) = (&mut v_op, &mut t_op, &mut n_op, &mut c_op);
                         let (tx, ty) = crate::item::atlas_uv(block);
                         let u0 = tx as f32 * ts + pad;
                         let v0 = ty as f32 * ts + pad;
@@ -2098,7 +2119,7 @@ impl ChunkData {
                     }
 
                     if block == BlockType::Torch || block == BlockType::RedstoneTorch {
-                        let (v, t, n, c) = (&mut v_tr, &mut t_tr, &mut n_tr, &mut c_tr);
+                        let (v, t, n, c) = (&mut v_op, &mut t_op, &mut n_op, &mut c_op);
                         let (tx, ty) = crate::item::atlas_uv(block);
                         let ts = 1.0 / 16.0;
                         let pad = 0.5 / 256.0;
@@ -2194,8 +2215,11 @@ impl ChunkData {
                         continue;
                     }
 
-                    // STANDARD BLOCK MESHING (OPAQUE)
-                    let (v, t, n, c) = (&mut v_op, &mut t_op, &mut n_op, &mut c_op);
+                    let (v, t, n, c) = if block == BlockType::Glass {
+                        (&mut v_tr, &mut t_tr, &mut n_tr, &mut c_tr)
+                    } else {
+                        (&mut v_op, &mut t_op, &mut n_op, &mut c_op)
+                    };
                     let (tx, ty) = {
                         let (t, s) = crate::item::atlas_uv(block);
                         (t as i32, s as i32)
@@ -2610,7 +2634,7 @@ static VERTEX_COUNT_SAMPLES: std::sync::LazyLock<std::sync::Mutex<Vec<u32>>> =
 fn record_vertex_count_sample(count: u32) {
     let mut samples = VERTEX_COUNT_SAMPLES.lock().unwrap();
     samples.push(count);
-    if samples.len() % 64 == 0 {
+    if samples.len().is_multiple_of(64) {
         let mut sorted = samples.clone();
         sorted.sort_unstable();
         let p50 = sorted[sorted.len() / 2];
@@ -2681,17 +2705,16 @@ pub fn generate_minable_vein(
                 }
                 for bz in min_z..=max_z {
                     let z_dist = ((bz as f64 + 0.5) - d8) / radius;
-                    if x_dist * x_dist + y_dist * y_dist + z_dist * z_dist < 1.0 {
-                        if (0..CHUNK_WIDTH as i32).contains(&bx)
-                            && (0..CHUNK_HEIGHT as i32).contains(&by)
-                            && (0..CHUNK_DEPTH as i32).contains(&bz)
-                        {
-                            let cx = bx as usize;
-                            let cy = by as usize;
-                            let cz = bz as usize;
-                            if chunk.blocks[cx][cy][cz] == BlockType::Stone {
-                                chunk.blocks[cx][cy][cz] = block_type;
-                            }
+                    if x_dist * x_dist + y_dist * y_dist + z_dist * z_dist < 1.0
+                        && (0..CHUNK_WIDTH as i32).contains(&bx)
+                        && (0..CHUNK_HEIGHT as i32).contains(&by)
+                        && (0..CHUNK_DEPTH as i32).contains(&bz)
+                    {
+                        let cx = bx as usize;
+                        let cy = by as usize;
+                        let cz = bz as usize;
+                        if chunk.blocks[cx][cy][cz] == BlockType::Stone {
+                            chunk.blocks[cx][cy][cz] = block_type;
                         }
                     }
                 }
@@ -2723,6 +2746,48 @@ mod tests {
     }
 
     use super::*;
+
+    fn isolated_mesh(block: BlockType) -> (MeshData, MeshData, MeshData) {
+        let mut chunk = Chunk::new(0, 0, 42);
+        chunk.set_block(8, 100, 8, block);
+        let mut neighbors = [[None; 3]; 3];
+        neighbors[1][1] = Some(&chunk);
+        let snapshot = MeshSnapshot::build(0, 0, neighbors, fallback_air);
+        chunk.snapshot_data().calculate_mesh_data(&snapshot)
+    }
+
+    #[test]
+    fn cutout_plants_and_torches_write_geometry_depth() {
+        for block in [BlockType::Poppy, BlockType::Wheat, BlockType::Torch] {
+            let (opaque, blended, water) = isolated_mesh(block);
+            assert!(
+                !opaque.v.is_empty(),
+                "missing cutout geometry for {block:?}"
+            );
+            assert!(blended.v.is_empty(), "cutout in blended pass: {block:?}");
+            assert!(water.v.is_empty());
+        }
+    }
+
+    #[test]
+    fn lava_is_emissive_geometry_not_refractive_water() {
+        let (opaque, blended, water) = isolated_mesh(BlockType::Lava);
+        assert!(!opaque.v.is_empty());
+        assert!(blended.v.is_empty());
+        assert!(water.v.is_empty());
+        let (opaque, blended, water) = isolated_mesh(BlockType::Water);
+        assert!(opaque.v.is_empty());
+        assert!(blended.v.is_empty());
+        assert!(!water.v.is_empty());
+    }
+
+    #[test]
+    fn glass_is_blended_and_not_an_opaque_shadow_caster() {
+        let (opaque, blended, water) = isolated_mesh(BlockType::Glass);
+        assert!(opaque.v.is_empty());
+        assert!(!blended.v.is_empty());
+        assert!(water.v.is_empty());
+    }
 
     /// Ground truth for a single snapshot cell, computed directly from the
     /// source `Chunk` neighbor grid and the fallback function -- entirely
@@ -2974,10 +3039,10 @@ mod tests {
 
         let ore_positions = |chunk: &Chunk| {
             let mut positions = Vec::new();
-            for x in 0..CHUNK_WIDTH {
-                for y in 0..CHUNK_HEIGHT {
-                    for z in 0..CHUNK_DEPTH {
-                        if chunk.blocks[x][y][z] == BlockType::CoalOre {
+            for (x, column) in chunk.blocks.iter().enumerate() {
+                for (y, row) in column.iter().enumerate() {
+                    for (z, &block) in row.iter().enumerate() {
+                        if block == BlockType::CoalOre {
                             positions.push((x, y, z));
                         }
                     }
@@ -3020,10 +3085,8 @@ mod tests {
 
         let mut chunk = Chunk::new(0, 0, 1);
         // Put solid roof above to block skylight
-        for x in 0..CHUNK_WIDTH {
-            for z in 0..CHUNK_DEPTH {
-                chunk.blocks[x][50][z] = BlockType::Stone;
-            }
+        for column in chunk.blocks.iter_mut() {
+            column[50].fill(BlockType::Stone);
         }
         chunk.blocks[8][40][8] = BlockType::Torch;
         chunk.calculate_lighting();
@@ -3042,10 +3105,8 @@ mod tests {
     #[test]
     fn redstone_torch_changes_recalculate_block_light() {
         let mut chunk = Chunk::new(0, 0, 1);
-        for x in 0..CHUNK_WIDTH {
-            for z in 0..CHUNK_DEPTH {
-                chunk.blocks[x][50][z] = BlockType::Stone;
-            }
+        for column in chunk.blocks.iter_mut() {
+            column[50].fill(BlockType::Stone);
         }
         chunk.calculate_lighting();
 

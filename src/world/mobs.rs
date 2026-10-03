@@ -242,7 +242,7 @@ impl World {
                 return;
             }
             let mut kind = options[random as usize % options.len()];
-            if kind == MobKind::Zombie && ((random >> 24) % 20 == 0) {
+            if kind == MobKind::Zombie && (random >> 24).is_multiple_of(20) {
                 kind = MobKind::ZombieVillager;
             }
             let pos = Vec3::new(
@@ -269,14 +269,12 @@ impl World {
         self.spawned_natural_chunks.insert((cx, cz));
         let mut nests = Vec::new();
         if let Some(chunk) = self.get_chunk(cx, cz) {
-            for x in 0..CHUNK_WIDTH {
-                for z in 0..CHUNK_DEPTH {
-                    for y in 1..CHUNK_HEIGHT {
-                        if crate::bee::is_hive(chunk.blocks[x][y][z]) {
-                            nests.push((
-                                (cx * 16 + x as i32, y as i32, cz * 16 + z as i32),
-                                chunk.blocks[x][y][z],
-                            ));
+            for (x, column) in chunk.blocks.iter().enumerate() {
+                for (z, _) in column[0].iter().enumerate() {
+                    for (y, row) in column.iter().enumerate().skip(1) {
+                        let block = row[z];
+                        if crate::bee::is_hive(block) {
+                            nests.push(((cx * 16 + x as i32, y as i32, cz * 16 + z as i32), block));
                         }
                     }
                 }

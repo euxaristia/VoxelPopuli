@@ -7,6 +7,7 @@
 // default for the object's category.
 use super::json::Json;
 use super::keyframe::Color;
+#[cfg(test)]
 use super::lighting::Mers;
 
 /// A texture layer: a named image, or a constant standing in for one.
@@ -29,6 +30,7 @@ impl Layer {
         }
     }
 
+    #[cfg(test)]
     pub fn texture_name(&self) -> Option<&str> {
         match self {
             Layer::Texture(name) => Some(name),
@@ -79,6 +81,7 @@ impl TextureSet {
     /// Constant MERS for this set, when it was authored as a value rather
     /// than a texture. `None` means the caller must sample the texture, or
     /// fall back to pbr/global.json.
+    #[cfg(test)]
     pub fn constant_mers(&self) -> Option<Mers> {
         match self.mers_layer()? {
             Layer::Value(color) => Some(Mers::from_color(*color)),
@@ -87,6 +90,7 @@ impl TextureSet {
     }
 
     /// Whether this set needs a surface-detail texture bound at all.
+    #[cfg(test)]
     pub fn has_surface_detail(&self) -> bool {
         self.normal.is_some() || self.heightmap.is_some()
     }

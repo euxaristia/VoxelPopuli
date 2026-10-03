@@ -310,11 +310,12 @@ impl Player {
         if b == BlockType::Cactus {
             let lx = p.x - bx as f32;
             let lz = p.z - bz as f32;
-            return lx >= 1.0 / 16.0 && lx <= 15.0 / 16.0 && lz >= 1.0 / 16.0 && lz <= 15.0 / 16.0;
+            return (1.0 / 16.0..=15.0 / 16.0).contains(&lx)
+                && (1.0 / 16.0..=15.0 / 16.0).contains(&lz);
         }
         if matches!(b, BlockType::OakDoor | BlockType::IronDoor) {
             let lz = p.z - bz as f32;
-            return lz >= 0.0 && lz <= 3.0 / 16.0;
+            return (0.0..=3.0 / 16.0).contains(&lz);
         }
         b.is_solid()
     }
@@ -657,10 +658,8 @@ mod tests {
     fn movement_fixture() -> (World, Player) {
         let mut world = World::simulation(42);
         let mut chunk = crate::chunk::Chunk::new(0, 0, 42);
-        for x in 0..16 {
-            for z in 0..16 {
-                chunk.blocks[x][63][z] = BlockType::Stone;
-            }
+        for column in chunk.blocks.iter_mut() {
+            column[63].fill(BlockType::Stone);
         }
         world.insert_chunk(chunk);
         let mut player = Player::new(63.9);

@@ -22,10 +22,11 @@ use glam::{Mat4, Vec3};
 /// (`src/hud.rs` offers 60..100). Sharing the world FOV made the arm scale
 /// with the slider, roughly twice as large at 60 as at 100.
 const HAND_FOV_Y: f32 = 70.0;
-/// Viewmodel projection. World depth is cleared before drawing this pass.
+/// Viewmodel projection. Its separate depth attachment clears before drawing.
 const NEAR_PLANE: f32 = 0.1;
 const FAR_PLANE: f32 = 1000.0;
 /// How far in front of the near plane the arm must stay.
+#[cfg(test)]
 const NEAR_MARGIN: f32 = 0.03;
 
 /// Arm box in local space: square cross-section, hand end toward -Z, elbow
@@ -42,6 +43,7 @@ use crate::combat_animation::SWING_SECONDS as SWING_DURATION;
 pub use crate::combat_animation::Swing as SwingAnimation;
 
 /// Camera height above `player.position`, matching `main`.
+#[cfg(test)]
 const EYE_HEIGHT: f32 = crate::player::STANDING_EYE_HEIGHT;
 /// Hip joint the legs swing from.
 const HIP_HEIGHT: f32 = 0.75;
@@ -460,15 +462,15 @@ impl Avatar {
                 Vec3::new(0.24, 0.4, 0.25),
                 skin_color,
             );
-            if side < 0.0 {
-                if let Some(mesh) = held {
-                    shader.set_mat4(
-                        shader.get_uniform_location("uModel"),
-                        &(arm * Mat4::from_translation(Vec3::new(0.0, -0.62, 0.05))),
-                    );
-                    shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
-                    mesh.draw();
-                }
+            if side < 0.0
+                && let Some(mesh) = held
+            {
+                shader.set_mat4(
+                    shader.get_uniform_location("uModel"),
+                    &(arm * Mat4::from_translation(Vec3::new(0.0, -0.62, 0.05))),
+                );
+                shader.set_vec4(shader.get_uniform_location("colDiffuse"), glam::Vec4::ONE);
+                mesh.draw();
             }
         }
         shader.set_mat4(shader.get_uniform_location("uModel"), &Mat4::IDENTITY);

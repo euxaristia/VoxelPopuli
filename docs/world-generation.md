@@ -36,8 +36,11 @@ those blocks. Use native Bedrock export for those habitats.
 New native chunks store their biome palette rather than labeling everything
 plains. Native chunk blocks already saved are never regenerated. Browser saves
 retain their generator version because their terrain is rebuilt from the seed
-and player edits. The supplemental/browser save format is version 7; versions
-1 through 6 remain readable. Unknown future generator versions are rejected.
+and player edits. The supplemental/browser save format is version 8; versions
+1 through 7 remain readable. Version 8 adds an explicit graphics preset without
+changing terrain generator IDs or the historical field layout. Old Fancy maps
+to High; Fast remains Fast. Older binaries cannot read newly written version 8
+records. Unknown future generator versions are rejected.
 
 To explore the new generation, create a new world:
 

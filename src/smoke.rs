@@ -317,6 +317,36 @@ pub fn capture_lighting(scene: &RenderTexture2D, name: &str) -> Result<(), Strin
     Ok(())
 }
 
+pub fn verify_render_diagnostics(prefix: &str) -> Result<(), String> {
+    let normals = crate::png_io::load(frame_capture_path(&format!("{prefix}-normals"))?)
+        .map_err(|error| error.to_string())?;
+    let invalid = normals
+        .data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel[..3] == [255, 0, 255])
+        .count();
+    if invalid != 0 {
+        return Err(format!("{prefix}: {invalid} invalid surface-normal pixels"));
+    }
+    let bloom = crate::png_io::load(frame_capture_path(&format!("{prefix}-bloom"))?)
+        .map_err(|error| error.to_string())?;
+    let ground_glow = bloom
+        .enumerate_pixels()
+        .filter(|(_, y, pixel)| {
+            *y > bloom.height() / 3 && pixel[..3].iter().all(|channel| *channel >= 250)
+        })
+        .count();
+    if ground_glow != 0 {
+        return Err(format!(
+            "{prefix}: {ground_glow} unexplained white terrain pixels after bloom"
+        ));
+    }
+    println!("{prefix}: no invalid normals or unexplained white terrain glow");
+    Ok(())
+}
+
 pub fn verify_lighting_cycle() -> Result<(), String> {
     let mut brightness = Vec::new();
     for name in ["noon", "sunset", "midnight", "sunrise"] {
@@ -1238,6 +1268,7 @@ pub fn mobs() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn crack_overlay_faces() -> Result<(), String> {
     use glam::{Mat4, Vec3, Vec4};
     let mut world = crate::world::World::new(42);
@@ -1304,6 +1335,7 @@ fn crack_overlay_faces() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn verify_mob_simulation() {
     use crate::chunk::Chunk;
     use crate::mob::{Mob, MobKind};
@@ -1421,6 +1453,7 @@ fn verify_mob_simulation() {
     println!("Creature simulation: herd separation, collision, water, flight and capacity passed");
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn mob_scene() -> Result<(), String> {
     use crate::mob::{Mob, MobKind};
     use glam::Vec3;

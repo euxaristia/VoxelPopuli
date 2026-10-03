@@ -1563,6 +1563,7 @@ pub fn smelt_item(input: BlockType) -> Option<(BlockType, u8)> {
 }
 
 /// Returns true if the block/item can be burned as fuel in a furnace.
+#[cfg(test)]
 pub fn is_furnace_fuel(fuel: BlockType) -> bool {
     fuel_burn_time(fuel) > 0.0
 }
@@ -1702,10 +1703,10 @@ pub fn find_recipe(
     if grid_items.len() == 2 {
         let wool = grid_items.iter().find(|&&b| is_wool(b));
         let dye = grid_items.iter().find(|&&b| is_dye(b));
-        if let (Some(_), Some(&d)) = (wool, dye) {
-            if let Some(target_wool) = dye_to_wool(d) {
-                return Some((target_wool, 1));
-            }
+        if let (Some(_), Some(&d)) = (wool, dye)
+            && let Some(target_wool) = dye_to_wool(d)
+        {
+            return Some((target_wool, 1));
         }
     }
 

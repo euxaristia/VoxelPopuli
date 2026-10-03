@@ -27,8 +27,7 @@ pub fn draw_container(
         384.0,
         344.0,
         [55, 55, 55, 255],
-        sw,
-        sh,
+        (sw, sh),
     );
     draw_rect(
         ui_shader,
@@ -37,8 +36,7 @@ pub fn draw_container(
         380.0,
         340.0,
         [198, 182, 161, 255],
-        sw,
-        sh,
+        (sw, sh),
     );
     let title = if matches!(container, container::Container::Chest(_)) {
         "Chest"
@@ -78,15 +76,14 @@ pub fn draw_container(
             w + 2.0,
             h + 2.0,
             [55, 55, 55, 255],
-            sw,
-            sh,
+            (sw, sh),
         );
         let bg = if hovered == Some(slot) {
             [185, 175, 158, 255]
         } else {
             [140, 130, 118, 255]
         };
-        draw_rect(ui_shader, rx, ry, w, h, bg, sw, sh);
+        draw_rect(ui_shader, rx, ry, w, h, bg, (sw, sh));
         let stack = if slot >= 100 {
             inv_slots[slot - 100]
         } else {
@@ -115,8 +112,7 @@ pub fn draw_container(
             36.0,
             14.0,
             [75, 65, 55, 255],
-            sw,
-            sh,
+            (sw, sh),
         );
         let fuel = if furnace.burn_total > 0.0 {
             furnace.burn_remaining / furnace.burn_total
@@ -130,8 +126,7 @@ pub fn draw_container(
             36.0 * fuel,
             14.0,
             [245, 145, 45, 255],
-            sw,
-            sh,
+            (sw, sh),
         );
         draw_rect(
             ui_shader,
@@ -140,8 +135,7 @@ pub fn draw_container(
             62.0,
             14.0,
             [75, 65, 55, 255],
-            sw,
-            sh,
+            (sw, sh),
         );
         draw_rect(
             ui_shader,
@@ -150,8 +144,7 @@ pub fn draw_container(
             62.0 * furnace.progress / container::SMELT_SECONDS,
             14.0,
             [120, 200, 90, 255],
-            sw,
-            sh,
+            (sw, sh),
         );
         for (label, x, y) in [
             ("Input", 43.0, 41.0),
